@@ -1,0 +1,86 @@
+# the default scope is set to `production` for all steps (imports)
+# setting scopes is how you make new steps with errors
+# not slow down your servers by setting them to a lower scope
+$ default
+
+# step 1: `accounts`
+accounts:
+    python  # <-- select the language to be run. currently only python, sqlite3 and postgres are available
+    accounts  # define the function or table name that will be used
+    example.py  # either provide a file or write code directly using the "`" char (see below example)
+
+request:
+    python
+    request_report
+    example.py
+
+status:
+    python
+    $ default  # <-- "scope" for a single step. A lower scope will be given less priority over higher scopes. See PIPE_WORKER_SCOPES in `.env` file
+    get_status
+    example.py
+
+download:
+    python
+    !9  # <-- "priority" higher numbers are more important and run first within their scope.
+    get_report
+    example.py
+
+manipulate_data:
+    sqlite3
+    some_table  # *vvvv* see below for writing code directly *vvvv*
+    `
+SELECT
+    *,
+    CASE
+        WHEN sales = 0
+        THEN 0.0
+        ELSE spend / sales
+    END AS acos
+FROM some_table
+`
+
+## this one's just to show postgres as well
+#manipulate_data_again:
+#    postgres
+#    another_table
+#    `
+#select
+#    *,
+#    case
+#        when spend = 0
+#        then 0.0
+#        else sales / spend
+#    end AS roas
+#from another_table
+#`
+
+upload:
+    python
+    upload_to_db
+    example.py
+
+
+# these are pipes and what will tell the server what order to run the steps
+# and also transfer the returned  data between steps
+# each step will be run individually and could be run on a different computer each time
+accounts_pipe = | accounts  # single pipes currently need a `|` before or behind the value
+api_pipe = request | status | download | manipulate_data | upload
+
+
+# currently there are only two syntax's for "running" pipes.
+# either by itself:
+# pipe()
+#
+# or in a loop:
+# for value in pipe1():
+#     pipe2(value)
+
+# # Another Example:
+# v = pipe(accounts_pipe)  # <-- single call
+# pipe2(v)
+
+# right not you cannot pass arguments within the pipe being used for the for loop.
+# in this case `accounts_pipe()` cannot be `accounts_pipe(some_value)`
+for account in accounts_pipe():
+    api_pipe(account)

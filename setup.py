@@ -1,0 +1,64 @@
+from setuptools import setup, find_packages, Extension
+from Cython.Build import cythonize
+
+# List of Cython files to compile
+extensions = [
+    Extension("buelon.cython.c_bucket", ["buelon/cython/c_bucket.pyx"]),
+    Extension("buelon.cython.c_worker", ["buelon/cython/c_worker.pyx"]),
+    Extension("buelon.cython.c_hub", ["buelon/cython/c_hub.pyx"])
+]
+
+# Requirements  for the package
+requirements = [
+    'Cython',
+    'psycopg2-binary',
+    'orjson',
+    'python-dotenv',
+    'asyncio-pool',
+    'psutil'
+]
+
+# Read the long description from the README file
+with open("README.md", "r", encoding="utf-8") as fh:
+    long_description = fh.read()
+
+setup(
+    name="buelon",
+    version="1.0.0",
+    author="Daniel Olson",
+    author_email="daniel@orphos.cloud",
+    description="A system and language to handle "
+                "any process using multiple workers "
+                "for some(planned for most) languages",
+    long_description=long_description,
+    long_description_content_type="text/markdown",
+    url="https://github.com/daniel-olson-code/buelon",
+    packages=find_packages(),
+    package_data={
+        'buelon/examples': [
+            "example.pipe",
+        ],
+        'buelon/cython': [
+            "*.pyx",
+        ]
+    },
+    include_package_data=True,
+    package_name="buelon",
+    ext_modules=cythonize(extensions),
+    install_requires=requirements,
+    entry_points={
+        'console_scripts': ['bue=buelon.command_line:cli'],
+    },
+    classifiers=[
+        "Development Status :: 3 - Alpha",
+        "Intended Audience :: Developers",
+        "License :: OSI Approved :: MIT License",
+        "Operating System :: OS Independent",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+    ],
+    python_requires=">=3.10",
+    keywords="buelon etl pipeline asynchronous data-processing api",
+)

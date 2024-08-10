@@ -1,0 +1,6 @@
+psycopg2-binary
+orjson
+python-dotenv
+cython
+asyncio-pool
+psutil
