@@ -71,7 +71,8 @@ def run_example():
     bue.examples.example.main()
 
 def upload_pipe_code(file_path, binding):
-    os.environ['PIPELINE_HOST'], os.environ['PIPELINE_PORT'] = binding.split(':')
+    if binding:
+        os.environ['PIPE_WORKER_HOST'], os.environ['PIPE_WORKER_PORT'] = binding.split(':')
     bue.hub.upload_pipe_code_from_file(file_path)
 
 
@@ -150,6 +151,11 @@ def cli():
     reset_parser = subparsers.add_parser('reset', help='Reset errors')
     reset_parser.add_argument('-b', '--binding', required=worker_binding_required, help='Main binding for hub (host:port)')
     reset_parser.add_argument('-w', '--include_working', help='Subscribe to status updates')
+
+    # Delete steps
+    delete_parser = subparsers.add_parser('delete', help='Delete steps')
+    delete_parser.add_argument('-b', '--binding', required=worker_binding_required, help='Main binding for hub (host:port)')
+    # delete_parser.add_argument('-s', '--step_id', help='Step ID to delete')
 
     # Demo command
     demo_parser = subparsers.add_parser('demo', help='Run the demo')

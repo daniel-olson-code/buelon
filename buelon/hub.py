@@ -47,6 +47,25 @@ def load_db():
         conn.commit()
 
 
+def delete_steps():
+    WORKER_HOST = os.environ.get('PIPE_WORKER_HOST', 'localhost')
+    WORKER_PORT = int(os.environ.get('PIPE_WORKER_PORT', 65432))
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        s.connect((WORKER_HOST, WORKER_PORT))
+        data = (b'delete-steps'
+                + buelon.hub.PIPELINE_SPLIT_TOKEN
+                + b'nothing')
+        send(s, data)
+
+
+def _delete_steps():
+    with sqlite3.connect(db_path) as conn:
+        cur = conn.cursor()
+        cur.execute('delete from steps;')
+        conn.commit()
+
+
 def reset_errors(include_workers=False):
     WORKER_HOST = os.environ.get('PIPE_WORKER_HOST', 'localhost')
     WORKER_PORT = int(os.environ.get('PIPE_WORKER_PORT', 65432))
@@ -592,6 +611,8 @@ def handle_client(connection):
             send(connection, buelon.helpers.json_parser.dumps(result))
         elif method.lower() == 'reset-errors':
             pass
+        elif method.lower() == 'delete-steps':
+            pass
         else:
             response = "Unknown method."
             connection.sendall(response.encode())
@@ -618,6 +639,8 @@ def handle_client(connection):
         _upload_step(step_json, status_value)
     elif method.lower() == 'reset-errors':
         _reset_errors(data)
+    elif method.lower() == 'delete-steps':
+        _delete_steps()
 
 
 

@@ -24,7 +24,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="buelon",
-    version="1.0.0",
+    version="1.0.2",
     author="Daniel Olson",
     author_email="daniel@orphos.cloud",
     description="A system and language to handle "
