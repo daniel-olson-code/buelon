@@ -15,7 +15,8 @@ requirements = [
     'orjson',
     'python-dotenv',
     'asyncio-pool',
-    'psutil'
+    'psutil',
+    'unsync'
 ]
 
 # Read the long description from the README file

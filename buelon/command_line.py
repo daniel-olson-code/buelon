@@ -33,7 +33,7 @@ def run_hub(args):
 
 def run_worker(args):
     # Set environment variables for worker
-    if args.main_binding:
+    if args.binding:
         os.environ['PIPE_WORKER_HOST'], os.environ['PIPE_WORKER_PORT'] = args.binding.split(':')
 
     if args.bucket_binding:
@@ -79,8 +79,11 @@ def upload_pipe_code(file_path, binding):
 def display_status(args):
     if args.binding:
         os.environ['PIPE_WORKER_HOST'], os.environ['PIPE_WORKER_PORT'] = args.binding.split(':')
+    client = bue.hub.HubClient()
     def display_status_worker():
-        data = bue.hub.get_step_count(args.binding)
+        data = client.sync_get_step_count()
+        client.get_step_count()
+        # bue.hub.get_step_count(args.binding)
         for row in data:
             name, amount = row['status'], row['amount']
             print(f'{name}: {amount:,}')
@@ -183,9 +186,16 @@ def cli():
     elif args.command == 'reset':
         if args.binding:
             os.environ['PIPE_WORKER_HOST'], os.environ['PIPE_WORKER_PORT'] = args.binding.split(':')
-        bue.hub.reset_errors(args.include_working is not None)
+        # bue.hub.reset_errors(args.include_working is not None)
+        client = bue.hub.HubClient()
+        client.sync_reset_errors(args.include_working is not None)
     elif args.command == 'status':
         display_status(args)
+    elif args.command == 'delete':
+        if args.binding:
+            os.environ['PIPE_WORKER_HOST'], os.environ['PIPE_WORKER_PORT'] = args.binding.split(':')
+        client = bue.hub.HubClient()
+        client.sync_delete_steps()
     else:
         # Handle the case where a file path is given without a command
         if args.binding and remaining_args:

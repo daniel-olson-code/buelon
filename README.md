@@ -80,86 +80,6 @@ pipe_name()
 - sqlite3: For SQLite queries
 - postgres: For PostgreSQL queries
 
-### Scopes and Priorities
-
-Use scopes and priorities to control execution:
-
-```python
-$ production  # Set default scope
-
-
-step_name:
-    python
-    !9  # Set priority (higher numbers run first within their scope)
-    $ testing     # Set a lower priority scope
-    function_name
-    source_file
-```
-
-### Writing Code Directly
-
-For short snippets, you can write code directly in the script:
-
-```python
-step_name:
-    sqlite3
-    table_name
-    `
-    SELECT * FROM table_name
-    WHERE condition = 'value'
-    `
-```
-
-### Defining Pipes
-
-Pipes determine the order of step execution:
-
-```python
-single_pipe = | step1  # or `step1 |`
-normal_pipe = step1 | step2 | step3
-```
-
-### Executing Pipes
-
-There are two ways to execute pipes:
-
-#### Single call
-
-```python
-pipe1()
-result1 = pipe2()
-result2 = pipe3(result1)
-pipe4(result2)
-
-pipe5(result1, result2)
-
-# incorrect --> `pipe3(pipe2())`  #  this syntax is currently not supported
-# also incorrect, they must be on one line as of now:
-# `pipe3(
-#   result1
-# )`
-```
-
-#### Looped execution
-
-```python
-for item in pipe1():
-    pipe2(item)
-# incorrect --> `for item in pipe1(result):`  # syntax not supported for now
-```
-
-### Running Your Pipeline
-
-- Save your pipeline script as a .pipe file.
-- Use the Pipeline API to upload and run your script:
-```python
-# example.py
-import pipeline
-
-pipeline.upload_pipe_code_from_file('your_script.pipe')
-```
-
-
 ## Learn by Example
 
 ```python
@@ -251,6 +171,86 @@ api_pipe = request | status | download | manipulate_data | upload
 for account in accounts_pipe():
     api_pipe(account)
 ```
+
+### Scopes and Priorities
+
+Use scopes and priorities to control execution:
+
+```python
+$ production  # Set default scope
+
+
+step_name:
+    python
+    !9  # Set priority (higher numbers run first within their scope)
+    $ testing     # Set a lower priority scope
+    function_name
+    source_file
+```
+
+### Writing Code Directly
+
+For short snippets, you can write code directly in the script:
+
+```python
+step_name:
+    sqlite3
+    table_name
+    `
+    SELECT * FROM table_name
+    WHERE condition = 'value'
+    `
+```
+
+### Defining Pipes
+
+Pipes determine the order of step execution:
+
+```python
+single_pipe = | step1  # or `step1 |`
+normal_pipe = step1 | step2 | step3
+```
+
+### Executing Pipes
+
+There are two ways to execute pipes:
+
+#### Single call
+
+```python
+pipe1()
+result1 = pipe2()
+result2 = pipe3(result1)
+pipe4(result2)
+
+pipe5(result1, result2)
+
+# incorrect --> `pipe3(pipe2())`  #  this syntax is currently not supported
+# also incorrect, they must be on one line as of now:
+# `pipe3(
+#   result1
+# )`
+```
+
+#### Looped execution
+
+```python
+for item in pipe1():
+    pipe2(item)
+# incorrect --> `for item in pipe1(result):`  # syntax not supported for now
+```
+
+### Running Your Pipeline
+
+- Save your pipeline script as a .pipe file.
+- Use the Pipeline API to upload and run your script:
+```python
+# example.py
+import pipeline
+
+pipeline.upload_pipe_code_from_file('your_script.pipe')
+```
+
 
 ## Performance
 Pipeline is specifically designed to handle I/O-heavy workloads efficiently. It excels in scenarios such as:

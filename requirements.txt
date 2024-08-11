@@ -4,3 +4,4 @@ python-dotenv
 cython
 asyncio-pool
 psutil
+unsync
