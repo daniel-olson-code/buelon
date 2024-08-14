@@ -68,7 +68,7 @@ async def _job(step_id: str | None = None) -> None:
         print(' - Error - ')
         print(str(e))
         traceback.print_exc()
-        with buelon.hub.HubClient(WORKER_HOST, WORKER_PORT) as client:
+        async with buelon.hub.HubClient(WORKER_HOST, WORKER_PORT) as client:
             await client.error(
                 _step.id,
                 str(e),
@@ -82,6 +82,7 @@ async def run(step_id: str | None = None) -> None:
     env = {**os.environ, 'STEP_ID': step_id}
     p = await asyncio.create_subprocess_shell(JOB_CMD, env=env)
     await p.wait()
+
 
 async def work():
     _scopes: str = os.environ.get('PIPE_WORKER_SCOPES', 'default')
