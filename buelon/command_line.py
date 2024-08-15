@@ -57,7 +57,8 @@ def run_worker(args):
 
 def run_bucket(args):
     # Set environment variables for bucket
-    os.environ['BUCKET_SERVER_HOST'], os.environ['BUCKET_SERVER_PORT'] = args.binding.split(':')
+    if args.binding:
+        os.environ['BUCKET_SERVER_HOST'], os.environ['BUCKET_SERVER_PORT'] = args.binding.split(':')
 
     # Run the bucket
     bue.bucket.main()

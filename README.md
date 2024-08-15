@@ -1,6 +1,6 @@
-# Pipeline
+# Buelon
 
-Pipeline is an asynchronous ETL (Extract, Transform, Load) system that uses a custom scripting language to run code across multiple servers, one step at a time. It's designed for efficient handling of large-scale data processing tasks, particularly those involving APIs with long wait times or I/O-heavy workloads.
+A sripting language to simply manage a very large amount of i/o heavy workloads. Such as API calls for your ETL, ELT or any program needing Python and/or SQL
 
 ## Table of Contents
 - [Features](#features)

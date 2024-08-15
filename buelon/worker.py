@@ -3,6 +3,7 @@ import asyncio
 import traceback
 import sys
 import enum
+import contextlib
 from typing import List, Any
 
 import asyncio_pool
@@ -12,7 +13,6 @@ import buelon.core.step
 import buelon.hub
 import buelon.bucket
 import buelon.helpers.json_parser
-from buelon.hub import Method  # Import the Method enum
 
 try:
     import dotenv
@@ -22,10 +22,10 @@ except ModuleNotFoundError:
 
 WORKER_HOST = os.environ.get('PIPE_WORKER_HOST', 'localhost')
 WORKER_PORT = int(os.environ.get('PIPE_WORKER_PORT', 65432))
-PIPE_WORKER_SUBPROCESS_JOBS = os.environ.get('PIPE_WORKER_SUBPROCESS_JOBS', 'true')
+PIPE_WORKER_SUBPROCESS_JOBS = os.environ.get('PIPE_WORKER_SUBPROCESS_JOBS', 'false')
 
 bucket_client = buelon.bucket.Client()
-hub_client = buelon.hub.HubClient(WORKER_HOST, WORKER_PORT)
+hub_client: buelon.hub.HubClient = buelon.hub.HubClient(WORKER_HOST, WORKER_PORT)
 
 JOB_CMD = f'{sys.executable} -c "import buelon.worker;buelon.worker.job()"'
 
@@ -37,12 +37,16 @@ class HandleStatus(enum.Enum):
     none = 'none'
 
 
+@contextlib.contextmanager
+def new_client_if_subprocess():
+    global hub_client
+    if PIPE_WORKER_SUBPROCESS_JOBS == 'true':
+        yield bucket_client
+    else:
+        yield hub_client
+
+
 def job(step_id: str | None = None) -> None:
-    _job(step_id).result()
-
-
-@unsync.unsync
-async def _job(step_id: str | None = None) -> None:
     if step_id:
         _step = buelon.hub.get_step(step_id)
     else:
@@ -53,23 +57,23 @@ async def _job(step_id: str | None = None) -> None:
         r: buelon.core.step.Result = _step.run(*args)
         buelon.hub.set_data(_step.id, r.data)
 
-        async with buelon.hub.HubClient(WORKER_HOST, WORKER_PORT) as client:
+        with new_client_if_subprocess() as client:
             if r.status == buelon.core.step.StepStatus.success:
-                await client.done(_step.id)
+                client.done(_step.id)
             elif r.status == buelon.core.step.StepStatus.pending:
-                await client.pending(_step.id)
+                client.pending(_step.id)
             elif r.status == buelon.core.step.StepStatus.reset:
-                await client.reset(_step.id)
+                client.reset(_step.id)
             elif r.status == buelon.core.step.StepStatus.cancel:
-                await client.cancel(_step.id)
+                client.cancel(_step.id)
             else:
                 raise Exception('Invalid step status')
     except Exception as e:
         print(' - Error - ')
         print(str(e))
         traceback.print_exc()
-        async with buelon.hub.HubClient(WORKER_HOST, WORKER_PORT) as client:
-            await client.error(
+        with new_client_if_subprocess() as client:
+            client.error(
                 _step.id,
                 str(e),
                 f'{traceback.format_exc()}'
@@ -93,7 +97,7 @@ async def work():
 
     async with asyncio_pool.AioPool(size=50) as pool:
         while True:
-            steps = await hub_client.get_steps(scopes)
+            steps = hub_client.get_steps(scopes)
 
             if not steps:
                 if last_loop_had_steps:
@@ -114,8 +118,15 @@ def main():
 
 async def _main():
     global hub_client
-    async with hub_client:
+    with hub_client:
         await work()
+
+
+try:
+    from cython.c_worker import *
+except (ImportError, ModuleNotFoundError):
+    pass
+
 
 if __name__ == '__main__':
     main()
