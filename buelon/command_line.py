@@ -69,7 +69,7 @@ def run_demo():
 
 def run_example():
     # Run the example
-    bue.examples.example.main()
+    bue.examples.example.setup()
 
 def upload_pipe_code(file_path, binding):
     if binding:

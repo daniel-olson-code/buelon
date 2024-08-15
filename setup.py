@@ -25,12 +25,11 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="buelon",
-    version="1.0.5",
+    version="1.0.8",
     author="Daniel Olson",
     author_email="daniel@orphos.cloud",
-    description="A system and language to handle "
-                "any process using multiple workers "
-                "for some(planned for most) languages",
+    description="A scripting language to simply manage a very large amount of i/o heavy workloads. Such as API calls "
+                "for your ETL, ELT or any program needing Python and/or SQL",
     long_description=long_description,
     long_description_content_type="text/markdown",
     url="https://github.com/daniel-olson-code/buelon",

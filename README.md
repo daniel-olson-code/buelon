@@ -24,9 +24,18 @@ A scripting language to simply manage a very large amount of i/o heavy workloads
 -->
 
 ## Installation
-`pip install buelon`
 
-This will install the cli command `bue` check with `bue --version` or `bue -v`
+`pip install buelon` That's it!
+
+This will install the cli command `bue`. Check install by running `bue --version` or `bue -v`
+
+### Note:
+
+This package uses Cython and you may need to install `python3-dev` using 
+`sudo apt-get install python3-dev` [[more commands and information](https://stackoverflow.com/a/21530768/19907524)]. 
+If you would like to use this repository without Cython, 
+you may `git clone` since it is not technically dependent on 
+these scripts, but they do provide a significant performance boost.  
 
 
 

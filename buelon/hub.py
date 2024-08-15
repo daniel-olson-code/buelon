@@ -639,7 +639,7 @@ class HubClient:
     def __getattr__(self, item: str):
         if item.startswith('sync_'):
             if hasattr(self, item[5:]):
-                return hasattr(self, item[5:])
+                return getattr(self, item[5:])
         raise AttributeError('')
 
 
