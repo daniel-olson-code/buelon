@@ -31,12 +31,22 @@ This will install the cli command `bue` check with `bue --version` or `bue -v`
 
 
 ## Quick Start
+1. Get example template: `bue example`
+2. Start Bucket server, Hub and 3 workers: `bue demo`
+3. Upload script and wait for results: `python3 example.py`
+
+## Production Start
+
+**Security:** Make sure bucket, hub and workers are under 
+a private network **only** 
+(you will need a web server or something similar
+under the same private network
+to access this tool using `bue upload`)
+
 1. Run bucket server: `bue bucket -b 0.0.0.0:61535`
 2. Run hub: `bue hub -b 0.0.0.0:65432 -k localhost:61535`
 3. Run worker(s): `bue worker -b localhost:65432 -k localhost:61535`
-4. [Optioanl] Get example template: `bue example`
-5. [Optioanl] Run example: `python3 example.py`
-6. Upload code: `bue upload  -b localhost:65432 -f ./example.bue`
+4. Upload code: `bue upload  -b localhost:65432 -f ./example.bue`
 
 ## Supported Languages
 - Python
@@ -89,7 +99,6 @@ pipe_name()
 ## Learn by Example
 
 ```python
-# the default scope is set to `production-small` for all steps (imports)
 # setting scopes is how you make new steps with errors
 # not slow down your servers by setting them to a lower scope.
 # And/or how you handle processes that either require and do not require big machines to run
