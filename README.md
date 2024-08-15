@@ -1,19 +1,19 @@
 # Buelon
 
-A sripting language to simply manage a very large amount of i/o heavy workloads. Such as API calls for your ETL, ELT or any program needing Python and/or SQL
+A scripting language to simply manage a very large amount of i/o heavy workloads. Such as API calls for your ETL, ELT or any program needing Python and/or SQL
 
 ## Table of Contents
+<!--
 - [Features](#features)
+-->
 - [Installation](#installation)
 - [Quick Start](#quick-start)
-- [Supported Languages](#supported-languages)
-- [Configuration](#configuration)
-- [Usage](#usage)
-- [Learn by Example](#learn-by-example)
-- [Performance](#performance) <!--- - [Contributing](#contributing) -->
-- [Future of Pipeline](#plans)
+- [Supported Languages](#supported-languages) <!-- - [Configuration](#configuration) - [Usage](#usage) -->
+- [Learn by Example](#learn-by-example) <!-- - [Performance](#performance)   - [Contributing](#contributing) -->
+- [Future of Buelon](#plans)
 - [License](#license)
 
+<!--
 ## Features
 - Asynchronous execution of code across multiple servers
 - Custom scripting language for defining ETL pipelines
@@ -21,23 +21,29 @@ A sripting language to simply manage a very large amount of i/o heavy workloads.
 - Efficient handling of APIs with long wait times
 - Optimized for I/O-heavy workloads
 - Scalable architecture for processing large amounts of data
+-->
 
 ## Installation
-1. Clone the repository: `git clone https://github.com/yourusername/pipeline.git
-cd pipeline`
-2. Install required packages: `pip install -r requirements.txt`
-3. (Optional) Build Cython files: `python build.py` (This can give a 3x performance boost)
-4. (Optional) Configure PostgreSQL settings in the `.env` file.
+`pip install buelon`
+
+This will install the cli command `bue` check with `bue --version` or `bue -v`
+
+
 
 ## Quick Start
-1. Run the demo server: `python demo.py`
-2. In a separate terminal, run the example uploading code: `python example.py`
+1. Run bucket server: `bue bucket -b 0.0.0.0:61535`
+2. Run hub: `bue hub -b 0.0.0.0:65432 -k localhost:61535`
+3. Run worker(s): `bue worker -b localhost:65432 -k localhost:61535`
+4. [Optioanl] Get example template: `bue example`
+5. [Optioanl] Run example: `python3 example.py`
+6. Upload code: `bue upload  -b localhost:65432 -f ./example.bue`
 
 ## Supported Languages
 - Python
 - SQLite3
 - PostgreSQL
 
+<!--
 ## Configuration
 * Setup at least 4 servers on a private network (they can be small, you can technically run all these on one server like `demo.py` does but that's not recommended)
 * Create a server running `python bucket.py` or something like `python -c "import c_bucket;c_bucket.main()"` 
@@ -79,7 +85,7 @@ pipe_name()
 - python: For Python code
 - sqlite3: For SQLite queries
 - postgres: For PostgreSQL queries
-
+-->
 ## Learn by Example
 
 ```python
@@ -171,7 +177,7 @@ api_pipe = request | status | download | manipulate_data | upload
 for account in accounts_pipe():
     api_pipe(account)
 ```
-
+<!--
 ### Scopes and Priorities
 
 Use scopes and priorities to control execution:
@@ -225,7 +231,7 @@ pipe4(result2)
 
 pipe5(result1, result2)
 
-# incorrect --> `pipe3(pipe2())`  #  this syntax is currently not supported
+# incorrect -> `pipe3(pipe2())`  #  this syntax is currently not supported
 # also incorrect, they must be on one line as of now:
 # `pipe3(
 #   result1
@@ -237,7 +243,7 @@ pipe5(result1, result2)
 ```python
 for item in pipe1():
     pipe2(item)
-# incorrect --> `for item in pipe1(result):`  # syntax not supported for now
+# incorrect -> `for item in pipe1(result):`  # syntax not supported for now
 ```
 
 ### Running Your Pipeline
@@ -263,14 +269,11 @@ For instance, Pipeline is currently being used by an agency to request 30,000 re
 
 The asynchronous nature of Pipeline makes it particularly suited for APIs like Amazon Ads, where there are significant wait times between requesting a report and its availability for download. Traditional synchronous ETL processes struggle with such APIs, especially for agencies with numerous profiles.
 
+-->
+
 ## Plans
 
 If this projects sees some love, or I just find more free time, I'd like to support more languages. Even compiled languages such as `rust`, `go` and `c++`. Allowing teams that write different languages to work on the same program.
-
-Turning this project into a pip package.
-
-I want to rewrite this in rust for performance.
-
 
 <!---
 your comment goes here

@@ -122,13 +122,10 @@ def upload_to_db(data: list[dict]) -> None:
     db = buelon.helpers.sqlite3_helper.Sqlite3('test.db')
     db.upload_table('test', data)
     counter('done1')
-
-
 # remove start
 
-
-def main():
-    pipe_path = os.path.join(os.getcwd(), 'example.pipe')
+def setup():
+    pipe_path = os.path.join(os.getcwd(), 'example.bue')
     example_py_path = os.path.join(os.getcwd(), 'example.py')
     demo_py_path = os.path.join(os.getcwd(), 'demo.py')
     dot_env_path = os.path.join(os.getcwd(), '.env')
@@ -157,6 +154,11 @@ def main():
 
             with open(path, 'w') as f:
                 f.write(txt)
+
+# remove end
+
+def main():
+    pipe_path = os.path.join(os.getcwd(), 'example.bue')
 
     try:
         db = buelon.helpers.sqlite3_helper.Sqlite3('test.db')
@@ -193,6 +195,6 @@ if __name__ == '__main__':
     main()
 
 
-# remove end
+
 
 
