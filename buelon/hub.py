@@ -67,22 +67,6 @@ def send(conn: socket.socket, data: bytes) -> None:
     conn.sendall(data+PIPELINE_END_TOKEN)
 
 
-async def receive_async(reader: asyncio.StreamReader) -> bytes:
-    data = b''
-    while not data.endswith(PIPELINE_END_TOKEN):
-        v = await reader.read(2048)
-
-        if not v:
-            return data
-
-        data += v
-    return data[:-len(PIPELINE_END_TOKEN)]
-
-
-async def send_async(writer: asyncio.StreamWriter, data: bytes) -> None:
-    writer.write(data+PIPELINE_END_TOKEN)
-
-
 def load_db():
     with sqlite3.connect(db_path) as conn:
         cur = conn.cursor()
@@ -272,36 +256,12 @@ def remove_data(step_id: str) -> None:
     bucket_client.delete(key)
 
 
-# def get_steps(scopes: list[str], limit=50):
-#     """
-#     Get the steps in the scope, ordered by priority then scope position.
-#
-#     Args:
-#         scopes (list[str]): A list of scopes to filter the steps.
-#         limit (int): The maximum number of steps to retrieve. Defaults to 50.
-#
-#     Returns:
-#         list: A list of steps ordered by priority and scope position.
-#     """
-#     case_statement = ' '.join([f"WHEN ? THEN {i}" for i in range(len(scopes))])
-#     sql = (f'SELECT id, priority, scope, velocity, data '
-#            f'FROM steps '
-#            f'WHERE scope IN ({",".join("?" * len(scopes))}) '
-#            f'AND status = \'{step.StepStatus.pending.value}\' '
-#            f'ORDER BY priority, CASE scope {case_statement} END LIMIT ?')
-#     cur.execute(sql, (*scopes, *scopes, limit))
-#     rows = cur.fetchall()
-#     return [get_step(row[0]) for row in rows]
-
-
 def check_to_delete_bucket_files(
         step_id: str,
         already: set | None = None,
         steps: list | None = None
 ) -> None:
     _check_to_delete_bucket_files(step_id, already, steps)
-    # t = threading.Thread(target=_check_to_delete_bucket_files, args=(step_id, already, steps))
-    # t.start()
 
 
 def _check_to_delete_bucket_files(
@@ -597,83 +557,6 @@ class HubServer:
             _delete_steps()
         return b'ok'
 
-# class HubServer:
-#     def __init__(self, host='0.0.0.0', port=65432):
-#         self.host = host
-#         self.port = port
-#         self.transaction_queue = asyncio.Queue()
-#
-#     async def start(self):
-#         server = await asyncio.start_server(self._handle_client, self.host, self.port)
-#         print(f"Server listening on {self.host}:{self.port}")
-#         worker_task = asyncio.create_task(self._process_transactions())
-#         async with server:
-#             await server.serve_forever()
-#
-#     async def _handle_client(self, reader, writer):
-#         try:
-#             while True:
-#                 data = await receive_async(reader)
-#
-#                 if not data:
-#                     break
-#
-#                 method, payload = data.split(PIPELINE_SPLIT_TOKEN)
-#                 print('received', method)
-#                 method = Method(method.decode())
-#                 await self.transaction_queue.put((method, payload, writer))
-#         except Exception as e:
-#             print(f"Error handling client: {e}")
-#             traceback.print_exc()
-#         finally:
-#             writer.close()
-#             await writer.wait_closed()
-#
-#     async def _process_transactions(self):
-#         while True:
-#             method, payload, writer = await self.transaction_queue.get()
-#             try:
-#                 print('processing', method)
-#                 response = await self._process_request(method, payload)
-#
-#                 await send_async(writer, response)
-#
-#                 await writer.drain()
-#             except Exception as e:
-#                 traceback.print_exc()
-#                 print(f"Error processing transaction: {e}")
-#             finally:
-#                 self.transaction_queue.task_done()
-#
-#     async def _process_request(self, method: Method, payload: bytes):
-#         if method == Method.GET_STEPS:
-#             scopes = buelon.helpers.json_parser.loads(payload)
-#             steps = get_steps(scopes)
-#             return buelon.helpers.json_parser.dumps(steps)
-#         elif method == Method.DONE:
-#             _done(payload.decode())
-#         elif method == Method.PENDING:
-#             _pending(payload.decode())
-#         elif method == Method.CANCEL:
-#             _cancel(payload.decode())
-#         elif method == Method.RESET:
-#             _reset(payload.decode())
-#         elif method == Method.ERROR:
-#             values = buelon.helpers.json_parser.loads(payload)
-#             _error(values['step_id'], values['msg'], values['trace'])
-#         elif method == Method.UPLOAD_STEP:
-#             step_json, status_value = buelon.helpers.json_parser.loads(payload)
-#             _upload_step(step_json, status_value)
-#         elif method == Method.STEP_COUNT:
-#             kwargs = buelon.helpers.json_parser.loads(payload)
-#             result = _get_step_count(kwargs['types'])
-#             return buelon.helpers.json_parser.dumps(result)
-#         elif method == Method.RESET_ERRORS:
-#             _reset_errors(payload)
-#         elif method == Method.DELETE_STEPS:
-#             _delete_steps()
-#         return b'ok'
-
 
 class HubClient:
     def __init__(self, host=None, port=None, max_reconnect_attempts=2):
@@ -759,102 +642,6 @@ class HubClient:
                 return hasattr(self, item[5:])
         raise AttributeError('')
 
-# class HubClient:
-#     def __init__(self, host=None, port=None, max_reconnect_attempts=2):
-#         self.host = host or os.environ.get('PIPE_WORKER_HOST', 'localhost')
-#         self.port = port or int(os.environ.get('PIPE_WORKER_PORT', 65432))
-#         self.reader = None
-#         self.writer = None
-#         self.max_reconnect_attempts = max_reconnect_attempts
-#         self.lock = asyncio.Lock()  # Initialize the lock here
-#
-#     async def __aenter__(self):
-#         await self.connect()
-#         return self
-#
-#     async def __aexit__(self, exc_type, exc_val, exc_tb):
-#         await self.close()
-#
-#     async def connect(self):
-#         if not self.reader or not self.writer:
-#             self.reader, self.writer = await asyncio.open_connection(self.host, self.port)
-#
-#     async def close(self):
-#         if self.writer:
-#             self.writer.close()
-#             await self.writer.wait_closed()
-#             self.reader = None
-#             self.writer = None
-#
-#     async def send_request(self, method, data: bytes):
-#         attempt = 0
-#         async with self.lock:
-#             while attempt < self.max_reconnect_attempts:
-#                 try:
-#                     if not self.reader or not self.writer:
-#                         await self.connect()
-#                     request = method.value.encode() + PIPELINE_SPLIT_TOKEN + data
-#                     await send_async(self.writer, request)
-#                     await self.writer.drain()
-#                     response = await receive_async(self.reader)
-#                     return response
-#                 except (OSError, asyncio.TimeoutError) as e:
-#                     print(f"Connection error: {e}")
-#                     attempt += 1
-#                     await self.close()  # Close the current connection
-#                     if attempt >= self.max_reconnect_attempts:
-#                         raise ConnectionError(f"Failed to send request after {self.max_reconnect_attempts} attempts: {e}")
-#                     await asyncio.sleep(1)  # Backoff before retrying
-#                     await self.connect()  # Establish a new connection before retrying
-#
-#     async def get_steps(self, scopes):
-#         return buelon.helpers.json_parser.loads(await self.send_request(Method.GET_STEPS, buelon.helpers.json_parser.dumps(scopes)))
-#
-#     async def done(self, step_id):
-#         return await self.send_request(Method.DONE, step_id.encode())
-#
-#     async def pending(self, step_id):
-#         return await self.send_request(Method.PENDING, step_id.encode())
-#
-#     async def cancel(self, step_id):
-#         return await self.send_request(Method.CANCEL, step_id.encode())
-#
-#     async def reset(self, step_id):
-#         return await self.send_request(Method.RESET, step_id.encode())
-#
-#     async def error(self, step_id, msg, trace):
-#         return await self.send_request(Method.ERROR, buelon.helpers.json_parser.dumps({'step_id': step_id, 'msg': msg, 'trace': trace}))
-#
-#     async def upload_step(self, step_json, status_value):
-#         return await self.send_request(Method.UPLOAD_STEP, buelon.helpers.json_parser.dumps([step_json, status_value]))
-#
-#     async def get_step_count(self, types: str | None = None):
-#         return buelon.helpers.json_parser.loads(
-#             await self.send_request(
-#                 Method.STEP_COUNT,
-#                 buelon.helpers.json_parser.dumps({'types': types})
-#             )
-#         )
-#
-#     async def reset_errors(self, include_workers):
-#         return await self.send_request(Method.RESET_ERRORS, b'true' if include_workers else b'false')
-#
-#     async def delete_steps(self):
-#         return await self.send_request(Method.DELETE_STEPS, b'nothing')
-#
-#     def __getattr__(self, item: str):
-#         # if hasattr(self, item):
-#         #     return getattr(self, item)
-#         if item.startswith('sync_'):
-#             if hasattr(self, item[5:]):
-#                 def func(*args, **kwargs):
-#                     @unsync.unsync
-#                     async def _func(*args, **kwargs):
-#                         return await getattr(self, item[5:])(*args, **kwargs)
-#                     return _func(*args, **kwargs).result()  # unsync.unsync(getattr(self, item[5:]))(*args, **kwargs).result()
-#                 return func
-#         raise AttributeError('')
-
 
 def main():
     """
@@ -865,7 +652,7 @@ def main():
     load_db()
 
     server = HubServer()
-    asyncio.run(server.start())
+    server.start()
 
 
 try:
