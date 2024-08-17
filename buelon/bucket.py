@@ -24,6 +24,11 @@ except ModuleNotFoundError:
 REDIS_HOST: str = os.environ.get('REDIS_HOST', 'null')
 REDIS_PORT: int = int(os.environ.get('REDIS_PORT', 6379))
 REDIS_DB: int = int(os.environ.get('REDIS_DB', 0))
+REDIS_EXPIRATION: int | None = os.environ.get('REDIS_EXPIRATION', 60*60*24*7)
+try:
+    REDIS_EXPIRATION = int(REDIS_EXPIRATION)
+except ValueError:
+    REDIS_EXPIRATION = None
 USING_REDIS: bool = REDIS_HOST != 'null'
 
 BUCKET_CLIENT_HOST: str = os.environ.get('BUCKET_CLIENT_HOST', 'localhost')
@@ -99,6 +104,21 @@ def retry_connection(func: callable):
     return wrapper
 
 
+def redis_secure_connection(func: callable):
+    def wrapper(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except redis.exceptions.ConnectionError:
+            self: Client = args[0]
+            try:
+                del self.redis_client
+            except Exception as e:
+                print(f'Change `Exception` to {type(e)}. e: {e}')
+            self.redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
+            return func(*args, **kwargs)
+    return wrapper
+
+
 class Client:
     """A client for interacting with the bucket server."""
     PORT: int
@@ -109,10 +129,14 @@ class Client:
         self.PORT = BUCKET_CLIENT_PORT
         self.HOST = BUCKET_CLIENT_HOST
         if USING_REDIS:
-            # self.redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
+            self.redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
             self.set = self.redis_set
             self.get = self.redis_get
             self.delete = self.redis_delete
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if USING_REDIS:
+            self.redis_client.connection.disconnect()
 
     # @retry_connection
     def set(self, key: str, data: bytes, timeout: float | None = 60 * 5.) -> None:
@@ -186,18 +210,46 @@ class Client:
             send(s, BUCKET_SPLIT_TOKEN.join([key.encode('utf-8'), b'delete', f'{timeout}'.encode(), b'__null__']))
             receive(s)
 
-    def redis_set(self, key: str, data: bytes) -> None:
+    @redis_secure_connection
+    def redis_bulk_set(self, keys_values: dict, save: bool = False):
+        """
+        Set multiple key-value pairs in Redis.
+
+        Args:
+            keys_values (dict): A dictionary of key-value pairs to set.
+            save (bool, optional): Whether to save the data to disk. Defaults to False.
+        """
+        self.redis_client.mset(keys_values)
+
+        if save:
+            self.redis_client.save()
+
+        for k in keys_values:
+            self.redis_client.expire(k, 60*60*24*7)
+
+    @redis_secure_connection
+    def redis_set(self, key: str, data: bytes, save: bool = False, expiration: int | None = None) -> None:
         """
         Set data for a given key in Redis.
 
         Args:
             key (str): The key to associate with the data.
             data (bytes): The data to store.
+            save (bool, optional): Whether to save the data to disk. Defaults to False.
+            expiration (int, optional): The expiration time for the key in seconds. Negative value will ensure no expiration. Defaults to either environment variable `REDIS_EXPIRATION` or 60 * 60 * 24 * 7 (1 week).
         """
-        # self.redis_client.set(key, data)
-        with redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0) as client:
-            client.set(key, data)
+        if not isinstance(expiration, int):
+            expiration = REDIS_EXPIRATION
+        else:
+            if expiration < 0:
+                expiration = None
 
+        self.redis_client.set(key, data, ex=expiration)
+
+        if save:
+            self.redis_client.save()
+
+    @redis_secure_connection
     def redis_get(self, key: str) -> bytes | None:
         """
         Retrieve data for a given key from Redis.
@@ -208,13 +260,12 @@ class Client:
         Returns:
             bytes or None: The retrieved data, or None if the key doesn't exist.
         """
-        # data = self.redis_client.get(key)
-        with redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0) as client:
-            data = client.get(key)
+        data = self.redis_client.get(key)
         if data is None:
             return None
         return data
 
+    @redis_secure_connection
     def redis_delete(self, key: str) -> None:
         """
         Delete data for a given key from Redis.
@@ -223,8 +274,7 @@ class Client:
             key (str): The key to delete data for.
         """
         # self.redis_client.delete(key)
-        with redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0) as client:
-            client.delete(key)
+        self.redis_client.delete(key)
 
 
 def check_file_directory(path: str) -> None:
