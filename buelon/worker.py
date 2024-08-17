@@ -52,6 +52,12 @@ def job(step_id: str | None = None) -> None:
         _step = buelon.hub.get_step(step_id)
     else:
         _step = buelon.hub.get_step(os.environ['STEP_ID'])
+
+    if _step is None:
+        with new_client_if_subprocess() as client:
+            client.reset(step_id if step_id else os.environ['STEP_ID'])
+            return
+
     print('handling', _step.name)
     try:
         args = [buelon.hub.get_data(_id) for _id in _step.parents]

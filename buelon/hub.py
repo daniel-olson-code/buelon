@@ -225,9 +225,11 @@ def upload_pipe_code_from_file(file_path: str):
         upload_pipe_code(code)
 
 
-def get_step(step_id: str) -> buelon.core.step.Step:
+def get_step(step_id: str) -> buelon.core.step.Step | None:
     s = buelon.core.step.Step()
     b = bucket_client.get(f'step/{step_id}')
+    if b is None:
+        return
     data = buelon.helpers.json_parser.loads(b)
     return s.from_json(data)
 
@@ -241,6 +243,7 @@ def get_data(step_id: str) -> Any:
     key = f'step-data/{step_id}'
     v = bucket_client.get(key)
     if v is None:
+        _reset(step_id)
         raise ValueError(f'No data found for step {step_id}')
     return buelon.helpers.json_parser.loads(v)
 

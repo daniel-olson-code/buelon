@@ -62,7 +62,11 @@ def dumps(*args, **kwargs):
     Returns:
         bytes: JSON-encoded bytes.
     """
-    return orjson.dumps(*args, **kwargs)
+    try:
+        return orjson.dumps(*args, **kwargs)
+    except Exception as e:
+        print(f'args: {args}, kwargs: {kwargs}, type: {type(args[0])} error: {e}')
+        raise Exception(f'args: {args}, kwargs: {kwargs}, type: {type(args[0])} error: {e}')
 
 
 def loads(*args, **kwargs):
@@ -79,6 +83,10 @@ def loads(*args, **kwargs):
     Returns:
         The deserialized Python object.
     """
-    return orjson.loads(*args, **kwargs)
+    try:
+        return orjson.loads(*args, **kwargs)
+    except Exception as e:
+        print(f'args: {args}, kwargs: {kwargs}, type: {type(args[0])} error: {e}')
+        raise Exception(f'args: {args}, kwargs: {kwargs}, type: {type(args[0])} error: {e}')
 
 

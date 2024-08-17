@@ -109,12 +109,12 @@ class Client:
         self.PORT = BUCKET_CLIENT_PORT
         self.HOST = BUCKET_CLIENT_HOST
         if USING_REDIS:
-            self.redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
+            # self.redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
             self.set = self.redis_set
             self.get = self.redis_get
             self.delete = self.redis_delete
 
-    @retry_connection
+    # @retry_connection
     def set(self, key: str, data: bytes, timeout: float | None = 60 * 5.) -> None:
         """
         Set data for a given key on the server.
@@ -124,6 +124,7 @@ class Client:
             data (bytes): The data to store.
             timeout (float, optional): The timeout for the socket connection in seconds. Defaults to 60 * 5.
         """
+        raise RuntimeError('Not using redis.')
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             s.settimeout(timeout)
@@ -149,6 +150,7 @@ class Client:
         Returns:
             bytes or None: The retrieved data, or None if the key doesn't exist.
         """
+        raise RuntimeError('Not using redis.')
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             s.settimeout(timeout)
@@ -175,6 +177,7 @@ class Client:
             key (str): The key to delete data for.
             timeout (float, optional): The timeout for the socket connection in seconds. Defaults to 60 * 5.
         """
+        raise RuntimeError('Not using redis.')
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             s.settimeout(timeout)
@@ -191,7 +194,9 @@ class Client:
             key (str): The key to associate with the data.
             data (bytes): The data to store.
         """
-        self.redis_client.set(key, data)
+        # self.redis_client.set(key, data)
+        with redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0) as client:
+            client.set(key, data)
 
     def redis_get(self, key: str) -> bytes | None:
         """
@@ -203,7 +208,9 @@ class Client:
         Returns:
             bytes or None: The retrieved data, or None if the key doesn't exist.
         """
-        data = self.redis_client.get(key)
+        # data = self.redis_client.get(key)
+        with redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0) as client:
+            data = client.get(key)
         if data is None:
             return None
         return data
@@ -215,7 +222,9 @@ class Client:
         Args:
             key (str): The key to delete data for.
         """
-        self.redis_client.delete(key)
+        # self.redis_client.delete(key)
+        with redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0) as client:
+            client.delete(key)
 
 
 def check_file_directory(path: str) -> None:
@@ -400,10 +409,10 @@ def main() -> None:
     server.loop()
 
 
-try:
-    from cython.c_bucket import *
-except (ImportError, ModuleNotFoundError):
-    pass
+# try:
+#     from cython.c_bucket import *
+# except (ImportError, ModuleNotFoundError):
+#     pass
 
 
 if __name__ == '__main__':
