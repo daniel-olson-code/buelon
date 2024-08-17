@@ -41,7 +41,8 @@ class HandleStatus(enum.Enum):
 def new_client_if_subprocess():
     global hub_client
     if PIPE_WORKER_SUBPROCESS_JOBS == 'true':
-        yield buelon.hub.HubClient(WORKER_HOST, WORKER_PORT)
+        with buelon.hub.HubClient(WORKER_HOST, WORKER_PORT) as client:
+            yield client
     else:
         yield hub_client
 
@@ -120,12 +121,6 @@ async def _main():
     global hub_client
     with hub_client:
         await work()
-
-
-# try:
-#     from cython.c_worker import *
-# except (ImportError, ModuleNotFoundError):
-#     pass
 
 
 if __name__ == '__main__':

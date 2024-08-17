@@ -474,11 +474,13 @@ def decrement_tag_usage():
             for tag in list(tag_usage.keys()):  # Use list() to create a copy of keys for safe iteration
                 tag_usage[tag] = max(0, tag_usage[tag] - 1)
 
+
 class HubServer:
     def __init__(self, host='0.0.0.0', port=65432):
         self.host = host
         self.port = port
         self.transaction_queue = queue.Queue()
+        self.execution_queue = queue.Queue()
 
     def start(self):
         server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -486,75 +488,137 @@ class HubServer:
         server.listen()
         print(f"Server listening on {self.host}:{self.port}")
 
-        worker_thread = threading.Thread(target=self._process_transactions)
+        worker_thread = threading.Thread(target=self._process_transactions, daemon=True)
         worker_thread.start()
+
+        executor_thread = threading.Thread(target=self._execute_transaction, daemon=True)
+        executor_thread.start()
 
         while True:
             client_socket, addr = server.accept()
-            client_thread = threading.Thread(target=self._handle_client, args=(client_socket,))
+            client_thread = threading.Thread(target=self._handle_client, args=(client_socket,), daemon=True)
             client_thread.start()
 
     def _handle_client(self, client_socket):
-        with client_socket:
-            try:
-                while True:
-                    data = receive(client_socket)
+        data = receive(client_socket)
 
-                    if not data:
-                        break
+        if not data:
+            client_socket.close()
+            return
 
-                    method, payload = data.split(PIPELINE_SPLIT_TOKEN)
-                    print('received', method)
-                    method = Method(method.decode())
-                    self.transaction_queue.put((method, payload, client_socket))
-            except KeyboardInterrupt:
-                raise
-            except Exception as e:
-                print(f"Error handling client: {e}")
-                traceback.print_exc()
+        method, payload = data.split(PIPELINE_SPLIT_TOKEN)
+        print('received', method)
+        method = Method(method.decode())
+        self.transaction_queue.put((method, payload, client_socket))
+        # with client_socket:
+        #     try:
+        #         while True:
+        #             data = receive(client_socket)
+        #
+        #             if not data:
+        #                 break
+        #
+        #             method, payload = data.split(PIPELINE_SPLIT_TOKEN)
+        #             print('received', method)
+        #             method = Method(method.decode())
+        #             self.transaction_queue.put((method, payload, client_socket))
+        #     except KeyboardInterrupt:
+        #         raise
+        #     except Exception as e:
+        #         print(f"Error handling client: {e}")
+        #         traceback.print_exc()
 
     def _process_transactions(self):
         while True:
             method, payload, client_socket = self.transaction_queue.get()
             try:
-                print('processing', method)
-                response = self._process_request(method, payload)
+                with client_socket:
+                    print('processing', method)
+                    response = self._process_request(method, payload)
 
-                send(client_socket, response)
-
+                    send(client_socket, response)
+            except KeyboardInterrupt:
+                raise
             except Exception as e:
                 traceback.print_exc()
                 print(f"Error processing transaction: {e}")
             finally:
                 self.transaction_queue.task_done()
 
+    def _execute_transaction(self):
+        while True:
+            method, payload = self.execution_queue.get()
+            try:
+                print('executing', method)
+                self._execute_request(method, payload)
+            except KeyboardInterrupt:
+                raise
+            except Exception as e:
+                traceback.print_exc()
+                print(f"Error processing transaction: {e}")
+            finally:
+                self.execution_queue.task_done()
+
+    def _execute_request(self, method, payload):
+        if method == Method.DONE:
+            _done(payload.decode())
+            return
+        elif method == Method.PENDING:
+            _pending(payload.decode())
+            return
+        elif method == Method.CANCEL:
+            _cancel(payload.decode())
+            return
+        elif method == Method.RESET:
+            _reset(payload.decode())
+            return
+        elif method == Method.ERROR:
+            values = buelon.helpers.json_parser.loads(payload)
+            _error(values['step_id'], values['msg'], values['trace'])
+            return
+        elif method == Method.UPLOAD_STEP:
+            step_json, status_value = buelon.helpers.json_parser.loads(payload)
+            _upload_step(step_json, status_value)
+            return
+        elif method == Method.RESET_ERRORS:
+            _reset_errors(payload)
+            return
+        elif method == Method.DELETE_STEPS:
+            _delete_steps()
+            return
+        raise ValueError(f'Invalid method: {method}')
+
     def _process_request(self, method: Method, payload: bytes):
+        if (method == Method.DONE or method == Method.PENDING or method == Method.CANCEL or method == Method.RESET
+                or method == Method.ERROR or method == Method.UPLOAD_STEP or method == Method.RESET_ERRORS
+                or method == Method.DELETE_STEPS):
+            self.execution_queue.put((method, payload))
         if method == Method.GET_STEPS:
             scopes = buelon.helpers.json_parser.loads(payload)
             steps = get_steps(scopes)
             return buelon.helpers.json_parser.dumps(steps)
-        elif method == Method.DONE:
-            _done(payload.decode())
-        elif method == Method.PENDING:
-            _pending(payload.decode())
-        elif method == Method.CANCEL:
-            _cancel(payload.decode())
-        elif method == Method.RESET:
-            _reset(payload.decode())
-        elif method == Method.ERROR:
-            values = buelon.helpers.json_parser.loads(payload)
-            _error(values['step_id'], values['msg'], values['trace'])
-        elif method == Method.UPLOAD_STEP:
-            step_json, status_value = buelon.helpers.json_parser.loads(payload)
-            _upload_step(step_json, status_value)
+        # elif method == Method.DONE:
+        #     _done(payload.decode())
+        # elif method == Method.PENDING:
+        #     _pending(payload.decode())
+        # elif method == Method.CANCEL:
+        #     _cancel(payload.decode())
+        # elif method == Method.RESET:
+        #     _reset(payload.decode())
+        # elif method == Method.ERROR:
+        #     values = buelon.helpers.json_parser.loads(payload)
+        #     _error(values['step_id'], values['msg'], values['trace'])
+        # elif method == Method.UPLOAD_STEP:
+        #     step_json, status_value = buelon.helpers.json_parser.loads(payload)
+        #     _upload_step(step_json, status_value)
         elif method == Method.STEP_COUNT:
             kwargs = buelon.helpers.json_parser.loads(payload)
             result = _get_step_count(kwargs['types'])
             return buelon.helpers.json_parser.dumps(result)
-        elif method == Method.RESET_ERRORS:
-            _reset_errors(payload)
-        elif method == Method.DELETE_STEPS:
-            _delete_steps()
+        # elif method == Method.RESET_ERRORS:
+        #     _reset_errors(payload)
+        # elif method == Method.DELETE_STEPS:
+        #     _delete_steps()
         return b'ok'
 
 
@@ -566,16 +630,18 @@ class HubClient:
         self.max_reconnect_attempts = max_reconnect_attempts
 
     def __enter__(self):
-        self.connect()
+        # self.connect()
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        self.close()
+        pass
+        # self.close()
 
     def connect(self):
         if not self.conn:
             self.conn = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.conn.connect((self.host, self.port))
+            self.conn.settimeout(60*60)
 
     def close(self):
         if self.conn:
@@ -583,23 +649,30 @@ class HubClient:
             self.conn = None
 
     def send_request(self, method, data: bytes):
-        attempt = 0
-        while attempt < self.max_reconnect_attempts:
-            try:
-                if not self.conn:
-                    self.connect()
-                request = method.value.encode() + PIPELINE_SPLIT_TOKEN + data
-                send(self.conn, request)
-                response = receive(self.conn)
-                return response
-            except (OSError, ConnectionError) as e:
-                print(f"Connection error: {e}")
-                attempt += 1
-                self.close()
-                if attempt >= self.max_reconnect_attempts:
-                    raise ConnectionError(f"Failed to send request after {self.max_reconnect_attempts} attempts: {e}")
-                time.sleep(1)  # Backoff before retrying
-                self.connect()  # Establish a new connection before retrying
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as conn:
+            conn.connect((self.host, self.port))
+            conn.settimeout(60*60)
+            request = method.value.encode() + PIPELINE_SPLIT_TOKEN + data
+            send(conn, request)
+            response = receive(conn)
+        return response
+        # attempt = 0
+        # while attempt < self.max_reconnect_attempts:
+        #     try:
+        #         if not self.conn:
+        #             self.connect()
+        #         request = method.value.encode() + PIPELINE_SPLIT_TOKEN + data
+        #         send(self.conn, request)
+        #         response = receive(self.conn)
+        #         return response
+        #     except (OSError, ConnectionError) as e:
+        #         print(f"Connection error: {e}")
+        #         attempt += 1
+        #         self.close()
+        #         if attempt >= self.max_reconnect_attempts:
+        #             raise ConnectionError(f"Failed to send request after {self.max_reconnect_attempts} attempts: {e}")
+        #         time.sleep(1)  # Backoff before retrying
+        #         self.connect()  # Establish a new connection before retrying
 
     def get_steps(self, scopes):
         return buelon.helpers.json_parser.loads(self.send_request(Method.GET_STEPS, buelon.helpers.json_parser.dumps(scopes)))
@@ -655,10 +728,10 @@ def main():
     server.start()
 
 
-try:
-    from buelon.cython.c_hub import *
-except (ImportError, ModuleNotFoundError):
-    pass
+# try:
+#     from buelon.cython.c_hub import *
+# except (ImportError, ModuleNotFoundError):
+#     pass
 
 
 if __name__ == "__main__":
