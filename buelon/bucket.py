@@ -29,7 +29,7 @@ try:
     REDIS_EXPIRATION = int(REDIS_EXPIRATION)
 except ValueError:
     REDIS_EXPIRATION = None
-USING_REDIS: bool = REDIS_HOST != 'null'
+USING_REDIS: bool = False  # REDIS_HOST != 'null'
 
 BUCKET_CLIENT_HOST: str = os.environ.get('BUCKET_CLIENT_HOST', 'localhost')
 BUCKET_CLIENT_PORT: int = int(os.environ.get('BUCKET_CLIENT_PORT', 61535))
@@ -148,7 +148,7 @@ class Client:
             data (bytes): The data to store.
             timeout (float, optional): The timeout for the socket connection in seconds. Defaults to 60 * 5.
         """
-        raise RuntimeError('Not using redis.')
+        # raise RuntimeError('Not using redis.')
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             s.settimeout(timeout)
@@ -174,7 +174,7 @@ class Client:
         Returns:
             bytes or None: The retrieved data, or None if the key doesn't exist.
         """
-        raise RuntimeError('Not using redis.')
+        # raise RuntimeError('Not using redis.')
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             s.settimeout(timeout)
@@ -201,7 +201,7 @@ class Client:
             key (str): The key to delete data for.
             timeout (float, optional): The timeout for the socket connection in seconds. Defaults to 60 * 5.
         """
-        raise RuntimeError('Not using redis.')
+        # raise RuntimeError('Not using redis.')
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             s.settimeout(timeout)
