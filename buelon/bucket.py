@@ -44,8 +44,8 @@ save_path = '.bucket'
 
 database: dict[str, bytes] = {}
 database_keys_in_order = []
-MAX_DATABASE_SIZE: int = min(1024 * 1024 * 1024 * 1, int(psutil.virtual_memory().total / 8))
-
+# MAX_DATABASE_SIZE: int = min(1024 * 1024 * 1024 * 1, int(psutil.virtual_memory().total / 8))
+MAX_DATABASE_SIZE: int = 50 * 1024 * 1024
 
 if not os.path.exists(save_path):
     os.makedirs(save_path)

@@ -102,7 +102,7 @@ async def work():
 
     last_loop_had_steps = True
 
-    async with asyncio_pool.AioPool(size=50) as pool:
+    async with asyncio_pool.AioPool(size=15) as pool:
         while True:
             steps = hub_client.get_steps(scopes)
 
