@@ -11,6 +11,7 @@ Constants:
 """
 import json
 import sys
+import traceback
 from typing import Dict, Any
 
 from buelon.helpers import pipe_util
@@ -171,6 +172,7 @@ def run(code: str) -> Dict:
         return variables
 
     except Exception as e:
+        traceback.print_exc()
         print(f'Error {type(e).__name__} | {e}')
         sys.exit(1)
 
