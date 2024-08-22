@@ -62,6 +62,14 @@ to access this tool using `bue upload`)
 - SQLite3
 - PostgreSQL
 
+## Known Defects
+
+Currently the error handling for this scripting language if very poor.
+When the script is run it is build into python, 
+so it then uses its error handling, which is very good.
+Because of the language's current simplicity, this is not marked as a high priority.
+
+
 <!--
 ## Configuration
 * Setup at least 4 servers on a private network (they can be small, you can technically run all these on one server like `demo.py` does but that's not recommended)
