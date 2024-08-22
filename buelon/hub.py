@@ -34,6 +34,7 @@ class Method(enum.Enum):
     STEP_COUNT = 'step-count'
     RESET_ERRORS = 'reset-errors'
     DELETE_STEPS = 'delete-steps'
+    FETCH_ERRORS = 'fetch-errors'
 
 
 PIPELINE_HOST = os.environ.get('PIPELINE_HOST', '0.0.0.0')
@@ -396,6 +397,32 @@ def _error(step_id: str, msg: str, trace: str):
         conn.commit()
 
 
+def _fetch_errors(count: int) -> dict:
+    if not isinstance(count, int):
+        raise ValueError('count must be an integer')
+
+    with sqlite3.connect(db_path) as conn:
+        cur = conn.cursor()
+        sql = f'SELECT id, msg, trace FROM steps WHERE status = \'{buelon.core.step.StepStatus.error.value}\' LIMIT ?'
+        cur.execute(sql, (count,))
+
+        headers = [row[0] for row in cur.description]
+        table = [dict(zip(headers, row)) for row in cur.fetchall()]
+        conn.commit()
+
+        error_size_query = f'SELECT COUNT(*) FROM steps WHERE status = \'{buelon.core.step.StepStatus.error.value}\''
+        cur.execute(error_size_query)
+        error_size = cur.fetchone()[0]
+        if isinstance(error_size, (tuple, list)):
+            error_size = error_size[0]
+
+        return {
+            'total': error_size,
+            'count': len(table),
+            'table': table
+        }
+
+
 def get_steps(scopes: list, limit=50, chunk_size=100):
     """
     Get the steps in the scope, ordered by priority, velocity, then scope position.
@@ -622,6 +649,12 @@ class HubServer:
         #     _reset_errors(payload)
         # elif method == Method.DELETE_STEPS:
         #     _delete_steps()
+        elif method == Method.FETCH_ERRORS:
+            try:
+                count = int(payload.decode())
+            except ValueError:
+                count = 25
+            return buelon.helpers.json_parser.dumps(_fetch_errors(count))
         return b'ok'
 
 
@@ -711,6 +744,18 @@ class HubClient:
 
     def delete_steps(self):
         return self.send_request(Method.DELETE_STEPS, b'nothing')
+
+    def fetch_errors(self, count: int) -> dict:
+        """
+
+        Args:
+            count (int): Number of errors to fetch
+
+        Returns:
+            dict: A dictionary containing `table`, `count`, and `total`.
+                `table` is a list of error dictionaries, each containing `id`, `msg`, and `trace`.
+        """
+        return buelon.helpers.json_parser.loads(self.send_request(Method.FETCH_ERRORS, f'{count}'.encode()))
 
     def __getattr__(self, item: str):
         if item.startswith('sync_'):

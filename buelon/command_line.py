@@ -106,6 +106,26 @@ def display_status(args):
                 break
 
 
+def fetch_errors(args):
+    if args.binding:
+        os.environ['PIPE_WORKER_HOST'], os.environ['PIPE_WORKER_PORT'] = args.binding.split(':')
+
+    try:
+        count = int(args.count)
+    except ValueError:
+        count = 25
+
+    client = bue.hub.HubClient()
+    return_value = client.fetch_errors(count)
+    count, total, table = return_value['count'], return_value['total'], return_value['table']
+    print(f'Fetched {count} errors of {total} total errors.\n')
+    for row in table:
+        _id, msg, _trace = row['id'], row['msg'], row['trace']
+        print(f'ID: \n  {_id}')
+        print(f'Message: \n  {msg}')
+        print(f'Trace: \n  {_trace}\n\n--**--\n')
+
+
 def cli():
     parser = argparse.ArgumentParser(description='Buelon command-line interface')
     parser.add_argument('-v', '--version', action='version', version='Buelon 1.0.0')
@@ -161,6 +181,11 @@ def cli():
     delete_parser.add_argument('-b', '--binding', required=worker_binding_required, help='Main binding for hub (host:port)')
     # delete_parser.add_argument('-s', '--step_id', help='Step ID to delete')
 
+    # Fetch Errors
+    error_fetch_parser = subparsers.add_parser('errors', help='Delete steps')
+    error_fetch_parser.add_argument('-b', '--binding', required=worker_binding_required,  help='Main binding for hub (host:port)')
+    error_fetch_parser.add_argument('-c', '--count', default=25, help='Subscribe to status updates')
+
     # Demo command
     demo_parser = subparsers.add_parser('demo', help='Run the demo')
     # demo_parser.set_defaults(func=run_demo)
@@ -197,6 +222,8 @@ def cli():
             os.environ['PIPE_WORKER_HOST'], os.environ['PIPE_WORKER_PORT'] = args.binding.split(':')
         client = bue.hub.HubClient()
         client.sync_delete_steps()
+    elif args.command == 'errors':
+        fetch_errors(args)
     else:
         # Handle the case where a file path is given without a command
         if args.binding and remaining_args:
