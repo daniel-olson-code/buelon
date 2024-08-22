@@ -176,7 +176,7 @@ def cli():
     # Reset Errors
     reset_parser = subparsers.add_parser('reset', help='Reset errors')
     reset_parser.add_argument('-b', '--binding', required=worker_binding_required, help='Main binding for hub (host:port)')
-    reset_parser.add_argument('-w', '--include_working', help='Subscribe to status updates')
+    reset_parser.add_argument('-w', '--include_working', default='false', choices=['true', 'false'], help='Whether to reset status \'working\'')
 
     # Delete steps
     delete_parser = subparsers.add_parser('delete', help='Delete steps')
@@ -184,9 +184,9 @@ def cli():
     # delete_parser.add_argument('-s', '--step_id', help='Step ID to delete')
 
     # Fetch Errors
-    error_fetch_parser = subparsers.add_parser('errors', help='Delete steps')
+    error_fetch_parser = subparsers.add_parser('errors', help='View Error Logs')
     error_fetch_parser.add_argument('-b', '--binding', required=worker_binding_required,  help='Main binding for hub (host:port)')
-    error_fetch_parser.add_argument('-c', '--count', default='10', help='Subscribe to status updates')
+    error_fetch_parser.add_argument('-c', '--count', default='10', help='Amount of error logs to view (must be int)')
 
     # Demo command
     demo_parser = subparsers.add_parser('demo', help='Run the demo')
@@ -216,7 +216,7 @@ def cli():
             os.environ['PIPE_WORKER_HOST'], os.environ['PIPE_WORKER_PORT'] = args.binding.split(':')
         # bue.hub.reset_errors(args.include_working is not None)
         client = bue.hub.HubClient()
-        client.sync_reset_errors(args.include_working is not None)
+        client.reset_errors(args.include_working == 'true')
     elif args.command == 'status':
         display_status(args)
     elif args.command == 'delete':
