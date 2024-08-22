@@ -416,6 +416,9 @@ def _fetch_errors(count: int) -> dict:
         if isinstance(error_size, (tuple, list)):
             error_size = error_size[0]
 
+        for row in table:
+            row['step'] = get_step(row['id']).to_json()
+
         return {
             'total': error_size,
             'count': len(table),

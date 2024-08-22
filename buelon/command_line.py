@@ -1,5 +1,6 @@
 import argparse
 import os
+import json
 import sys
 import time
 
@@ -120,8 +121,9 @@ def fetch_errors(args):
     count, total, table = return_value['count'], return_value['total'], return_value['table']
     print(f'Fetched {count} errors of {total} total errors.\n')
     for row in table:
-        _id, msg, _trace = row['id'], row['msg'], row['trace']
+        _id, step, msg, _trace = row['id'], row['step'], row['msg'], row['trace']
         print(f'ID: \n  {_id}')
+        print(f'Step: \n  {json.dumps(step, indent=4)}')
         print(f'Message: \n  {msg}')
         print(f'Trace: \n  {_trace}\n\n--**--\n')
 
@@ -184,7 +186,7 @@ def cli():
     # Fetch Errors
     error_fetch_parser = subparsers.add_parser('errors', help='Delete steps')
     error_fetch_parser.add_argument('-b', '--binding', required=worker_binding_required,  help='Main binding for hub (host:port)')
-    error_fetch_parser.add_argument('-c', '--count', default=25, help='Subscribe to status updates')
+    error_fetch_parser.add_argument('-c', '--count', default='10', help='Subscribe to status updates')
 
     # Demo command
     demo_parser = subparsers.add_parser('demo', help='Run the demo')
