@@ -323,7 +323,7 @@ def _done(step_id: str):
             cur.execute(sql_update_children, (time.time(), *_step.children))
             conn.commit()
 
-        check_to_delete_bucket_files(step_id)
+        # check_to_delete_bucket_files(step_id)
 
 
 def _pending(step_id: str):
@@ -360,8 +360,8 @@ def _cancel(
                 already.add(child)
                 _cancel(child, already)
 
-    if first_iteration:
-        check_to_delete_bucket_files(step_id)
+    # if first_iteration:
+    #     check_to_delete_bucket_files(step_id)
 
 
 def _reset(step_id: str, already=None):
