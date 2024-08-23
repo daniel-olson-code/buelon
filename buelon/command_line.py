@@ -116,8 +116,16 @@ def fetch_errors(args):
     except ValueError:
         count = 25
 
+    exclude = args.exclude
+    if not isinstance(exclude, str):
+        exclude = None
+    elif ',' in exclude:
+        exclude = exclude.split(',')
+
+    print('exclude', exclude)
+
     client = bue.hub.HubClient()
-    return_value = client.fetch_errors(count)
+    return_value = client.fetch_errors(count, exclude)
     count, total, table = return_value['count'], return_value['total'], return_value['table']
     print(f'Fetched {count} errors of {total} total errors.\n')
     for row in table:
@@ -187,6 +195,7 @@ def cli():
     error_fetch_parser = subparsers.add_parser('errors', help='View Error Logs')
     error_fetch_parser.add_argument('-b', '--binding', required=worker_binding_required,  help='Main binding for hub (host:port)')
     error_fetch_parser.add_argument('-c', '--count', default='10', help='Amount of error logs to view (must be int)')
+    error_fetch_parser.add_argument('-e', '--exclude', default=None, help='Exclude a specific strings from error message. Commas exclude multiple messages')
 
     # Demo command
     demo_parser = subparsers.add_parser('demo', help='Run the demo')

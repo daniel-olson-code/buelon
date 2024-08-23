@@ -62,14 +62,6 @@ to access this tool using `bue upload`)
 - SQLite3
 - PostgreSQL
 
-## Known Defects
-
-Currently the error handling for this scripting language if very poor.
-When the script is run it is build into python, 
-so it then uses its error handling, which is very good.
-Because of the language's current simplicity, this is not marked as a high priority.
-
-
 <!--
 ## Configuration
 * Setup at least 4 servers on a private network (they can be small, you can technically run all these on one server like `demo.py` does but that's not recommended)
@@ -301,11 +293,23 @@ The asynchronous nature of Pipeline makes it particularly suited for APIs like A
 
 -->
 
+
+## Known Defects
+
+Currently the error handling for this scripting language if very poor.
+When the script is run it is build into python, 
+so it then uses its error handling, which is very good.
+Because of the language's current simplicity, this is not marked as a high priority.
+
+
+
 ## Plans
 
 If this projects sees some love, or I just find more free time, I'd like to support more languages. Even compiled languages such as `rust`, `go` and `c++`. Allowing teams that write different languages to work on the same program.
 
-Better bue script errors
+Better bue script errors handling.
+
+Possibly build in `rust` once more mature for better performance.
 
 <!---
 your comment goes here

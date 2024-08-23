@@ -459,10 +459,10 @@ def main() -> None:
     server.loop()
 
 
-# try:
-#     from cython.c_bucket import *
-# except (ImportError, ModuleNotFoundError):
-#     pass
+try:
+    from cython.c_bucket import *
+except (ImportError, ModuleNotFoundError):
+    pass
 
 
 if __name__ == '__main__':

@@ -11,6 +11,7 @@ import os
 import sys
 
 import psutil
+import redis
 
 try:
     import dotenv
@@ -20,6 +21,16 @@ except ModuleNotFoundError:
 
 
 # Environment variables for client and server configuration
+REDIS_HOST: str = os.environ.get('REDIS_HOST', 'null')
+REDIS_PORT: int = int(os.environ.get('REDIS_PORT', 6379))
+REDIS_DB: int = int(os.environ.get('REDIS_DB', 0))
+REDIS_EXPIRATION: int | None = os.environ.get('REDIS_EXPIRATION', 60*60*24*7)
+try:
+    REDIS_EXPIRATION = int(REDIS_EXPIRATION)
+except ValueError:
+    REDIS_EXPIRATION = None
+USING_REDIS: bool = False  # REDIS_HOST != 'null'
+
 BUCKET_CLIENT_HOST: str = os.environ.get('BUCKET_CLIENT_HOST', 'localhost')
 BUCKET_CLIENT_PORT: int = int(os.environ.get('BUCKET_CLIENT_PORT', 61535))
 
@@ -33,8 +44,8 @@ save_path = '.bucket'
 
 database: dict[str, bytes] = {}
 database_keys_in_order = []
-MAX_DATABASE_SIZE: int = min(1024 * 1024 * 1024 * 1, int(psutil.virtual_memory().total / 8))
-
+# MAX_DATABASE_SIZE: int = min(1024 * 1024 * 1024 * 1, int(psutil.virtual_memory().total / 8))
+MAX_DATABASE_SIZE: int = 50 * 1024 * 1024
 
 if not os.path.exists(save_path):
     os.makedirs(save_path)
@@ -93,6 +104,21 @@ def retry_connection(func: callable):
     return wrapper
 
 
+def redis_secure_connection(func: callable):
+    def wrapper(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except redis.exceptions.ConnectionError:
+            self: Client = args[0]
+            try:
+                del self.redis_client
+            except Exception as e:
+                print(f'Change `Exception` to {type(e)}. e: {e}')
+            self.redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
+            return func(*args, **kwargs)
+    return wrapper
+
+
 class Client:
     """A client for interacting with the bucket server."""
     PORT: int
@@ -102,8 +128,17 @@ class Client:
         """Initialize the client with host and port from environment variables."""
         self.PORT = BUCKET_CLIENT_PORT
         self.HOST = BUCKET_CLIENT_HOST
+        if USING_REDIS:
+            self.redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
+            self.set = self.redis_set
+            self.get = self.redis_get
+            self.delete = self.redis_delete
 
-    @retry_connection
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if USING_REDIS:
+            self.redis_client.connection.disconnect()
+
+    # @retry_connection
     def set(self, key: str, data: bytes, timeout: float | None = 60 * 5.) -> None:
         """
         Set data for a given key on the server.
@@ -113,6 +148,7 @@ class Client:
             data (bytes): The data to store.
             timeout (float, optional): The timeout for the socket connection in seconds. Defaults to 60 * 5.
         """
+        # raise RuntimeError('Not using redis.')
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             s.settimeout(timeout)
@@ -126,15 +162,6 @@ class Client:
                 send(s, data)
                 receive(s)
 
-            # send(s, key.encode('utf-8'))
-            # receive(s)
-            #
-            # send(s, b'set')
-            # receive(s)
-            #
-            # send(s, data)
-            # receive(s)
-
     @retry_connection
     def get(self, key: str, timeout: float | None = 60 * 5.) -> bytes | None:
         """
@@ -147,17 +174,13 @@ class Client:
         Returns:
             bytes or None: The retrieved data, or None if the key doesn't exist.
         """
+        # raise RuntimeError('Not using redis.')
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             s.settimeout(timeout)
             s.connect((self.HOST, self.PORT))
 
             send(s, BUCKET_SPLIT_TOKEN.join([key.encode('utf-8'), b'get', f'{timeout}'.encode(), b'__null__']))
-
-            # send(s, key.encode('utf-8'))
-            # receive(s)
-            #
-            # send(s, b'get')
 
             data: bytes = receive(s)
             if data[:len(b'__big__')] == b'__big__':
@@ -178,6 +201,7 @@ class Client:
             key (str): The key to delete data for.
             timeout (float, optional): The timeout for the socket connection in seconds. Defaults to 60 * 5.
         """
+        # raise RuntimeError('Not using redis.')
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             s.settimeout(timeout)
@@ -186,11 +210,71 @@ class Client:
             send(s, BUCKET_SPLIT_TOKEN.join([key.encode('utf-8'), b'delete', f'{timeout}'.encode(), b'__null__']))
             receive(s)
 
-            # send(s, key.encode('utf-8'))
-            # receive(s)
-            #
-            # send(s, b'delete')
-            # receive(s)
+    @redis_secure_connection
+    def redis_bulk_set(self, keys_values: dict, save: bool = False):
+        """
+        Set multiple key-value pairs in Redis.
+
+        Args:
+            keys_values (dict): A dictionary of key-value pairs to set.
+            save (bool, optional): Whether to save the data to disk. Defaults to False.
+        """
+        self.redis_client.mset(keys_values)
+
+        if save:
+            self.redis_client.save()
+
+        for k in keys_values:
+            self.redis_client.expire(k, 60*60*24*7)
+
+    @redis_secure_connection
+    def redis_set(self, key: str, data: bytes, save: bool = False, expiration: int | None = None) -> None:
+        """
+        Set data for a given key in Redis.
+
+        Args:
+            key (str): The key to associate with the data.
+            data (bytes): The data to store.
+            save (bool, optional): Whether to save the data to disk. Defaults to False.
+            expiration (int, optional): The expiration time for the key in seconds. Negative value will ensure no expiration. Defaults to either environment variable `REDIS_EXPIRATION` or 60 * 60 * 24 * 7 (1 week).
+        """
+        if not isinstance(expiration, int):
+            expiration = REDIS_EXPIRATION
+        else:
+            if expiration < 0:
+                expiration = None
+
+        self.redis_client.set(key, data, ex=expiration)
+
+        if save:
+            self.redis_client.save()
+
+    @redis_secure_connection
+    def redis_get(self, key: str) -> bytes | None:
+        """
+        Retrieve data for a given key from Redis.
+
+        Args:
+            key (str): The key to retrieve data for.
+
+        Returns:
+            bytes or None: The retrieved data, or None if the key doesn't exist.
+        """
+        data = self.redis_client.get(key)
+        if data is None:
+            return None
+        return data
+
+    @redis_secure_connection
+    def redis_delete(self, key: str) -> None:
+        """
+        Delete data for a given key from Redis.
+
+        Args:
+            key (str): The key to delete data for.
+        """
+        # self.redis_client.delete(key)
+        self.redis_client.delete(key)
 
 
 def check_file_directory(path: str) -> None:
@@ -235,6 +319,7 @@ def server_set(key: str, data: bytes) -> None:
     """
     global database, save_path
     database[key] = data
+    # # This is set later
     # check_file_directory(os.path.join(save_path, key))
     # with open(os.path.join(save_path, key), 'wb') as f:
     #     f.write(data)
@@ -335,7 +420,6 @@ def handle_client(conn: socket.socket) -> None:
             del database[key]
         except KeyError:
             pass
-
 
 
 class Server:

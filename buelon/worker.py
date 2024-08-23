@@ -129,10 +129,10 @@ async def _main():
         await work()
 
 
-# try:
-#     from cython.c_worker import *
-# except (ImportError, ModuleNotFoundError):
-#     pass
+try:
+    from cython.c_worker import *
+except (ImportError, ModuleNotFoundError):
+    pass
 
 
 if __name__ == '__main__':

@@ -7,6 +7,7 @@ import socket
 import threading
 import queue
 import time
+import string
 from typing import Any
 
 import unsync
@@ -397,20 +398,45 @@ def _error(step_id: str, msg: str, trace: str):
         conn.commit()
 
 
-def _fetch_errors(count: int) -> dict:
+def _fetch_errors(count: int, exclude: list[str] | str | None = None) -> dict:
     if not isinstance(count, int):
         raise ValueError('count must be an integer')
 
+    if not isinstance(exclude, (type(None), str, list)):
+        raise ValueError('exclude must be a string or a list')
+
+    if isinstance(exclude, list):
+        if not all(isinstance(x, str) for x in exclude):
+            raise ValueError('exclude must be a list of strings')
+
+    allow_chars = ' abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789,!@#$^&*()_+=-[]{};:"|,.<>/?~`|'
+    def clean_query_string(query_string: str) -> str:
+        return ''.join(c for c in query_string if c in allow_chars)
+
+    exclude_query = ''
+    if isinstance(exclude, str):
+        exclude_query = f' AND not (lower(msg) like \'%{clean_query_string(exclude)}%\' OR lower(trace) like \'%{clean_query_string(exclude)}%\')'
+    elif isinstance(exclude, list):
+        exclude_query = (' AND not ('
+                         + ' OR '.join(
+                                f'lower(msg) like \'%{clean_query_string(ex)}%\' OR lower(trace) like \'%{clean_query_string(ex)}%\''
+                                for ex in exclude)
+                         + ')')
+
+
     with sqlite3.connect(db_path) as conn:
         cur = conn.cursor()
-        sql = f'SELECT id, msg, trace FROM steps WHERE status = \'{buelon.core.step.StepStatus.error.value}\' LIMIT ?'
+        sql = (f'SELECT id, msg, trace FROM steps WHERE status = \'{buelon.core.step.StepStatus.error.value}\''
+               f' {exclude_query}'
+               f' LIMIT ?')
         cur.execute(sql, (count,))
 
         headers = [row[0] for row in cur.description]
         table = [dict(zip(headers, row)) for row in cur.fetchall()]
         conn.commit()
 
-        error_size_query = f'SELECT COUNT(*) FROM steps WHERE status = \'{buelon.core.step.StepStatus.error.value}\''
+        error_size_query = (f'SELECT COUNT(*) FROM steps WHERE status = \'{buelon.core.step.StepStatus.error.value}\''
+                            f' {exclude_query}')
         cur.execute(error_size_query)
         error_size = cur.fetchone()[0]
         if isinstance(error_size, (tuple, list)):
@@ -654,10 +680,20 @@ class HubServer:
         #     _delete_steps()
         elif method == Method.FETCH_ERRORS:
             try:
-                count = int(payload.decode())
+                config = buelon.helpers.json_parser.loads(payload)
+                count = int(config.get('count', 5))
+                exclude = config.get('exclude', None)
+
+                if not isinstance(exclude, (type(None), str, list)):
+                    raise ValueError('exclude must be a string or a list')
+
+                if isinstance(exclude, list):
+                    if not all(isinstance(x, str) for x in exclude):
+                        raise ValueError('exclude must be a list of strings')
             except ValueError:
-                count = 25
-            return buelon.helpers.json_parser.dumps(_fetch_errors(count))
+                count = 5
+                exclude = None
+            return buelon.helpers.json_parser.dumps(_fetch_errors(count, exclude))
         return b'ok'
 
 
@@ -748,17 +784,26 @@ class HubClient:
     def delete_steps(self):
         return self.send_request(Method.DELETE_STEPS, b'nothing')
 
-    def fetch_errors(self, count: int) -> dict:
+    def fetch_errors(self, count: int, exclude: list[str] | str | None = None) -> dict:
         """
 
         Args:
             count (int): Number of errors to fetch
+            exclude (lit[str], str, optional): Exclude errors with this string in the message. Defaults to None.
 
         Returns:
             dict: A dictionary containing `table`, `count`, and `total`.
                 `table` is a list of error dictionaries, each containing `id`, `msg`, and `trace`.
         """
-        return buelon.helpers.json_parser.loads(self.send_request(Method.FETCH_ERRORS, f'{count}'.encode()))
+        return buelon.helpers.json_parser.loads(
+            self.send_request(
+                Method.FETCH_ERRORS,
+                buelon.helpers.json_parser.dumps({
+                    'count': count,
+                    'exclude': exclude
+                })#f'{count}'.encode()
+            )
+        )
 
     def __getattr__(self, item: str):
         if item.startswith('sync_'):
@@ -779,10 +824,10 @@ def main():
     server.start()
 
 
-# try:
-#     from buelon.cython.c_hub import *
-# except (ImportError, ModuleNotFoundError):
-#     pass
+try:
+    from buelon.cython.c_hub import *
+except (ImportError, ModuleNotFoundError):
+    pass
 
 
 if __name__ == "__main__":
