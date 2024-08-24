@@ -435,7 +435,9 @@ def _fetch_errors(count: int, exclude: list[str] | str | None = None) -> dict:
         table = [dict(zip(headers, row)) for row in cur.fetchall()]
         conn.commit()
 
-        error_size_query = (f'SELECT COUNT(*) FROM steps WHERE status = \'{buelon.core.step.StepStatus.error.value}\''
+        error_size_query = (f'SELECT COUNT(*)'
+                            f' FROM steps'
+                            f' WHERE status = \'{buelon.core.step.StepStatus.error.value}\''
                             f' {exclude_query}')
         cur.execute(error_size_query)
         error_size = cur.fetchone()[0]
