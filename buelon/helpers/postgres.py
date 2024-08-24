@@ -152,6 +152,15 @@ class Postgres:
         self.password = password or self.password
         self.database = database or self.database
 
+    def connect(self):
+        return psycopg2.connect(
+                host=self.host,
+                port=self.port,
+                user=self.user,
+                password=self.password,
+                database=self.database
+        )
+
     def query(self, query: str, *args):
         """
         Executes a SQL query.
