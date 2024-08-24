@@ -261,8 +261,8 @@ class Postgres:
                 return value
             raise ValueError(f'cannot place {value} in type "{type(value)}"')
         # check for multiple id_columns
-        ids = tuple(id_column) if isinstance(id_column, (set, tuple, list)) else (id_column, )
-        id_column = '", "'.join(id_column) if isinstance(id_column, (set, tuple, list)) else id_column
+        ids = tuple(set(id_column)) if isinstance(id_column, (set, tuple, list)) else (id_column, )
+        id_column = '", "'.join(set(id_column)) if isinstance(id_column, (set, tuple, list)) else id_column
 
         # get all headers
         keys = {}
@@ -355,7 +355,7 @@ class Postgres:
                 unique = ''
                 if partition:
                     if id_column:
-                        if id_column == partition:
+                        if id_column == partition or partition in [s.strip() for s in id_column.replace('"', '').split(',')]:
                             unique = f', PRIMARY KEY ("{id_column}")'
                         else:
                             unique = f', PRIMARY KEY ("{id_column}", "{partition}")'

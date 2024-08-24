@@ -9,9 +9,12 @@ import socket
 import threading
 import os
 import sys
+import time
 
 import psutil
 import redis
+
+import buelon.helpers.postgres
 
 try:
     import dotenv
@@ -124,10 +127,19 @@ class Client:
     PORT: int
     HOST: str
 
+    db: buelon.helpers.postgres.Postgres
+
     def __init__(self):
         """Initialize the client with host and port from environment variables."""
         self.PORT = BUCKET_CLIENT_PORT
         self.HOST = BUCKET_CLIENT_HOST
+
+        self.db = buelon.helpers.postgres.get_postgres_from_env()
+        with self.db.connect() as conn:
+            cur = conn.cursor()
+            cur.execute('CREATE TABLE IF NOT EXISTS bucket (key TEXT PRIMARY KEY, data BYTEA, epoch REAL);')
+            conn.commit()
+
         if USING_REDIS:
             self.redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
             self.set = self.redis_set
@@ -148,6 +160,12 @@ class Client:
             data (bytes): The data to store.
             timeout (float, optional): The timeout for the socket connection in seconds. Defaults to 60 * 5.
         """
+        with self.db.connect() as conn:
+            cur = conn.cursor()
+            cur.execute('INSERT INTO bucket (key, data, epoch) VALUES (%s, %s, %s) '
+                         'ON CONFLICT (key) DO UPDATE SET (data, epoch) = (EXCLUDED.data, EXCLUDED.epoch)', (key, data, time.time()))
+            conn.commit()
+        return
         # raise RuntimeError('Not using redis.')
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
@@ -174,6 +192,18 @@ class Client:
         Returns:
             bytes or None: The retrieved data, or None if the key doesn't exist.
         """
+        # try:
+        with self.db.connect() as conn:
+            cur = conn.cursor()
+            cur.execute('SELECT data FROM bucket WHERE key = %s', (key,))
+            data = cur.fetchone()
+            if not data:
+                return None
+            return bytes(data[0])
+            data = cur.fetchone()[0]['data']
+            return data
+        # except: pass
+        return
         # raise RuntimeError('Not using redis.')
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
@@ -201,6 +231,11 @@ class Client:
             key (str): The key to delete data for.
             timeout (float, optional): The timeout for the socket connection in seconds. Defaults to 60 * 5.
         """
+        with self.db.connect() as conn:
+            cur = conn.cursor()
+            cur.execute('DELETE FROM bucket WHERE key = %s', (key, ))
+            conn.commit()
+        return
         # raise RuntimeError('Not using redis.')
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
