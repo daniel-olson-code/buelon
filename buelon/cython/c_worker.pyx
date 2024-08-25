@@ -23,6 +23,10 @@ except ModuleNotFoundError:
 WORKER_HOST = os.environ.get('PIPE_WORKER_HOST', 'localhost')
 WORKER_PORT = int(os.environ.get('PIPE_WORKER_PORT', 65432))
 PIPE_WORKER_SUBPROCESS_JOBS = os.environ.get('PIPE_WORKER_SUBPROCESS_JOBS', 'true')
+try:
+    N_WORKER_PROCESSES: int = int(os.environ['N_WORKER_PROCESSES'])
+except (KeyError, ValueError):
+    N_WORKER_PROCESSES = 15
 
 bucket_client = buelon.bucket.Client()
 hub_client: buelon.hub.HubClient = buelon.hub.HubClient(WORKER_HOST, WORKER_PORT)
@@ -102,7 +106,7 @@ async def work():
 
     last_loop_had_steps = True
 
-    async with asyncio_pool.AioPool(size=15) as pool:
+    async with asyncio_pool.AioPool(size=N_WORKER_PROCESSES) as pool:
         while True:
             steps = hub_client.get_steps(scopes)
 
