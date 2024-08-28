@@ -13,6 +13,7 @@ import time
 
 import psutil
 import redis
+import psycopg2
 
 import buelon.helpers.postgres
 
@@ -97,14 +98,17 @@ def retry_connection(func: callable):
     Returns:
         callable: The decorated function.
     """
-    def wrapper(*args, **kwargs):
+    def wrapper(self, *args, **kwargs):
         tries = 4
         kwargs['timeout'] = kwargs.get('timeout', 60 * 5.)
         for i in range(tries):
             try:
-                return func(*args, **kwargs)
+                return func(self, *args, **kwargs)
             except (TimeoutError, ConnectionResetError):
                 kwargs['timeout'] *= 2
+            except psycopg2.OperationalError:
+                time.sleep((i + 1) * 5.)
+                self.db = buelon.helpers.postgres.get_postgres_from_env()
         raise
     return wrapper
 
@@ -153,7 +157,7 @@ class Client:
         if USING_REDIS:
             self.redis_client.connection.disconnect()
 
-    # @retry_connection
+    @retry_connection
     def set(self, key: str, data: bytes, timeout: float | None = 60 * 5.) -> None:
         """
         Set data for a given key on the server.
