@@ -367,7 +367,8 @@ def _cancel(
 def _reset(step_id: str, already=None):
     _step = get_step(step_id)
     already = set() if not already else already
-    status = buelon.core.step.StepStatus.pending.value if _step.parents else buelon.core.step.StepStatus.queued.value
+    # status = buelon.core.step.StepStatus.pending.value if _step.parents else buelon.core.step.StepStatus.queued.value
+    status = buelon.core.step.StepStatus.queued.value if _step.parents else buelon.core.step.StepStatus.pending.value
     sql_update_step = f'UPDATE steps SET status = \'{status}\', epoch = ? WHERE id = ?'
 
     with sqlite3.connect(db_path) as conn:
