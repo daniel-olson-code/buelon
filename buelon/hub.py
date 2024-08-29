@@ -485,15 +485,17 @@ def get_steps(scopes: list, limit=50, chunk_size=100):
         offset = 0
         steps = []
 
+        expiration_time = time.time() - (60 * 60 * .2)  # (60 * 60 * 2)
         while len(steps) < limit:
             sql = (f'SELECT id, priority, scope, velocity, tag '
                    f'FROM steps '
                    f'WHERE scope IN ({",".join("?" * len(scopes))}) '
                    f'AND ('
                    f'   status = \'{buelon.core.step.StepStatus.pending.value}\' '
-                   f'   or (epoch < {time.time() - (60 * 60 * 2)} and status = \'{buelon.core.step.StepStatus.working.value}\')'
+                   f'   or (epoch < {expiration_time} and status = \'{buelon.core.step.StepStatus.working.value}\')'
                    f')'
-                   f'ORDER BY CASE scope {case_statement} END, priority desc, epoch '  # , COALESCE(velocity, 1.0/0.0)
+                   f'ORDER BY  -- CASE scope {case_statement} END, '
+                   f'   priority desc, epoch '  # , COALESCE(velocity, 1.0/0.0)
                    f'LIMIT ? OFFSET ?')
             cur.execute(sql, (*scopes, *scopes, chunk_size, offset))
             rows = cur.fetchall()
