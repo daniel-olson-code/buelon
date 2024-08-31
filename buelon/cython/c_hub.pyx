@@ -494,10 +494,12 @@ def get_steps(scopes: list, limit=50, chunk_size=100):
                    f'   status = \'{buelon.core.step.StepStatus.pending.value}\' '
                    f'   or (epoch < {expiration_time} and status = \'{buelon.core.step.StepStatus.working.value}\')'
                    f')'
-                   f'ORDER BY  -- CASE scope {case_statement} END, '
+                   f'ORDER BY  '#' CASE scope {case_statement} END, '
                    f'   priority desc, epoch '  # , COALESCE(velocity, 1.0/0.0)
                    f'LIMIT ? OFFSET ?')
-            cur.execute(sql, (*scopes, *scopes, chunk_size, offset))
+
+            cur.execute(sql, (*scopes, #*scopes,
+                              chunk_size, offset))
             rows = cur.fetchall()
             if not rows:
                 break  # Exit loop if no more rows are fetched
