@@ -455,7 +455,7 @@ Because of the language's current simplicity, this is not marked as a high prior
 
 
 
-## Plans
+## Future Plans
 
 If this projects sees some love, or I just find more free time, I'd like to support more languages. Even compiled languages such as `rust`, `go` and `c++`. Allowing teams that write different languages to work on the same program.
 
