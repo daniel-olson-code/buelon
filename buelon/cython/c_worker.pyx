@@ -16,7 +16,7 @@ import time
 
 try:
     import dotenv
-    dotenv.load_dotenv()
+    dotenv.load_dotenv('.env')
 except ModuleNotFoundError:
     pass
 
@@ -73,6 +73,7 @@ def job(step_id: str | None = None) -> None:
         buelon.hub.set_data(_step.id, r.data)
 
         with new_client_if_subprocess() as client:
+            client: buelon.hub.HubClient
             if r.status == buelon.core.step.StepStatus.success:
                 client.done(_step.id)
             elif r.status == buelon.core.step.StepStatus.pending:

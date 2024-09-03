@@ -13,7 +13,7 @@ from typing import Any
 import unsync
 try:
     import dotenv
-    dotenv.load_dotenv()
+    dotenv.load_dotenv('.env')
 except ModuleNotFoundError:
     pass
 
@@ -613,7 +613,10 @@ class HubServer:
 
     def _execute_transaction(self):
         while True:
-            method, payload = self.execution_queue.get()
+            try:
+                method, payload = self.execution_queue.get(timeout=30)
+            except TimeoutError:
+                continue
             try:
                 print('executing', method)
                 self._execute_request(method, payload)

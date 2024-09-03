@@ -12,7 +12,7 @@ import psycopg2.errors
 
 try:
     import dotenv
-    dotenv.load_dotenv()
+    dotenv.load_dotenv('.env')
 except ModuleNotFoundError:
     pass
 

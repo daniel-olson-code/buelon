@@ -5,7 +5,7 @@ import sys
 import time
 
 import dotenv
-dotenv.load_dotenv()
+dotenv.load_dotenv('.env')
 
 # Import necessary modules from buelon
 import buelon as bue
@@ -197,6 +197,10 @@ def cli():
     error_fetch_parser.add_argument('-c', '--count', default='10', help='Amount of error logs to view (must be int)')
     error_fetch_parser.add_argument('-e', '--exclude', default=None, help='Exclude a specific strings from error message. Commas exclude multiple messages')
 
+    # Fetch Errors
+    run_step_parser = subparsers.add_parser('run-step', help='View Error Logs')
+    run_step_parser.add_argument('-s', '--step', required=True, help='The step id')
+
     # Demo command
     demo_parser = subparsers.add_parser('demo', help='Run the demo')
     # demo_parser.set_defaults(func=run_demo)
@@ -235,12 +239,23 @@ def cli():
         client.sync_delete_steps()
     elif args.command == 'errors':
         fetch_errors(args)
+    elif args.command == 'run-step':
+        if args.binding:
+            os.environ['PIPE_WORKER_HOST'], os.environ['PIPE_WORKER_PORT'] = args.binding.split(':')
+        if not os.environ.get('PIPE_WORKER_HOST') or not os.environ.get('PIPE_WORKER_PORT'):
+            raise ValueError('Binding is required when running a step. Set env vars `PIPE_WORKER_HOST` and `PIPE_WORKER_PORT`')
+        print('PIPE_WORKER_HOST', os.environ['PIPE_WORKER_HOST'])
+        print('PIPE_WORKER_PORT', os.environ['PIPE_WORKER_PORT'])
+        print('USING_POSTGRES',  os.environ.get('USING_POSTGRES_BUCKET'))
+        step_id = args.step
+        print('args', args)
+        bue.worker.job(step_id)
     else:
         # Handle the case where a file path is given without a command
         if args.binding and remaining_args:
             file_path = remaining_args[0]
             file_path.close()
-            upload_pipe_code(file_path, args.binding)
+            # upload_pipe_code(file_path, args.binding)
         elif remaining_args:
             parser.error('Binding is required when uploading pipe code from file. Use -b or --binding.')
         else:

@@ -19,13 +19,14 @@ import buelon.helpers.postgres
 
 try:
     import dotenv
-    dotenv.load_dotenv()
+    dotenv.load_dotenv('.env')
 except ModuleNotFoundError:
     pass
 
 
 # Environment variables for client and server configuration
 USING_POSTGRES: bool = os.environ.get('USING_POSTGRES_BUCKET', 'false') == 'true'
+POSTGRES_TABLE: str = os.environ.get('POSTGRES_TABLE', 'buelon_bucket')
 
 REDIS_HOST: str = os.environ.get('REDIS_HOST', 'null')
 REDIS_PORT: int = int(os.environ.get('REDIS_PORT', 6379))
@@ -53,8 +54,9 @@ database_keys_in_order = []
 # MAX_DATABASE_SIZE: int = min(1024 * 1024 * 1024 * 1, int(psutil.virtual_memory().total / 8))
 MAX_DATABASE_SIZE: int = 50 * 1024 * 1024
 
-if not os.path.exists(save_path):
-    os.makedirs(save_path)
+if not USING_REDIS and not USING_POSTGRES:
+    if not os.path.exists(save_path):
+        os.makedirs(save_path)
 
 
 def receive(conn: socket.socket, size: int = 1024) -> bytes:
@@ -144,7 +146,7 @@ class Client:
             self.db = buelon.helpers.postgres.get_postgres_from_env()
             with self.db.connect() as conn:
                 cur = conn.cursor()
-                cur.execute('CREATE TABLE IF NOT EXISTS bucket (key TEXT PRIMARY KEY, data BYTEA, epoch REAL);')
+                cur.execute(f'CREATE TABLE IF NOT EXISTS {POSTGRES_TABLE} (key TEXT PRIMARY KEY, data BYTEA, epoch REAL);')
                 conn.commit()
 
         elif USING_REDIS:
@@ -170,7 +172,7 @@ class Client:
         if USING_POSTGRES:
             with self.db.connect() as conn:
                 cur = conn.cursor()
-                cur.execute('INSERT INTO bucket (key, data, epoch) VALUES (%s, %s, %s) '
+                cur.execute(f'INSERT INTO {POSTGRES_TABLE} (key, data, epoch) VALUES (%s, %s, %s) '
                              'ON CONFLICT (key) DO UPDATE SET (data, epoch) = (EXCLUDED.data, EXCLUDED.epoch)', (key, data, time.time()))
                 conn.commit()
             return
@@ -203,7 +205,7 @@ class Client:
         if USING_POSTGRES:
             with self.db.connect() as conn:
                 cur = conn.cursor()
-                cur.execute('SELECT data FROM bucket WHERE key = %s', (key,))
+                cur.execute(f'SELECT data FROM {POSTGRES_TABLE} WHERE key = %s', (key,))
                 data = cur.fetchone()
                 if not data:
                     return None
@@ -238,7 +240,7 @@ class Client:
         if USING_POSTGRES:
             with self.db.connect() as conn:
                 cur = conn.cursor()
-                cur.execute('DELETE FROM bucket WHERE key = %s', (key, ))
+                cur.execute(f'DELETE FROM {POSTGRES_TABLE} WHERE key = %s', (key, ))
                 conn.commit()
             return
 
@@ -489,6 +491,32 @@ class Server:
                     threading.Thread(target=handle_client, args=(conn, )).start()
                 except TimeoutError as e:
                     pass
+
+
+def cleanup(slow=True):
+    if USING_POSTGRES:
+        postgres = Client()
+        with postgres.db.connect() as conn:
+            cur = conn.cursor()
+            cur.execute(f'DELETE FROM {POSTGRES_TABLE} WHERE epoch + {60 * 60 * 24 * 2} > {time.time()}')
+            conn.commit()
+        return
+
+    # if USING_REDIS:
+    #     redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB)
+    #     redis_client.delete(*[
+    #         k for k in
+    #         redis_client.scan_iter(match='*')
+    #         if float(redis_client.get(k)) + 60 * 60 * 24 * 2 > time.time()
+    #     ])
+
+    for root, dirs, files in os.walk(save_path, topdown=True):
+        for f in files:
+            if os.path.getmtime(os.path.join(root, f)) + 60 * 60 * 24 * 7 > time.time():
+                os.remove(os.path.join(root, f))
+            if slow:
+                time.sleep(0.01)
+
 
 
 def main() -> None:
