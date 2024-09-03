@@ -550,7 +550,14 @@ class HubServer:
 
     def start(self):
         server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        server.bind((self.host, self.port))
+        attempts = 5
+        for attempt in range(1, attempts + 1):
+            try:
+                server.bind((self.host, self.port))
+                break
+            except OSError:
+                print(f"Port {self.port} is already in use. Retrying...")
+                time.sleep(5 * attempt)
         server.listen()
         print(f"Server listening on {self.host}:{self.port}")
 
@@ -613,10 +620,7 @@ class HubServer:
 
     def _execute_transaction(self):
         while True:
-            try:
-                method, payload = self.execution_queue.get(timeout=30)
-            except TimeoutError:
-                continue
+            method, payload = self.execution_queue.get()
             try:
                 print('executing', method)
                 self._execute_request(method, payload)
