@@ -7,6 +7,7 @@ and handling dynamic variable substitution in code strings.
 from __future__ import annotations
 import os
 import sys
+import  tempfile
 import importlib
 import contextlib
 from typing import List, Dict, Any
@@ -40,16 +41,20 @@ def temp_mod(txt: str):
         PipeLineException: If there's an error in creating or removing the temporary module.
     """
     mod = f'temp_{pipe_util.get_id()}'
-    path = os.path.join(os.getcwd(), f'{mod}.py')
-    try:
-        with open(path, 'w') as f:
-            f.write(txt)
-        yield mod
-    finally:
-        try:
-            os.remove(path)
-        except:
-            pass
+    with tempfile.NamedTemporaryFile(prefix=mod, dir=os.getcwd(), suffix='.py') as tf:
+        tf.write(txt.encode())
+        tf.flush()
+        yield tf.name.replace('.py', '').split(os.sep)[-1]
+    # path = os.path.join(os.getcwd(), f'{mod}.py')
+    # try:
+    #     with open(path, 'w') as f:
+    #         f.write(txt)
+    #     yield mod
+    # finally:
+    #     try:
+    #         os.remove(path)
+    #     except:
+    #         pass
 
 
 def fix_data(data: List[Dict]) -> List[Dict]:
