@@ -36,6 +36,7 @@ class Method(enum.Enum):
     RESET_ERRORS = 'reset-errors'
     DELETE_STEPS = 'delete-steps'
     FETCH_ERRORS = 'fetch-errors'
+    FETCH_ROWS = 'fetch-rows'
 
 
 PIPELINE_HOST = os.environ.get('PIPELINE_HOST', '0.0.0.0')
@@ -455,6 +456,40 @@ def _fetch_errors(count: int, exclude: list[str] | str | None = None) -> dict:
         }
 
 
+def get_step_status(step_id: str):
+    """
+    Get the hub status of a step.
+
+    Args:
+        step_id (str): The id of the step to retrieve.
+
+    Returns:
+        buelon.core.step.StepStatus: The status of the step.
+    """
+    global tag_usage
+    if ',' in step_id:
+        return [
+            row
+            for s in step_id.split(',')
+            for row in get_step_status(s.strip())
+        ]
+
+    with sqlite3.connect(db_path) as conn:
+        cur = conn.cursor()
+        sql = (f'SELECT * '
+               f'FROM steps '
+               f'WHERE id = \'{step_id}\'')
+
+        cur.execute(sql)
+        rows = cur.fetchall()
+
+        table = [dict(zip([row[0] for row in cur.description], row)) for row in rows]
+        for row in table:
+            row['status'] = buelon.core.step.StepStatus(int(row['status'])).name
+
+        return table
+
+
 def get_steps(scopes: list, limit=50, chunk_size=100):
     """
     Get the steps in the scope, ordered by priority, velocity, then scope position.
@@ -672,6 +707,10 @@ class HubServer:
             scopes = buelon.helpers.json_parser.loads(payload)
             steps = get_steps(scopes)
             return buelon.helpers.json_parser.dumps(steps)
+        if method == Method.FETCH_ROWS:
+            step_id = buelon.helpers.json_parser.loads(payload)['step_id']
+            rows = get_step_status(step_id)
+            return buelon.helpers.json_parser.dumps(rows)
         # elif method == Method.DONE:
         #     _done(payload.decode())
         # elif method == Method.PENDING:
@@ -767,6 +806,9 @@ class HubClient:
 
     def get_steps(self, scopes):
         return buelon.helpers.json_parser.loads(self.send_request(Method.GET_STEPS, buelon.helpers.json_parser.dumps(scopes)))
+
+    def get_rows(self, step_id):
+        return buelon.helpers.json_parser.loads(self.send_request(Method.FETCH_ROWS, buelon.helpers.json_parser.dumps({'step_id': step_id})))
 
     def done(self, step_id):
         return self.send_request(Method.DONE, step_id.encode())
