@@ -558,6 +558,8 @@ class HubServer:
             except OSError:
                 print(f"Port {self.port} is already in use. Retrying...")
                 time.sleep(5 * attempt)
+                if attempt == attempts:
+                    raise
         server.listen()
         print(f"Server listening on {self.host}:{self.port}")
 
