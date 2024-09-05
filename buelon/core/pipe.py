@@ -73,10 +73,14 @@ class Pipe:
                 if args:
                     for arg in args.split(','):
                         _step.parents.append(args_step_ids[arg])
-                        variables['__steps__'][args_step_ids[arg]].children += [_step.id]
+                        s = variables['__steps__'][args_step_ids[arg]]
+                        s.children += [_step.id]
+                        variables['__steps__'][args_step_ids[arg]] = s
             else:
                 _step.parents = [last_step_id]
-                variables['__steps__'][last_step_id].children += [_step.id]
+                s = variables['__steps__'][last_step_id]
+                s.children += [_step.id]
+                variables['__steps__'][last_step_id] = s
 
             _step.children = []
             last_step_id = _step.id

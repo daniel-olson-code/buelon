@@ -40,7 +40,7 @@ def temp_mod(txt: str):
     Raises:
         PipeLineException: If there's an error in creating or removing the temporary module.
     """
-    mod = f'temp_{pipe_util.get_id()}'
+    mod = f'temp_bue_{pipe_util.get_id()}'
     with tempfile.NamedTemporaryFile(prefix=mod, dir=os.getcwd(), suffix='.py') as tf:
         tf.write(txt.encode())
         tf.flush()

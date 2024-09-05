@@ -10,6 +10,7 @@ from typing import Any, List
 
 from . import execution
 from buelon.helpers import pipe_util
+import buelon.hub
 
 
 class Result:
@@ -182,6 +183,19 @@ class Step(pipe_util.PipeObject):
             return create_return_value(execution.run_sqlite3(code, self.func, *args, **self.kwargs))
 
         raise ValueError(f"Unrecognized step language type: {self.type}")
+
+    @classmethod
+    def lazy_save(cls, self: Step, path, shared_variables):
+        buelon.hub.set_step(self)
+        return self.id
+
+    @classmethod
+    def lazy_load(cls, path, result, shared_variables):
+        return buelon.hub.get_step(result)
+
+    @classmethod
+    def lazy_delete(cls, path, result, shared_variables):
+        buelon.hub.remove_step(result)
 
 
 

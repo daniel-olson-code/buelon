@@ -22,6 +22,7 @@ import buelon.core.step
 import buelon.core.pipe_interpreter
 import buelon.helpers.json_parser
 import buelon.core.pipe_debug
+import buelon.helpers.lazy_load_class
 
 
 class Method(enum.Enum):
@@ -32,6 +33,7 @@ class Method(enum.Enum):
     RESET = 'reset'
     ERROR = 'error'
     UPLOAD_STEP = 'upload-step'
+    UPLOAD_STEPS = 'upload-steps'
     STEP_COUNT = 'step-count'
     RESET_ERRORS = 'reset-errors'
     DELETE_STEPS = 'delete-steps'
@@ -198,34 +200,61 @@ def _upload_step(step_json: dict, status_value: int) -> None:
         conn.commit()
 
 
-def upload_pipe_code(code: str):
+def upload_pipe_code(code: str, lazy_steps: bool = False):
     client = HubClient()
-
-    variables = buelon.core.pipe_interpreter.get_steps_from_code(code)
+    chunk_size = 5000 if not lazy_steps else 500
+    variables = buelon.core.pipe_interpreter.get_steps_from_code(code, lazy_steps)
     steps = variables['steps']
     starters = variables['starters']
+
     print('uploading', len(steps), 'steps')
-    add_later = []
+    add_later = {} if not lazy_steps else buelon.helpers.lazy_load_class.LazyMap()
+
+    chunk = []
     for _step in steps.values():
         if _step.id in starters:
-            add_later.append(_step)
+            # add_later.append(_step)
+            add_later[_step.id] = _step
+            if isinstance(steps, buelon.helpers.lazy_load_class.LazyMap):
+                steps.quiet_remove(_step.id)
+                del _step
             continue
         set_step(_step)
-        # status = buelon.core.step.StepStatus.pending if _step.id in starters else buelon.core.step.StepStatus.queued
-        # upload_step(_step, status)
-        # upload_step(_step, buelon.core.step.StepStatus.queued)
-        client.sync_upload_step(_step.to_json(), buelon.core.step.StepStatus.queued.value)
 
-    for _step in add_later:
+        client.upload_step(_step.to_json(), buelon.core.step.StepStatus.queued.value)
+        chunk.append(_step.to_json())
+        if len(chunk) >= chunk_size:
+            client.upload_steps(chunk, len(chunk) * [buelon.core.step.StepStatus.queued.value])
+            chunk = []
+        if isinstance(steps, buelon.helpers.lazy_load_class.LazyMap):
+            steps.quiet_remove(_step.id)
+            del _step
+    if chunk:
+        client.upload_steps(chunk, len(chunk) * [buelon.core.step.StepStatus.queued.value])
+        chunk = []
+
+    for _step in add_later.values():
         set_step(_step)
-        # upload_step(_step, buelon.core.step.StepStatus.pending)
-        client.sync_upload_step(_step.to_json(), buelon.core.step.StepStatus.pending.value)
+
+        # client.upload_step(_step.to_json(), buelon.core.step.StepStatus.pending.value)
+        chunk.append(_step.to_json())
+        if len(chunk) >= chunk_size:
+            client.upload_steps(chunk, len(chunk) * [buelon.core.step.StepStatus.pending.value])
+            chunk = []
+
+        if isinstance(add_later, buelon.helpers.lazy_load_class.LazyMap):
+            print(_step.id)
+            add_later.quiet_remove(_step.id)
+            del _step
+    if chunk:
+        client.upload_steps(chunk, len(chunk) * [buelon.core.step.StepStatus.pending.value])
+        del chunk
 
 
-def upload_pipe_code_from_file(file_path: str):
+def upload_pipe_code_from_file(file_path: str, lazy_steps: bool = False):
     with open(file_path, 'r') as f:
         code = f.read()
-        upload_pipe_code(code)
+        upload_pipe_code(code, lazy_steps)
 
 
 def get_step(step_id: str) -> buelon.core.step.Step | None:
@@ -240,6 +269,10 @@ def get_step(step_id: str) -> buelon.core.step.Step | None:
 def set_step(_step: buelon.core.step.Step) -> None:
     b = buelon.helpers.json_parser.dumps(_step.to_json())
     bucket_client.set(f'step/{_step.id}', b)
+
+
+def remove_step(step_id: str) -> None:
+    bucket_client.delete(f'step/{step_id}')
 
 
 def get_data(step_id: str) -> Any:
@@ -690,6 +723,11 @@ class HubServer:
             step_json, status_value = buelon.helpers.json_parser.loads(payload)
             _upload_step(step_json, status_value)
             return
+        elif method == Method.UPLOAD_STEPS:
+            step_jsons, status_values = buelon.helpers.json_parser.loads(payload)
+            for step_json, status_value in zip(step_jsons, status_values):
+                _upload_step(step_json, status_value)
+                return
         elif method == Method.RESET_ERRORS:
             _reset_errors(payload)
             return
@@ -700,8 +738,8 @@ class HubServer:
 
     def _process_request(self, method: Method, payload: bytes):
         if (method == Method.DONE or method == Method.PENDING or method == Method.CANCEL or method == Method.RESET
-                or method == Method.ERROR or method == Method.UPLOAD_STEP or method == Method.RESET_ERRORS
-                or method == Method.DELETE_STEPS):
+                or method == Method.ERROR or method == Method.UPLOAD_STEP or method == Method.UPLOAD_STEPS
+                or method == Method.RESET_ERRORS or method == Method.DELETE_STEPS):
             self.execution_queue.put((method, payload))
         if method == Method.GET_STEPS:
             scopes = buelon.helpers.json_parser.loads(payload)
@@ -827,6 +865,9 @@ class HubClient:
 
     def upload_step(self, step_json, status_value):
         return self.send_request(Method.UPLOAD_STEP, buelon.helpers.json_parser.dumps([step_json, status_value]))
+
+    def upload_steps(self, step_jsons, status_values):
+        return self.send_request(Method.UPLOAD_STEPS, buelon.helpers.json_parser.dumps([step_jsons, status_values]))
 
     def get_step_count(self, types: str | None = None):
         return buelon.helpers.json_parser.loads(

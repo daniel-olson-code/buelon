@@ -61,6 +61,7 @@ def job(step_id: str | None = None) -> None:
     else:
         _step = buelon.hub.get_step(os.environ['STEP_ID'])
 
+    print('step', _step)
     if _step is None:
         with new_client_if_subprocess() as client:
             client.reset(step_id if step_id else os.environ['STEP_ID'])
@@ -141,7 +142,7 @@ def is_hanging_script(path: str):
     file_name = os.path.basename(path)
     return (file_name.startswith('temp_')
             and file_name.endswith('.py')
-            and len(file_name) == 41
+            # and len(file_name) == 41
             and (time.time() - os.path.getmtime(path)) > TEMP_FILE_LIFETIME)
 
 

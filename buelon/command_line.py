@@ -68,14 +68,16 @@ def run_demo():
     # Run the demo
     bue.examples.demo.main()
 
+
 def run_example():
     # Run the example
     bue.examples.example.setup()
 
-def upload_pipe_code(file_path, binding):
+
+def upload_pipe_code(file_path, binding, lazy_steps):
     if binding:
         os.environ['PIPE_WORKER_HOST'], os.environ['PIPE_WORKER_PORT'] = binding.split(':')
-    bue.hub.upload_pipe_code_from_file(file_path)
+    bue.hub.upload_pipe_code_from_file(file_path, lazy_steps)
 
 
 def display_status(args):
@@ -156,7 +158,8 @@ def cli():
     # Pipe file run
     file_parser = subparsers.add_parser('upload', help='Upload pipe code from a file')
     file_parser.add_argument('-b', '--hub-binding', required=worker_binding_required, help='Binding to hub (host:port)')
-    file_parser.add_argument('-f', '--file_path', help='File path for uploading pipe code')
+    file_parser.add_argument('-f', '--file-path', help='File path for uploading pipe code', dest='file_path')
+    file_parser.add_argument('-l', '--lazy', default=False, action=argparse.BooleanOptionalAction, dest='lazy')
 
     # Hub command
     hub_parser = subparsers.add_parser('hub', help='Run the hub')
@@ -223,7 +226,7 @@ def cli():
     elif args.command == 'example':
         run_example()
     elif args.command == 'upload':
-        upload_pipe_code(args.file_path, args.hub_binding)
+        upload_pipe_code(args.file_path, args.hub_binding, args.lazy)
     elif args.command == 'reset':
         if args.binding:
             os.environ['PIPE_WORKER_HOST'], os.environ['PIPE_WORKER_PORT'] = args.binding.split(':')
@@ -244,11 +247,9 @@ def cli():
             os.environ['PIPE_WORKER_HOST'], os.environ['PIPE_WORKER_PORT'] = args.binding.split(':')
         if not os.environ.get('PIPE_WORKER_HOST') or not os.environ.get('PIPE_WORKER_PORT'):
             raise ValueError('Binding is required when running a step. Set env vars `PIPE_WORKER_HOST` and `PIPE_WORKER_PORT`')
-        print('PIPE_WORKER_HOST', os.environ['PIPE_WORKER_HOST'])
-        print('PIPE_WORKER_PORT', os.environ['PIPE_WORKER_PORT'])
-        print('USING_POSTGRES',  os.environ.get('USING_POSTGRES_BUCKET'))
+
         step_id = args.step
-        print('args', args)
+
         bue.worker.job(step_id)
     else:
         # Handle the case where a file path is given without a command
@@ -261,6 +262,7 @@ def cli():
         else:
             parser.print_help()
             sys.exit(1)
+
 
 if __name__ == '__main__':
     cli()

@@ -14,7 +14,7 @@ import sys
 import traceback
 from typing import Dict, Any
 
-from buelon.helpers import pipe_util
+from buelon.helpers import pipe_util, lazy_load_class
 from . import step_definition
 from . import pipe
 from . import action
@@ -77,11 +77,12 @@ def check_for_scope(index: int, line: str, variables: Dict) -> bool:
     return False
 
 
-def run(code: str) -> Dict:
+def run(code: str, lazy_steps: bool = False) -> Dict:
     """Parse and execute the given pipeline code.
 
     Args:
         code (str): The pipeline code to be executed.
+        lazy_steps (bool, optional): Whether to use lazy loading for steps. Defaults to False.
 
     Returns:
         dict: A dictionary containing the parsed pipeline variables.
@@ -91,7 +92,7 @@ def run(code: str) -> Dict:
     """
     try:
         variables = {
-            '__steps__': {},
+            '__steps__': {} if not lazy_steps else lazy_load_class.LazyMap(),
             '__starters__': [],
             '__scope__': 'default'
         }
@@ -177,15 +178,19 @@ def run(code: str) -> Dict:
         sys.exit(1)
 
 
-def get_steps_from_code(code: str) -> Dict[str, Any]:
+def get_steps_from_code(code: str, lazy_steps: bool = False) -> Dict[str, Any]:
     """Extract steps and starters from the given pipeline code.
 
     Args:
         code (str): The pipeline code to be processed.
+        lazy_steps (bool, optional): Whether to use lazy loading for steps. Defaults to False.
+
+    Raises:
+        Exception: If an error occurs during parsing or execution.
 
     Returns:
         dict: A dictionary containing the extracted steps and starters.
     """
-    variables = run(code)
+    variables = run(code, lazy_steps=lazy_steps)
     return {'steps': variables['__steps__'], 'starters': variables['__starters__']}
 
