@@ -141,7 +141,7 @@ def is_hanging_script(path: str):
     file_name = os.path.basename(path)
     return (file_name.startswith('temp_')
             and file_name.endswith('.py')
-            and len(file_name) == 41
+            # and len(file_name) == 41
             and (time.time() - os.path.getmtime(path)) > TEMP_FILE_LIFETIME)
 
 

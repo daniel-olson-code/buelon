@@ -200,6 +200,19 @@ def _upload_step(step_json: dict, status_value: int) -> None:
         conn.commit()
 
 
+def _upload_steps(step_jsons: dict, status_values: int) -> None:
+    with sqlite3.connect(db_path) as conn:
+        cur = conn.cursor()
+        for step_json, status_value in zip(step_jsons, status_values):
+            status = buelon.core.step.StepStatus(status_value)
+            _step = buelon.core.step.Step().from_json(step_json)
+            sql = ('INSERT INTO steps (id, priority, scope, velocity, tag, status, epoch, msg, trace) '
+                   'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);')
+            cur.execute(sql, (_step.id, _step.priority, _step.scope, _step.velocity, _step.tag, f'{status.value}',
+                              time.time(), '', ''))
+        conn.commit()
+
+
 def upload_pipe_code(code: str, lazy_steps: bool = False):
     client = HubClient()
     chunk_size = 5000 if not lazy_steps else 500
@@ -213,42 +226,37 @@ def upload_pipe_code(code: str, lazy_steps: bool = False):
     chunk = []
     for _step in steps.values():
         if _step.id in starters:
-            # add_later.append(_step)
             add_later[_step.id] = _step
-            if isinstance(steps, buelon.helpers.lazy_load_class.LazyMap):
-                steps.quiet_remove(_step.id)
-                del _step
             continue
-        set_step(_step)
 
-        client.upload_step(_step.to_json(), buelon.core.step.StepStatus.queued.value)
-        chunk.append(_step.to_json())
+        chunk.append(_step)
+
         if len(chunk) >= chunk_size:
-            client.upload_steps(chunk, len(chunk) * [buelon.core.step.StepStatus.queued.value])
-            chunk = []
-        if isinstance(steps, buelon.helpers.lazy_load_class.LazyMap):
-            steps.quiet_remove(_step.id)
-            del _step
+            set_steps(chunk)
+            client.upload_steps([s.to_json() for s in chunk], len(chunk) * [buelon.core.step.StepStatus.queued.value])
+            chunk.clear()
+
     if chunk:
-        client.upload_steps(chunk, len(chunk) * [buelon.core.step.StepStatus.queued.value])
-        chunk = []
+        set_steps(chunk)
+        client.upload_steps([s.to_json() for s in chunk], len(chunk) * [buelon.core.step.StepStatus.queued.value])
+        chunk.clear()
 
     for _step in add_later.values():
-        set_step(_step)
 
-        # client.upload_step(_step.to_json(), buelon.core.step.StepStatus.pending.value)
-        chunk.append(_step.to_json())
+        chunk.append(_step)
+
         if len(chunk) >= chunk_size:
-            client.upload_steps(chunk, len(chunk) * [buelon.core.step.StepStatus.pending.value])
-            chunk = []
+            set_steps(chunk)
+            client.upload_steps([s.to_json() for s in chunk], len(chunk) * [buelon.core.step.StepStatus.pending.value])
+            chunk.clear()
 
-        if isinstance(add_later, buelon.helpers.lazy_load_class.LazyMap):
-            print(_step.id)
-            add_later.quiet_remove(_step.id)
-            del _step
     if chunk:
-        client.upload_steps(chunk, len(chunk) * [buelon.core.step.StepStatus.pending.value])
-        del chunk
+        set_steps(chunk)
+        client.upload_steps([s.to_json() for s in chunk], len(chunk) * [buelon.core.step.StepStatus.pending.value])
+        chunk.clear()
+
+    del steps
+    del add_later
 
 
 def upload_pipe_code_from_file(file_path: str, lazy_steps: bool = False):
@@ -269,6 +277,24 @@ def get_step(step_id: str) -> buelon.core.step.Step | None:
 def set_step(_step: buelon.core.step.Step) -> None:
     b = buelon.helpers.json_parser.dumps(_step.to_json())
     bucket_client.set(f'step/{_step.id}', b)
+
+
+def set_steps(steps: list[buelon.core.step.Step]) -> None:
+    if not buelon.bucket.USING_POSTGRES and not buelon.bucket.USING_REDIS:
+        # raise ValueError('set_steps only works with postgres and redis')
+        for _step in steps:
+            set_step(_step)
+        return
+
+    bulk = {}
+    for _step in steps:
+        # set_step(_step)
+        bulk[f'step/{_step.id}'] = buelon.helpers.json_parser.dumps(_step.to_json())
+
+    if buelon.bucket.USING_POSTGRES:
+        bucket_client.postgres_bulk_set(bulk)
+    elif buelon.bucket.USING_REDIS:
+        bucket_client.redis_bulk_set(bulk)
 
 
 def remove_step(step_id: str) -> None:
@@ -618,29 +644,34 @@ class HubServer:
 
     def start(self):
         server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        attempts = 5
-        for attempt in range(1, attempts + 1):
-            try:
-                server.bind((self.host, self.port))
-                break
-            except OSError:
-                print(f"Port {self.port} is already in use. Retrying...")
-                time.sleep(5 * attempt)
-                if attempt == attempts:
-                    raise
-        server.listen()
-        print(f"Server listening on {self.host}:{self.port}")
+        try:
+            attempts = 5
+            for attempt in range(1, attempts + 1):
+                try:
+                    server.bind((self.host, self.port))
+                    break
+                except OSError:
+                    print(f"Port {self.port} is already in use. Retrying...")
+                    time.sleep(5 * attempt)
+                    if attempt == attempts:
+                        raise
+            server.listen()
+            print(f"Server listening on {self.host}:{self.port}")
 
-        worker_thread = threading.Thread(target=self._process_transactions, daemon=True)
-        worker_thread.start()
+            worker_thread = threading.Thread(target=self._process_transactions, daemon=True)
+            worker_thread.start()
 
-        executor_thread = threading.Thread(target=self._execute_transaction, daemon=True)
-        executor_thread.start()
+            executor_thread = threading.Thread(target=self._execute_transaction, daemon=True)
+            executor_thread.start()
 
-        while True:
-            client_socket, addr = server.accept()
-            client_thread = threading.Thread(target=self._handle_client, args=(client_socket,), daemon=True)
-            client_thread.start()
+            while True:
+                client_socket, addr = server.accept()
+                client_thread = threading.Thread(target=self._handle_client, args=(client_socket,), daemon=True)
+                client_thread.start()
+        finally:
+            server.shutdown(socket.SHUT_RDWR)
+            server.close()
+            exit()
 
     def _handle_client(self, client_socket):
         data = receive(client_socket)
@@ -725,9 +756,10 @@ class HubServer:
             return
         elif method == Method.UPLOAD_STEPS:
             step_jsons, status_values = buelon.helpers.json_parser.loads(payload)
-            for step_json, status_value in zip(step_jsons, status_values):
-                _upload_step(step_json, status_value)
-                return
+            _upload_steps(step_jsons, status_values)
+            # for step_json, status_value in zip(step_jsons, status_values):
+            #     _upload_step(step_json, status_value)
+            return
         elif method == Method.RESET_ERRORS:
             _reset_errors(payload)
             return

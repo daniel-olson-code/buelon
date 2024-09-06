@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import tempfile
 import uuid
-from typing import Self, Any
+from typing import Any
 
 import orjson
 

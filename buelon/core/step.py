@@ -6,11 +6,16 @@ their results, and associated utilities in a pipeline structure.
 
 from __future__ import annotations
 import enum
+import os
 from typing import Any, List
+
+import orjson
 
 from . import execution
 from buelon.helpers import pipe_util
 import buelon.hub
+
+import pickle
 
 
 class Result:
@@ -186,16 +191,24 @@ class Step(pipe_util.PipeObject):
 
     @classmethod
     def lazy_save(cls, self: Step, path, shared_variables):
-        buelon.hub.set_step(self)
+        # buelon.hub.set_step(self)
+        with open(path, 'wb') as f:
+            f.write(orjson.dumps(self.to_json()))
         return self.id
 
     @classmethod
     def lazy_load(cls, path, result, shared_variables):
-        return buelon.hub.get_step(result)
+        # return buelon.hub.get_step(result)
+        with open(path, 'rb') as f:
+            return cls().from_json(orjson.loads(f.read()))
 
     @classmethod
     def lazy_delete(cls, path, result, shared_variables):
-        buelon.hub.remove_step(result)
+        # buelon.hub.remove_step(result)
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
 
 
 

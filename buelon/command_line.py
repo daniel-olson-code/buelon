@@ -85,7 +85,11 @@ def display_status(args):
         os.environ['PIPE_WORKER_HOST'], os.environ['PIPE_WORKER_PORT'] = args.binding.split(':')
     client = bue.hub.HubClient()
     def display_status_worker():
-        data = client.sync_get_step_count()
+        try:
+            data = client.sync_get_step_count()
+        except ConnectionRefusedError:
+            print('Connection refused')
+            return 1
         client.get_step_count()
         # bue.hub.get_step_count(args.binding)
         for row in data:
@@ -140,7 +144,7 @@ def fetch_errors(args):
 
 def cli():
     parser = argparse.ArgumentParser(description='Buelon command-line interface')
-    parser.add_argument('-v', '--version', action='version', version='Buelon 1.0.0')
+    parser.add_argument('-v', '--version', action='version', version='Buelon 1.0.45-alpha8')
     parser.add_argument('-b', '--binding', help='Binding for uploading pipe code (host:port)')
     parser.add_argument('file_path', nargs='?', default='nothing', help='File path for uploading pipe code')
 
@@ -182,7 +186,7 @@ def cli():
     # Status
     status_parser = subparsers.add_parser('status', help='Check the status of the pipeline')
     status_parser.add_argument('-b', '--binding', required=worker_binding_required, help='Main binding for hub (host:port)')
-    status_parser.add_argument('-s', '--subscribe', help='Subscribe to status updates')
+    status_parser.add_argument('-s', '--subscribe', default=False, action=argparse.BooleanOptionalAction, help='Subscribe to status updates')
 
     # Reset Errors
     reset_parser = subparsers.add_parser('reset', help='Reset errors')

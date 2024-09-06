@@ -61,7 +61,6 @@ def job(step_id: str | None = None) -> None:
     else:
         _step = buelon.hub.get_step(os.environ['STEP_ID'])
 
-    print('step', _step)
     if _step is None:
         with new_client_if_subprocess() as client:
             client.reset(step_id if step_id else os.environ['STEP_ID'])

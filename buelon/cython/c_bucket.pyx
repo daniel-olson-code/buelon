@@ -147,6 +147,7 @@ class Client:
             with self.db.connect() as conn:
                 cur = conn.cursor()
                 cur.execute(f'CREATE TABLE IF NOT EXISTS {POSTGRES_TABLE} (key TEXT PRIMARY KEY, data BYTEA, epoch REAL);')
+                cur.execute(f'CREATE INDEX IF NOT EXISTS idx_{POSTGRES_TABLE}_key ON {POSTGRES_TABLE} USING hash (key);')
                 conn.commit()
 
         elif USING_REDIS:
@@ -252,6 +253,27 @@ class Client:
 
             send(s, BUCKET_SPLIT_TOKEN.join([key.encode('utf-8'), b'delete', f'{timeout}'.encode(), b'__null__']))
             receive(s)
+
+    # @retry_connection
+    def postgres_bulk_set(self, keys_values: dict, save: bool = False):
+        """
+        Set multiple key-value pairs in the PostgreSQL database.
+
+        Args:
+            keys_values (dict): A dictionary of key-value pairs to set.
+            save (bool, optional): Whether to save the data to disk. Defaults to False.
+        """
+        with self.db.connect() as conn:
+            cur = conn.cursor()
+            # psycopg2.extras.execute_batch(cur, q, table)
+            q = f'''INSERT INTO {POSTGRES_TABLE} (key, data, epoch) VALUES (%s, %s, %s)
+                ON CONFLICT (key) DO UPDATE SET (data, epoch) = (EXCLUDED.data, EXCLUDED.epoch)'''
+            table = ((k, v, time.time()) for k, v in keys_values.items())
+            psycopg2.extras.execute_batch(cur, q, table)
+            # for k, v in keys_values.items():
+            #     cur.execute(f'INSERT INTO {POSTGRES_TABLE} (key,data, epoch) VALUES (%s, %s, %s) '
+            #                  'ON CONFLICT (key) DO UPDATE SET (data, epoch) = (EXCLUDED.data, EXCLUDED.epoch)', (k, v, time.time()))
+            conn.commit()
 
     @redis_secure_connection
     def redis_bulk_set(self, keys_values: dict, save: bool = False):
