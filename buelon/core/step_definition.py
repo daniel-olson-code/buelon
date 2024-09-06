@@ -1,6 +1,11 @@
+import os
+
+import orjson
+
 from . import step
 from buelon.helpers import pipe_util
 from . import pipe_interpreter
+import buelon.helpers.lazy_load_class
 
 
 class StepDefinition:
@@ -45,6 +50,51 @@ class StepDefinition:
         _step.scope = self.scope
         return _step
 
+    @classmethod
+    def lazy_save(cls, self, path, shared_variables):
+        # data = {var: getattr(self, var) for var in self.variables_to_save}
+        data = {
+            'name': self.name,
+            'language': self.language,
+            'function': self.function,
+            'path': self.path,
+            'code': self.code,
+            'using_code': self.using_code,
+            'priority': self.priority,
+            'velocity': self.velocity,
+            'tag': self.tag,
+            'scope': self.scope
+        }
+
+        with open(path, 'wb') as f:
+            f.write(orjson.dumps(data))
+
+        return path
+
+    @classmethod
+    def lazy_load(cls, path, result, shared_variables):
+        if not os.path.exists(path):
+            raise FileNotFoundError(f'File not found: {path}')
+
+        with open(path, 'rb') as f:
+            data = orjson.loads(f.read())
+
+        self = cls(
+            data['name'], data['language'], data['function'], data['path'], data['code'], data['using_code'], data['scope']
+        )
+        self.priority = data['priority']
+        self.velocity = data['velocity']
+        self.tag = data['tag']
+
+        return self
+
+    @classmethod
+    def lazy_delete(cls, path, result, shared_variables):
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
+
 
 def check_for_step_definition(index: int, line: str, variables: dict, configurations: dict) -> bool:
     i = index
@@ -56,6 +106,7 @@ def check_for_step_definition(index: int, line: str, variables: dict, configurat
                 raise SyntaxError(f'Line {i + 1}: Invalid block')
             try:
                 importing_value.priority = int(line.strip()[1:])
+                variables[configurations['current import']] = importing_value
                 return True
             except ValueError:
                 raise SyntaxError(f'Line {i + 1}: Invalid priority. Must be integer.')
@@ -64,6 +115,7 @@ def check_for_step_definition(index: int, line: str, variables: dict, configurat
             if line.count('$') > 1:
                 raise SyntaxError(f'Line {i + 1}: Invalid block')
             importing_value.scope = pipe_util.trim(line.strip()[1:])
+            variables[configurations['current import']] = importing_value
             return True
 
         if line.strip().startswith('@') and line.strip().count('@') == 1:
@@ -75,6 +127,7 @@ def check_for_step_definition(index: int, line: str, variables: dict, configurat
             if not (set(_line) - set('*/+-. 1234567890')):
                 try:
                     importing_value.velocity = eval(_line)
+                    variables[configurations['current import']] = importing_value
                     return True
                 except Exception as e:
                     raise SyntaxError(f'Line {i + 1}: Velocity could not be calculated. ({e})')
@@ -83,12 +136,14 @@ def check_for_step_definition(index: int, line: str, variables: dict, configurat
                 raise SyntaxError(f'Line {i + 1}: Tag/Velocity not found')
             importing_value.tag = pipe_util.trim(_line)
             importing_value.velocity = variables[_line]
+            variables[configurations['current import']] = importing_value
             return True
 
         if not importing_value.language:
             importing_value.language = line.strip()
             if importing_value.language in pipe_interpreter.LANGUAGES:
                 importing_value.language = pipe_interpreter.LANGUAGES[importing_value.language]
+                variables[configurations['current import']] = importing_value
                 return True
             else:
                 languages = ', '.join(pipe_interpreter.LANGUAGES.keys())
@@ -98,6 +153,7 @@ def check_for_step_definition(index: int, line: str, variables: dict, configurat
             importing_value.function = line.strip()
             if not importing_value.function:
                 raise SyntaxError(f'line {i + 1}: Function cannot be empty.')
+            variables[configurations['current import']] = importing_value
             return True
         if not importing_value.path and not importing_value.using_code:
             def strip_for_block(line):
@@ -108,14 +164,17 @@ def check_for_step_definition(index: int, line: str, variables: dict, configurat
                     if strip_for_block(line).endswith('`') and strip_for_block(line).count('`') == 2:
                         importing_value.code = line.strip()[1:-1]
                         importing_value.using_code = True
+                        variables[configurations['current import']] = importing_value
                         return True
                     elif strip_for_block(line).count('`') > 2:
                         raise SyntaxError(f'Line {i + 1}: Invalid block')
                     importing_value.code = line.strip()[1:]
                     configurations['in code block'] = True
+                    variables[configurations['current import']] = importing_value
                     return True
                 else:
                     importing_value.path = pipe_util.trim(line)
+                    variables[configurations['current import']] = importing_value
                     return True
             else:
                 if strip_for_block(line).endswith('`'):
@@ -124,11 +183,13 @@ def check_for_step_definition(index: int, line: str, variables: dict, configurat
                     importing_value.code += '\n' + line[:line.index('`')]
                     configurations['in code block'] = False
                     importing_value.using_code = True
+                    variables[configurations['current import']] = importing_value
                     return True
                 else:
                     if strip_for_block(line).count('`') > 0:
                         raise SyntaxError(f'Line {i + 1}: Invalid block')
                     importing_value.code += '\n' + line
+                    variables[configurations['current import']] = importing_value
                     return True
         configurations['importing'] = False
 

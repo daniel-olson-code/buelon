@@ -34,13 +34,24 @@ def pipe_eval(index: int, txt: str, variables: dict):
         _pipe: pipe.Pipe = variables[name]
         if not isinstance(_pipe, pipe.Pipe):
             raise TypeError(f'Line {index+1}: \'{name}\' is not a pipe.Pipe. It\'s \'{type(_pipe)}\'')
+
         steps = _pipe.create_steps(index, variables, args, pipe_util.json_copy(_pipe.kwargs))
+
         data = []
-        for step in steps:
-            data = step.run(data).data
-        for step in steps:
-            del variables['__steps__'][step.id]
-            variables['__starters__'].remove(step.id)
+
+        for step_id in steps:
+            s = variables['__steps__'][step_id]
+            new_data = s.run(data).data
+            del data
+            del s
+            data = new_data
+
+        for step_id in steps:
+            del variables['__steps__'][step_id]
+            ss = variables['__starters__']
+            ss.remove(step_id)
+            variables['__starters__'] = ss
+
         return data
 
 

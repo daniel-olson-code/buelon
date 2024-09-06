@@ -84,11 +84,15 @@ def display_status(args):
     if args.binding:
         os.environ['PIPE_WORKER_HOST'], os.environ['PIPE_WORKER_PORT'] = args.binding.split(':')
     client = bue.hub.HubClient()
+    refuse_count = 0
     def display_status_worker():
         try:
             data = client.sync_get_step_count()
         except ConnectionRefusedError:
-            print('Connection refused')
+            print('Connection refused' + '.' * (refuse_count % 3))
+            return 1
+        except OSError as e:  # socket error
+            print(f'{e}')
             return 1
         client.get_step_count()
         # bue.hub.get_step_count(args.binding)

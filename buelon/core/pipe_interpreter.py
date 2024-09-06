@@ -21,7 +21,6 @@ from . import action
 from . import loop
 from . import step
 
-
 # Constants
 INDENT = '    '
 PIPE_TOKENS = {
@@ -77,6 +76,7 @@ def check_for_scope(index: int, line: str, variables: Dict) -> bool:
     return False
 
 
+
 def run(code: str, lazy_steps: bool = False) -> Dict:
     """Parse and execute the given pipeline code.
 
@@ -91,11 +91,19 @@ def run(code: str, lazy_steps: bool = False) -> Dict:
         Exception: If an error occurs during parsing or execution.
     """
     try:
-        variables = {
-            '__steps__': {} if not lazy_steps else lazy_load_class.LazyMap(),
-            '__starters__': [],
-            '__scope__': 'default'
-        }
+
+        if lazy_steps:
+            print('Lazy Steps')
+            variables = lazy_load_class.LazyMap()
+            lm = lazy_load_class.LazyMap()
+            lm.disable_deletion()
+            variables['__steps__'] = lm
+        else:
+            variables = {
+                '__steps__': {}
+            }
+        variables['__starters__'] = []
+        variables['__scope__'] = 'default'
 
         configurations = {
             'importing': False,
@@ -174,8 +182,8 @@ def run(code: str, lazy_steps: bool = False) -> Dict:
 
     except Exception as e:
         traceback.print_exc()
-        print(f'Error {type(e).__name__} | {e}')
-        sys.exit(1)
+        print(f'Unexpected Error: {type(e).__name__} | {e}')
+        exit()
 
 
 def get_steps_from_code(code: str, lazy_steps: bool = False) -> Dict[str, Any]:

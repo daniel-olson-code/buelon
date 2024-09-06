@@ -200,7 +200,7 @@ def _upload_step(step_json: dict, status_value: int) -> None:
         conn.commit()
 
 
-def _upload_steps(step_jsons: dict, status_values: int) -> None:
+def _upload_steps(step_jsons: list, status_values: list) -> None:
     with sqlite3.connect(db_path) as conn:
         cur = conn.cursor()
         for step_json, status_value in zip(step_jsons, status_values):
@@ -549,7 +549,13 @@ def get_step_status(step_id: str):
         return table
 
 
-def get_steps(scopes: list, limit=50, chunk_size=100):
+def get_steps(
+        scopes: list,
+        limit=50,
+        chunk_size=100,
+        status: int = buelon.core.step.StepStatus.pending.value,
+        include_working: bool = True
+):
     """
     Get the steps in the scope, ordered by priority, velocity, then scope position.
 
@@ -557,6 +563,8 @@ def get_steps(scopes: list, limit=50, chunk_size=100):
         scopes (list): A list of scopes to filter the steps.
         limit (int): The maximum number of steps to retrieve. Defaults to 50.
         chunk_size (int): The number of steps to fetch in each chunk. Defaults to 100.
+        status (int | buelon.core.step.StepStatus.value): The status of the steps to retrieve. Defaults to pending.
+        include_working (bool): Whether to include working steps. Defaults to True.
 
     Returns:
         list: A list of steps ordered by priority, velocity, and scope position.
@@ -580,13 +588,19 @@ def get_steps(scopes: list, limit=50, chunk_size=100):
         steps = []
 
         expiration_time = time.time() - (60 * 60 * .2)  # (60 * 60 * 2)
+        status = buelon.core.step.StepStatus(status).value
+        working_clause = ''
+        if include_working:
+            working_clause = (f' or (epoch < {expiration_time} '
+                              f'     and status = \'{buelon.core.step.StepStatus.working.value}\') ')
+
         while len(steps) < limit:
             sql = (f'SELECT id, priority, scope, velocity, tag '
                    f'FROM steps '
                    f'WHERE scope IN ({",".join("?" * len(scopes))}) '
                    f'AND ('
-                   f'   status = \'{buelon.core.step.StepStatus.pending.value}\' '
-                   f'   or (epoch < {expiration_time} and status = \'{buelon.core.step.StepStatus.working.value}\')'
+                   f'   status = \'{status}\' '
+                   f'   {working_clause}'
                    f')'
                    f'ORDER BY  '#' CASE scope {case_statement} END, '
                    f'   priority desc, epoch '  # , COALESCE(velocity, 1.0/0.0)
@@ -763,21 +777,21 @@ class HubServer:
         elif method == Method.RESET_ERRORS:
             _reset_errors(payload)
             return
-        elif method == Method.DELETE_STEPS:
-            _delete_steps()
-            return
+        # elif method == Method.DELETE_STEPS:
+        #     _delete_steps()
+        #     return
         raise ValueError(f'Invalid method: {method}')
 
     def _process_request(self, method: Method, payload: bytes):
         if (method == Method.DONE or method == Method.PENDING or method == Method.CANCEL or method == Method.RESET
                 or method == Method.ERROR or method == Method.UPLOAD_STEP or method == Method.UPLOAD_STEPS
-                or method == Method.RESET_ERRORS or method == Method.DELETE_STEPS):
+                or method == Method.RESET_ERRORS):
             self.execution_queue.put((method, payload))
         if method == Method.GET_STEPS:
-            scopes = buelon.helpers.json_parser.loads(payload)
-            steps = get_steps(scopes)
+            scopes, kwargs = buelon.helpers.json_parser.loads(payload)
+            steps = get_steps(scopes, **kwargs)
             return buelon.helpers.json_parser.dumps(steps)
-        if method == Method.FETCH_ROWS:
+        elif method == Method.FETCH_ROWS:
             step_id = buelon.helpers.json_parser.loads(payload)['step_id']
             rows = get_step_status(step_id)
             return buelon.helpers.json_parser.dumps(rows)
@@ -801,8 +815,8 @@ class HubServer:
             return buelon.helpers.json_parser.dumps(result)
         # elif method == Method.RESET_ERRORS:
         #     _reset_errors(payload)
-        # elif method == Method.DELETE_STEPS:
-        #     _delete_steps()
+        elif method == Method.DELETE_STEPS:
+            _delete_steps()
         elif method == Method.FETCH_ERRORS:
             try:
                 config = buelon.helpers.json_parser.loads(payload)
@@ -874,8 +888,8 @@ class HubClient:
         #         time.sleep(1)  # Backoff before retrying
         #         self.connect()  # Establish a new connection before retrying
 
-    def get_steps(self, scopes):
-        return buelon.helpers.json_parser.loads(self.send_request(Method.GET_STEPS, buelon.helpers.json_parser.dumps(scopes)))
+    def get_steps(self, scopes, **kwargs):
+        return buelon.helpers.json_parser.loads(self.send_request(Method.GET_STEPS, buelon.helpers.json_parser.dumps([scopes, kwargs])))
 
     def get_rows(self, step_id):
         return buelon.helpers.json_parser.loads(self.send_request(Method.FETCH_ROWS, buelon.helpers.json_parser.dumps({'step_id': step_id})))
@@ -955,10 +969,10 @@ def main():
     server.start()
 
 
-# try:
-#     from buelon.cython.c_hub import *
-# except (ImportError, ModuleNotFoundError):
-#     pass
+try:
+    from buelon.cython.c_hub import *
+except (ImportError, ModuleNotFoundError):
+    pass
 
 
 if __name__ == "__main__":

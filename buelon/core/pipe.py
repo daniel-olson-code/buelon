@@ -3,12 +3,13 @@ This module defines the Pipe class and related functions for creating and managi
 """
 
 from buelon.helpers import pipe_util
+import buelon.helpers.lazy_load_class
 from . import pipe_interpreter
 from . import step_definition
 from . import step
 
 
-class Pipe:
+class Pipe(buelon.helpers.lazy_load_class.LazyLoader):
     """
     Represents a pipeline that can create and manage a series of steps.
 
@@ -18,7 +19,7 @@ class Pipe:
         kwargs (dict): Optional keyword arguments for the pipe.
     """
 
-    def __init__(self, name: str, imports: str, kwargs: dict = None):
+    def __init__(self, name: str = '', imports: str = '', kwargs: dict = None):
         """
         Initialize a new Pipe instance.
 
@@ -31,7 +32,10 @@ class Pipe:
         self.imports = imports
         self.kwargs = kwargs or {}
 
-    def create_steps(self, i: int, variables: dict, args: str, env=None) -> list[step.Step]:
+        # for the LazyLoader class
+        self.variables_to_save = ['name', 'imports', 'kwargs']
+
+    def create_steps(self, i: int, variables: dict, args: str, env=None) -> list[str]:  # list[step.Step]:
         """
         Create a series of steps based on the pipe's imports and given arguments.
 
@@ -48,15 +52,15 @@ class Pipe:
             SyntaxError: If an unknown argument or import is encountered.
             TypeError: If an import is not a StepDefinition instance.
         """
-        steps: list[step.Step] = []
+        steps: list[str] = []  # : list[step.Step] = []
         last_step_id = None
         args_step_ids = {}
 
         if args:
             for arg in args.split(','):
                 if arg in variables:
-                    variables[arg]: list[step.Step]
-                    args_step_ids[arg] = variables[arg][-1].id
+                    # variables[arg]: list[str]  # list[step.Step]
+                    args_step_ids[arg] = variables[arg][-1]  # .id
                 else:
                     raise SyntaxError(f'Line {i+1}: Unknown argument \'{arg}\'')
 
@@ -85,10 +89,13 @@ class Pipe:
             _step.children = []
             last_step_id = _step.id
             variables['__steps__'][_step.id] = _step
-            steps.append(_step)
+            steps.append(_step.id)  # (_step)
+            del _step
 
-        if steps and not steps[0].parents:
-            variables['__starters__'].append(steps[0].id)
+        if steps and not variables['__steps__'][steps[0]].parents:
+            starters = variables['__starters__']
+            starters.append(steps[0])
+            variables['__starters__'] = starters
 
         return steps
 
