@@ -86,15 +86,17 @@ def display_status(args):
     client = bue.hub.HubClient()
     refuse_count = 0
     def display_status_worker():
+        nonlocal refuse_count
         try:
-            data = client.sync_get_step_count()
+            data = client.get_step_count()
         except ConnectionRefusedError:
             print('Connection refused' + '.' * (refuse_count % 3))
+            refuse_count += 1
             return 1
         except OSError as e:  # socket error
             print(f'{e}')
             return 1
-        client.get_step_count()
+        # client.get_step_count()
         # bue.hub.get_step_count(args.binding)
         for row in data:
             name, amount = row['status'], row['amount']
@@ -148,7 +150,7 @@ def fetch_errors(args):
 
 def cli():
     parser = argparse.ArgumentParser(description='Buelon command-line interface')
-    parser.add_argument('-v', '--version', action='version', version='Buelon 1.0.45-alpha8')
+    parser.add_argument('-v', '--version', action='version', version='Buelon 1.0.57')
     parser.add_argument('-b', '--binding', help='Binding for uploading pipe code (host:port)')
     parser.add_argument('file_path', nargs='?', default='nothing', help='File path for uploading pipe code')
 

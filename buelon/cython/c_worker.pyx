@@ -29,6 +29,7 @@ try:
     N_WORKER_PROCESSES: int = int(os.environ['N_WORKER_PROCESSES'])
 except (KeyError, ValueError):
     N_WORKER_PROCESSES = 15
+REVERSE_PRIORITY = os.environ.get('REVERSE_PRIORITY', 'false') == 'true'
 
 bucket_client = buelon.bucket.Client()
 hub_client: buelon.hub.HubClient = buelon.hub.HubClient(WORKER_HOST, WORKER_PORT)
@@ -96,12 +97,19 @@ def job(step_id: str | None = None) -> None:
             )
 
 
-async def run(step_id: str | None = None) -> None:
+async def run(step_id: str | None = None) -> str:
     if PIPE_WORKER_SUBPROCESS_JOBS != 'true':
-        return job(step_id)
+        job(step_id)
+        return 'done'
     env = {**os.environ, 'STEP_ID': step_id}
     p = await asyncio.create_subprocess_shell(JOB_CMD, env=env)
     await p.wait()
+    return 'done'
+
+
+async def get_steps(scopes: list[str]):
+    await asyncio.sleep(0)
+    return hub_client.get_steps(scopes, reverse=REVERSE_PRIORITY)
 
 
 async def work():
@@ -111,9 +119,16 @@ async def work():
 
     last_loop_had_steps = True
 
-    async with asyncio_pool.AioPool(size=N_WORKER_PROCESSES) as pool:
-        while True:
-            steps = hub_client.get_steps(scopes)
+    steps = []
+    while True:
+        futures = []
+        async with asyncio_pool.AioPool(size=N_WORKER_PROCESSES) as pool:
+            try:
+                if not steps:
+                    steps = await get_steps(scopes)  # hub_client.get_steps(scopes)
+            except Exception as e:
+                steps = []
+                print('Error getting steps:', e)
 
             if not steps:
                 if last_loop_had_steps:
@@ -124,8 +139,27 @@ async def work():
 
             last_loop_had_steps = True
 
+            if os.environ.get('STOP_WORKER', 'false') == 'true':
+                return
+
+            fut_steps = await pool.spawn(get_steps(scopes))
+
             for s in steps:
-                await pool.spawn(run(s))
+                fut = await pool.spawn(run(s))
+                futures.append((fut, s))
+
+        for fut, step in futures:
+            try:
+                fut.result()  # check for exceptions
+            except Exception as e:
+                print('Error running step:', e, step)
+
+        try:
+            print('getting steps')
+            steps = fut_steps.result()
+        except Exception as e:
+            print('Error getting steps:', e)
+            steps = []
 
 
 def is_hanging_script(path: str):
@@ -172,6 +206,12 @@ async def _main():
     asyncio.create_task(cleaner())
     with hub_client:
         await work()
+
+
+# try:
+#     from cython.c_worker import *
+# except (ImportError, ModuleNotFoundError):
+#     pass
 
 
 if __name__ == '__main__':

@@ -2,6 +2,7 @@
 This module provides functionality for evaluating pipes and handling loops in a custom pipeline language.
 """
 
+import inspect
 from typing import Callable
 
 from . import step_definition
@@ -91,8 +92,8 @@ def check_loop(
         if '(' in loop_var:
             loop_var = loop_var[:loop_var.find('(')]
 
-        if not isinstance(loop_val, list):
-            raise TypeError(f'Line {index + 1}: Loop variable must be a list')
+        if not isinstance(loop_val, list) and not inspect.isgenerator(loop_val):
+            raise TypeError(f'Line {index + 1}: Loop variable must be a list or generator. Is {type(loop_val).__name__}')
 
         def get_indentation(text: str):
             """
@@ -139,6 +140,8 @@ def check_loop(
             variables[var_name] = p.create_steps(index, variables, '')
             for future_line in future_lines:
                 read_line(future_line)
+
+            del value
 
         set_index(next_line - 1)
         return True

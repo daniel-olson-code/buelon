@@ -200,5 +200,5 @@ def get_steps_from_code(code: str, lazy_steps: bool = False) -> Dict[str, Any]:
         dict: A dictionary containing the extracted steps and starters.
     """
     variables = run(code, lazy_steps=lazy_steps)
-    return {'steps': variables['__steps__'], 'starters': variables['__starters__']}
+    return {'steps': variables['__steps__'], 'starters': variables['__starters__'], 'variables': variables}
 

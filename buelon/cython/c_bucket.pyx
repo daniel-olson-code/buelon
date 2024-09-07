@@ -266,7 +266,7 @@ class Client:
         with self.db.connect() as conn:
             cur = conn.cursor()
             # psycopg2.extras.execute_batch(cur, q, table)
-            q = f'''INSERT INTO {POSTGRES_TABLE} (key, data, epoch) VALUES (%s, %s, %s)
+            q = f'''INSERT INTO {POSTGRES_TABLE} (key, data, epoch) VALUES (%s, %s, %s) 
                 ON CONFLICT (key) DO UPDATE SET (data, epoch) = (EXCLUDED.data, EXCLUDED.epoch)'''
             table = ((k, v, time.time()) for k, v in keys_values.items())
             psycopg2.extras.execute_batch(cur, q, table)
@@ -548,6 +548,9 @@ def main() -> None:
     server: Server = Server()
     print('running bucket server', server.HOST, '@', server.PORT)
     server.loop()
+
+
+
 
 
 if __name__ == '__main__':

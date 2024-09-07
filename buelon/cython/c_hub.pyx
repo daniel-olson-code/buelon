@@ -8,7 +8,9 @@ import threading
 import queue
 import time
 import string
-from typing import Any
+import platform
+import signal
+from typing import Any, Callable
 
 import unsync
 try:
@@ -58,6 +60,35 @@ connection_queue = queue.Queue()
 PIPELINE_SPLIT_TOKEN = b'|-**-|'
 PIPELINE_END_TOKEN = b'[-_-]'
 LENGTH_OF_PIPELINE_END_TOKEN = len(PIPELINE_END_TOKEN)
+
+
+def timeout_func(func, args=None, kwargs=None, timeout_duration=1, default=None):
+    if args is None: args = []
+    if kwargs is None: kwargs = {}
+
+    # only Darwin, Linux
+    if platform.system() == 'Windows':
+        # does not work in windows
+        return func(*args, **kwargs)
+
+    class CustomTimeoutError(Exception):
+        pass
+
+    def handler(signum, frame):
+        raise CustomTimeoutError()
+
+    # set the timeout handler
+    signal.signal(signal.SIGALRM, handler)
+    signal.alarm(timeout_duration)
+    try:
+        result = func(*args, **kwargs)
+    except CustomTimeoutError as exc:
+        result = default
+    finally:
+        signal.alarm(0)
+
+    return result
+
 
 
 def receive(conn: socket.socket) -> bytes:
@@ -117,8 +148,8 @@ def reset_errors(include_workers=False):
 def _reset_errors(include_workers=b'false'):
     suffix = '' if include_workers != b'true' else f' or status = \'{buelon.core.step.StepStatus.working.value}\''
     query = f'''
-    update steps
-    set status = \'{buelon.core.step.StepStatus.pending.value}\'
+    update steps 
+    set status = \'{buelon.core.step.StepStatus.pending.value}\' 
     where status = \'{buelon.core.step.StepStatus.error.value}\'
     {suffix};'''
     with sqlite3.connect(db_path) as conn:
@@ -145,21 +176,21 @@ def _get_step_count(types: str | None = None) -> list[dict]:
         where = ''
     else:
         where = f'''
-        where
+        where 
             status not in (
-                '{buelon.core.step.StepStatus.success.value}',
+                '{buelon.core.step.StepStatus.success.value}', 
                 '{buelon.core.step.StepStatus.cancel.value}'
             )
         '''
 
     query = f'''
-    select
+    select 
         status,
         count(*) as amount
-    from
+    from 
         steps
     {where}
-    group by
+    group by 
         status;
     '''
     with sqlite3.connect(db_path) as conn:
@@ -219,44 +250,44 @@ def upload_pipe_code(code: str, lazy_steps: bool = False):
     variables = buelon.core.pipe_interpreter.get_steps_from_code(code, lazy_steps)
     steps = variables['steps']
     starters = variables['starters']
-
-    print('uploading', len(steps), 'steps')
     add_later = {} if not lazy_steps else buelon.helpers.lazy_load_class.LazyMap()
+    
+    try:
+        print('uploading', len(steps), 'steps')
+        chunk = []
+        for _step in steps.values():
+            if _step.id in starters:
+                add_later[_step.id] = _step
+                continue
 
-    chunk = []
-    for _step in steps.values():
-        if _step.id in starters:
-            add_later[_step.id] = _step
-            continue
+            chunk.append(_step)
 
-        chunk.append(_step)
+            if len(chunk) >= chunk_size:
+                set_steps(chunk)
+                client.upload_steps([s.to_json() for s in chunk], len(chunk) * [buelon.core.step.StepStatus.queued.value])
+                chunk.clear()
 
-        if len(chunk) >= chunk_size:
+        if chunk:
             set_steps(chunk)
             client.upload_steps([s.to_json() for s in chunk], len(chunk) * [buelon.core.step.StepStatus.queued.value])
             chunk.clear()
 
-    if chunk:
-        set_steps(chunk)
-        client.upload_steps([s.to_json() for s in chunk], len(chunk) * [buelon.core.step.StepStatus.queued.value])
-        chunk.clear()
+        for _step in add_later.values():
 
-    for _step in add_later.values():
+            chunk.append(_step)
 
-        chunk.append(_step)
+            if len(chunk) >= chunk_size:
+                set_steps(chunk)
+                client.upload_steps([s.to_json() for s in chunk], len(chunk) * [buelon.core.step.StepStatus.pending.value])
+                chunk.clear()
 
-        if len(chunk) >= chunk_size:
+        if chunk:
             set_steps(chunk)
             client.upload_steps([s.to_json() for s in chunk], len(chunk) * [buelon.core.step.StepStatus.pending.value])
             chunk.clear()
-
-    if chunk:
-        set_steps(chunk)
-        client.upload_steps([s.to_json() for s in chunk], len(chunk) * [buelon.core.step.StepStatus.pending.value])
-        chunk.clear()
-
-    del steps
-    del add_later
+    finally:
+        del steps
+        del add_later
 
 
 def upload_pipe_code_from_file(file_path: str, lazy_steps: bool = False):
@@ -554,7 +585,8 @@ def get_steps(
         limit=50,
         chunk_size=100,
         status: int = buelon.core.step.StepStatus.pending.value,
-        include_working: bool = True
+        include_working: bool = True,
+        reverse: bool=False,
 ):
     """
     Get the steps in the scope, ordered by priority, velocity, then scope position.
@@ -565,6 +597,7 @@ def get_steps(
         chunk_size (int): The number of steps to fetch in each chunk. Defaults to 100.
         status (int | buelon.core.step.StepStatus.value): The status of the steps to retrieve. Defaults to pending.
         include_working (bool): Whether to include working steps. Defaults to True.
+        reverse (bool): Whether to reverse the order of the steps. Defaults to False.
 
     Returns:
         list: A list of steps ordered by priority, velocity, and scope position.
@@ -594,6 +627,10 @@ def get_steps(
             working_clause = (f' or (epoch < {expiration_time} '
                               f'     and status = \'{buelon.core.step.StepStatus.working.value}\') ')
 
+        order_by = 'priority desc, epoch'
+        if reverse:
+            order_by = 'priority asc, epoch'
+
         while len(steps) < limit:
             sql = (f'SELECT id, priority, scope, velocity, tag '
                    f'FROM steps '
@@ -603,7 +640,7 @@ def get_steps(
                    f'   {working_clause}'
                    f')'
                    f'ORDER BY  '#' CASE scope {case_statement} END, '
-                   f'   priority desc, epoch '  # , COALESCE(velocity, 1.0/0.0)
+                   f'   {order_by} '  # , COALESCE(velocity, 1.0/0.0)
                    f'LIMIT ? OFFSET ?')
 
             cur.execute(sql, (*scopes, #*scopes,
@@ -855,20 +892,32 @@ class HubClient:
         if not self.conn:
             self.conn = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.conn.connect((self.host, self.port))
-            self.conn.settimeout(60*60)
+            # self.conn.settimeout(60)
 
     def close(self):
         if self.conn:
             self.conn.close()
             self.conn = None
 
-    def send_request(self, method, data: bytes):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as conn:
-            conn.connect((self.host, self.port))
-            conn.settimeout(60*60)
-            request = method.value.encode() + PIPELINE_SPLIT_TOKEN + data
-            send(conn, request)
-            response = receive(conn)
+    def send_request(self, method, data: bytes, timeout: int | float = 5, increments: int | float | Callable = 5, attempts: int = 4):
+        try:
+            # socket.setdefaulttimeout(timeout)
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as conn:
+                conn.settimeout(timeout)
+                conn.connect((self.host, self.port))
+                request = method.value.encode() + PIPELINE_SPLIT_TOKEN + data
+                send(conn, request)
+                response = timeout_func(receive, (conn,), timeout_duration=timeout, default='__fail__')
+                if response == '__fail__':
+                    raise TimeoutError(f"Request timed out after {timeout} seconds")
+        except (TimeoutError, socket.timeout, ConnectionRefusedError) as e:
+            if attempts <= 0:
+                raise
+            print(f"{type(e).__name__} error: {e}")
+            time.sleep(1)  # Backoff before retrying
+            timeout = timeout + increments if not callable(increments) else increments(timeout, attempts)
+            return self.send_request(method, data, timeout, increments, attempts - 1)
+
         return response
         # attempt = 0
         # while attempt < self.max_reconnect_attempts:
@@ -919,7 +968,9 @@ class HubClient:
         return buelon.helpers.json_parser.loads(
             self.send_request(
                 Method.STEP_COUNT,
-                buelon.helpers.json_parser.dumps({'types': types})
+                buelon.helpers.json_parser.dumps({'types': types}),
+                timeout=60,
+                attempts=0
             )
         )
 
@@ -967,6 +1018,9 @@ def main():
 
     server = HubServer()
     server.start()
+
+
+
 
 
 if __name__ == "__main__":
