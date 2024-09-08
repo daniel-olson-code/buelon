@@ -4,6 +4,7 @@ import traceback
 import sys
 import enum
 import contextlib
+import gc
 
 import asyncio_pool
 
@@ -30,6 +31,15 @@ try:
 except (KeyError, ValueError):
     N_WORKER_PROCESSES = 15
 REVERSE_PRIORITY = os.environ.get('REVERSE_PRIORITY', 'false') == 'true'
+try:
+    WORKER_RESTART_INTERVAL = int(os.environ.get('WORKER_RESTART_INTERVAL', 60 * 60 * 2))
+except ValueError:
+    WORKER_RESTART_INTERVAL = 60 * 60 * 2
+
+try:
+    WORKER_JOB_TIMEOUT = int(os.environ.get('WORKER_JOB_TIMEOUT', 60 * 60 * 2))
+except:
+    WORKER_JOB_TIMEOUT = 60 * 60 * 2
 
 bucket_client = buelon.bucket.Client()
 hub_client: buelon.hub.HubClient = buelon.hub.HubClient(WORKER_HOST, WORKER_PORT)
@@ -113,6 +123,8 @@ async def get_steps(scopes: list[str]):
 
 
 async def work():
+    start_time = time.time()
+
     _scopes: str = os.environ.get('PIPE_WORKER_SCOPES', DEFAULT_SCOPES)
     scopes: list[str] = _scopes.split(',')
     print('scopes', scopes)
@@ -121,14 +133,21 @@ async def work():
 
     steps = []
     while True:
-        futures = []
-        async with asyncio_pool.AioPool(size=N_WORKER_PROCESSES) as pool:
-            try:
-                if not steps:
-                    steps = await get_steps(scopes)  # hub_client.get_steps(scopes)
-            except Exception as e:
-                steps = []
-                print('Error getting steps:', e)
+        try:
+            if os.environ.get('STOP_WORKER', 'false') == 'true':
+                return
+
+            if not steps:
+                try:
+                    steps = await asyncio.wait_for(get_steps(scopes), timeout=30)
+                except asyncio.TimeoutError:
+                    print("Timeout while getting steps from hub")
+                    await asyncio.sleep(5)
+                    continue
+                except Exception as e:
+                    print('Error getting steps:', e)
+                    await asyncio.sleep(5)
+                    continue
 
             if not steps:
                 if last_loop_had_steps:
@@ -139,27 +158,95 @@ async def work():
 
             last_loop_had_steps = True
 
-            if os.environ.get('STOP_WORKER', 'false') == 'true':
-                return
+            async with asyncio_pool.AioPool(size=N_WORKER_PROCESSES) as pool:
+                futures = []
+                for s in steps:
+                    fut = await pool.spawn(asyncio.wait_for(run(s), timeout=WORKER_JOB_TIMEOUT))  # 1 hr timeout for each job
+                    futures.append((fut, s))
 
-            fut_steps = await pool.spawn(get_steps(scopes))
+                fut_steps = await pool.spawn(asyncio.wait_for(get_steps(scopes), timeout=35))
 
-            for s in steps:
-                fut = await pool.spawn(run(s))
-                futures.append((fut, s))
+            for fut, step in futures:
+                try:
+                    fut.result()
+                except asyncio.TimeoutError:
+                    print(f"Job timed out for step: {step}")
+                    await hub_client.error(step, "Job timed out", "")
+                except Exception as e:
+                    print(f'Error running step: {e}', step)
+                    await hub_client.error(step, str(e), traceback.format_exc())
 
-        for fut, step in futures:
             try:
-                fut.result()  # check for exceptions
+                steps = fut_steps.result()
+            except asyncio.TimeoutError:
+                print("Timeout while getting next batch of steps")
+                steps = []
             except Exception as e:
-                print('Error running step:', e, step)
+                print('Error getting next batch of steps:', e)
+                steps = []
 
-        try:
-            print('getting steps')
-            steps = fut_steps.result()
         except Exception as e:
-            print('Error getting steps:', e)
-            steps = []
+            print(f"Unexpected error in work loop: {e}")
+            traceback.print_exc()
+            await asyncio.sleep(5)
+
+        # Force garbage collection
+        gc.collect()
+
+        # Check if we need to restart the worker
+        if time.time() - start_time > WORKER_RESTART_INTERVAL:
+            print("Restarting worker...")
+            os.execv(sys.executable, [sys.executable] + sys.argv)
+
+
+# async def work():
+#     _scopes: str = os.environ.get('PIPE_WORKER_SCOPES', DEFAULT_SCOPES)
+#     scopes: list[str] = _scopes.split(',')
+#     print('scopes', scopes)
+#
+#     last_loop_had_steps = True
+#
+#     steps = []
+#     while True:
+#         futures = []
+#         async with asyncio_pool.AioPool(size=N_WORKER_PROCESSES) as pool:
+#             try:
+#                 if not steps:
+#                     steps = await get_steps(scopes)  # hub_client.get_steps(scopes)
+#             except Exception as e:
+#                 steps = []
+#                 print('Error getting steps:', e)
+#
+#             if not steps:
+#                 if last_loop_had_steps:
+#                     last_loop_had_steps = False
+#                     print('waiting..')
+#                 await asyncio.sleep(1.)
+#                 continue
+#
+#             last_loop_had_steps = True
+#
+#             if os.environ.get('STOP_WORKER', 'false') == 'true':
+#                 return
+#
+#             fut_steps = await pool.spawn(get_steps(scopes))
+#
+#             for s in steps:
+#                 fut = await pool.spawn(run(s))
+#                 futures.append((fut, s))
+#
+#         for fut, step in futures:
+#             try:
+#                 fut.result()  # check for exceptions
+#             except Exception as e:
+#                 print('Error running step:', e, step)
+#
+#         try:
+#             print('getting steps')
+#             steps = fut_steps.result()
+#         except Exception as e:
+#             print('Error getting steps:', e)
+#             steps = []
 
 
 def is_hanging_script(path: str):
@@ -208,10 +295,7 @@ async def _main():
         await work()
 
 
-# try:
-#     from cython.c_worker import *
-# except (ImportError, ModuleNotFoundError):
-#     pass
+
 
 
 if __name__ == '__main__':

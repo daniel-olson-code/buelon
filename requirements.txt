@@ -6,3 +6,4 @@ asyncio-pool
 psutil
 unsync
 redis
+persistqueue

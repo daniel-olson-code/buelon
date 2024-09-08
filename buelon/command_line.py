@@ -150,7 +150,7 @@ def fetch_errors(args):
 
 def cli():
     parser = argparse.ArgumentParser(description='Buelon command-line interface')
-    parser.add_argument('-v', '--version', action='version', version='Buelon 1.0.57')
+    parser.add_argument('-v', '--version', action='version', version='Buelon 1.0.57-alpha2')
     parser.add_argument('-b', '--binding', help='Binding for uploading pipe code (host:port)')
     parser.add_argument('file_path', nargs='?', default='nothing', help='File path for uploading pipe code')
 
