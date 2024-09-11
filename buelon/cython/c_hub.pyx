@@ -1,3 +1,4 @@
+from __future__ import annotations
 import asyncio
 import enum
 import traceback
@@ -10,8 +11,11 @@ import time
 import string
 import platform
 import signal
+import collections
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
 
+import persistqueue
 import unsync
 try:
     import dotenv
@@ -51,7 +55,7 @@ db_path = os.path.join('database.db')
 bucket_client = buelon.bucket.Client()
 
 # Initialize a global tag_usage dictionary
-tag_usage = {}
+tag_usage = collections.defaultdict(int) #{}
 tag_lock = threading.Lock()
 
 # Create a queue to handle incoming connections
@@ -109,6 +113,14 @@ def load_db():
         cur.execute('PRAGMA journal_mode=WAL')
         cur.execute('CREATE TABLE IF NOT EXISTS steps ('
                     'id, priority, scope, velocity, tag, status, epoch, msg, trace);')
+        cur.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_steps_id ON steps (id);')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_steps_status ON steps (status);')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_steps_priority ON steps (priority);')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_steps_scope ON steps (scope);')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_steps_epoch ON steps (epoch);')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_steps_tag ON steps (tag);')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_steps_velocity ON steps (velocity);')
+
         cur.execute('CREATE TABLE IF NOT EXISTS tags ('
                     'tag, velocity);')
         conn.commit()
@@ -126,11 +138,12 @@ def delete_steps():
         send(s, data)
 
 
-def _delete_steps():
-    with sqlite3.connect(db_path) as conn:
-        cur = conn.cursor()
-        cur.execute('delete from steps;')
-        conn.commit()
+def _delete_steps(self: HubServer):
+    self.execute_db_query('delete from steps;')
+    # with sqlite3.connect(db_path) as conn:
+    #     cur = conn.cursor()
+    #     cur.execute('delete from steps;')
+    #     conn.commit()
 
 
 def reset_errors(include_workers=False):
@@ -145,17 +158,18 @@ def reset_errors(include_workers=False):
         send(s, data)
 
 
-def _reset_errors(include_workers=b'false'):
+def _reset_errors(self: HubServer, include_workers=b'false'):
     suffix = '' if include_workers != b'true' else f' or status = \'{buelon.core.step.StepStatus.working.value}\''
     query = f'''
     update steps 
     set status = \'{buelon.core.step.StepStatus.pending.value}\' 
     where status = \'{buelon.core.step.StepStatus.error.value}\'
     {suffix};'''
-    with sqlite3.connect(db_path) as conn:
-        cur = conn.cursor()
-        cur.execute(query)
-        conn.commit()
+    self.execute_db_query(query)
+    # with sqlite3.connect(db_path) as conn:
+    #     cur = conn.cursor()
+    #     cur.execute(query)
+    #     conn.commit()
 
 
 def get_step_count(types: str | None = None) -> list[dict]:
@@ -171,7 +185,7 @@ def get_step_count(types: str | None = None) -> list[dict]:
         return buelon.helpers.json_parser.loads(receive(s))
 
 
-def _get_step_count(types: str | None = None) -> list[dict]:
+def _get_step_count(self: HubServer, types: str | None = None) -> list[dict]:
     if types == '*':
         where = ''
     else:
@@ -193,15 +207,19 @@ def _get_step_count(types: str | None = None) -> list[dict]:
     group by 
         status;
     '''
-    with sqlite3.connect(db_path) as conn:
-        cur = conn.cursor()
-        cur.execute(query)
+    table = self.execute_db_query(query, json_table=True)
+    for row in table:
+        row['status'] = buelon.core.step.StepStatus(int(row['status'])).name
 
-        headers = [row[0] for row in cur.description]
-        table = [dict(zip(headers, row)) for row in cur.fetchall()]
-
-        for row in table:
-            row['status'] = buelon.core.step.StepStatus(int(row['status'])).name
+    # with sqlite3.connect(db_path) as conn:
+    #     cur = conn.cursor()
+    #     cur.execute(query)
+    #
+    #     headers = [row[0] for row in cur.description]
+    #     table = [dict(zip(headers, row)) for row in cur.fetchall()]
+    #
+    #     for row in table:
+    #         row['status'] = buelon.core.step.StepStatus(int(row['status'])).name
 
     return table
 
@@ -218,30 +236,40 @@ def upload_step(_step: buelon.core.step.Step, status: buelon.core.step.StepStatu
         send(s, data)
 
 
-def _upload_step(step_json: dict, status_value: int) -> None:
+def _upload_step(self: HubServer, step_json: dict, status_value: int) -> None:
     status = buelon.core.step.StepStatus(status_value)
     _step = buelon.core.step.Step().from_json(step_json)
+    sql = ('INSERT INTO steps (id, priority, scope, velocity, tag, status, epoch, msg, trace) '
+           'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);')
+    params = (_step.id, _step.priority, _step.scope, _step.velocity, _step.tag, f'{status.value}', time.time(), '', '')
 
-    with sqlite3.connect(db_path) as conn:
-        cur = conn.cursor()
-        sql = ('INSERT INTO steps (id, priority, scope, velocity, tag, status, epoch, msg, trace) '
-               'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);')
-        cur.execute(sql, (_step.id, _step.priority, _step.scope, _step.velocity, _step.tag, f'{status.value}',
-                          time.time(), '', ''))
-        conn.commit()
+    self.execute_db_query(sql, params)
+
+    # with sqlite3.connect(db_path) as conn:
+    #     cur = conn.cursor()
+    #     cur.execute(sql, params)
+    #     conn.commit()
 
 
-def _upload_steps(step_jsons: list, status_values: list) -> None:
-    with sqlite3.connect(db_path) as conn:
-        cur = conn.cursor()
-        for step_json, status_value in zip(step_jsons, status_values):
-            status = buelon.core.step.StepStatus(status_value)
-            _step = buelon.core.step.Step().from_json(step_json)
-            sql = ('INSERT INTO steps (id, priority, scope, velocity, tag, status, epoch, msg, trace) '
-                   'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);')
-            cur.execute(sql, (_step.id, _step.priority, _step.scope, _step.velocity, _step.tag, f'{status.value}',
-                              time.time(), '', ''))
-        conn.commit()
+def _upload_steps(self: HubServer, step_jsons: list, status_values: list) -> None:
+    sql = ('INSERT INTO steps (id, priority, scope, velocity, tag, status, epoch, msg, trace) '
+           'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);')
+    for step_json, status_value in zip(step_jsons, status_values):
+        status = buelon.core.step.StepStatus(status_value)
+        _step = buelon.core.step.Step().from_json(step_json)
+        params = (
+            _step.id, _step.priority, _step.scope, _step.velocity, _step.tag, f'{status.value}', time.time(), '', '')
+        self.execute_db_query(sql, params)
+    # with sqlite3.connect(db_path) as conn:
+    #     cur = conn.cursor()
+    #     for step_json, status_value in zip(step_jsons, status_values):
+    #         status = buelon.core.step.StepStatus(status_value)
+    #         _step = buelon.core.step.Step().from_json(step_json)
+    #         params = (
+    #         _step.id, _step.priority, _step.scope, _step.velocity, _step.tag, f'{status.value}', time.time(), '', '')
+    #         cur.execute(sql, params)
+    #     conn.commit()
+
 
 
 def upload_pipe_code(code: str, lazy_steps: bool = False):
@@ -336,7 +364,7 @@ def get_data(step_id: str) -> Any:
     key = f'step-data/{step_id}'
     v = bucket_client.get(key)
     if v is None:
-        _reset(step_id)
+        # _reset(step_id)
         raise ValueError(f'No data found for step {step_id}')
     return buelon.helpers.json_parser.loads(v)
 
@@ -353,17 +381,19 @@ def remove_data(step_id: str) -> None:
 
 
 def check_to_delete_bucket_files(
+        self: HubServer,
         step_id: str,
         already: set | None = None,
         steps: list | None = None
 ) -> None:
-    _check_to_delete_bucket_files(step_id, already, steps)
+    _check_to_delete_bucket_files(self, step_id, already, steps)
 
 
 def _check_to_delete_bucket_files(
-        step_id: str,
-        already: set | None = None,
-        steps: list | None = None
+    self: HubServer,
+    step_id: str,
+    already: set | None = None,
+    steps: list | None = None
 ) -> None:
     first_iteration = already is None and steps is None
     _step = get_step(step_id)
@@ -376,121 +406,155 @@ def _check_to_delete_bucket_files(
         for parent in _step.parents:
             if parent not in already:
                 already.add(parent)
-                check_to_delete_bucket_files(parent, already, steps)
+                # check_to_delete_bucket_files(parent, already, steps)
+                check_to_delete_bucket_files(self, parent, already, steps)
 
     if _step.children:
         for child in _step.children:
             if child not in already:
                 already.add(child)
-                check_to_delete_bucket_files(child, already, steps)
+                # check_to_delete_bucket_files(child, already, steps)
+                check_to_delete_bucket_files(self, child, already, steps)
 
     if first_iteration:
         ids = [s.id for s in steps]
         finished_statuses = {f'{v}' for v in [buelon.core.step.StepStatus.cancel.value, buelon.core.step.StepStatus.success.value]}
-        with sqlite3.connect(db_path) as conn:
-            cur = conn.cursor()
-            sql = f'SELECT status FROM steps WHERE id IN ({", ".join("?" * len(ids))})'
-            cur.execute(sql, ids)
-            rows = cur.fetchall()
+        sql = f'SELECT status FROM steps WHERE id IN ({", ".join("?" * len(ids))})'
 
-            if all([f'{row[0]}' in finished_statuses for row in rows]):
-                for s in steps:
-                    remove_data(s.id)
+        # new
+        rows = self.execute_db_query(sql, ids)
 
+        # with sqlite3.connect(db_path) as conn:
+        #     cur = conn.cursor()
+        #     cur.execute(sql, ids)
+        #     rows = cur.fetchall()
 
-def _done(step_id: str):
-    with sqlite3.connect(db_path) as conn:
-        cur = conn.cursor()
-        _step = get_step(step_id)
-        # set_data(_step.id, result.data)
-        sql_update_step = (f'UPDATE steps SET status = \'{buelon.core.step.StepStatus.success.value}\', epoch = ? WHERE id = ?')
-        cur.execute(sql_update_step, (time.time(), _step.id))
-
-        # cur.execute(sql_set_status, (_step.id, ))
-        conn.commit()
-
-        if _step.children:
-            sql_update_children = (f'UPDATE steps SET status = \'{buelon.core.step.StepStatus.pending.value}\', epoch = ? WHERE id IN ({", ".join("?" * len(_step.children))})')
-            cur.execute(sql_update_children, (time.time(), *_step.children))
-            conn.commit()
-
-        # check_to_delete_bucket_files(step_id)
+        if all([f'{row[0]}' in finished_statuses for row in rows]):
+            for s in steps:
+                remove_data(s.id)
 
 
-def _pending(step_id: str):
-    with sqlite3.connect(db_path) as conn:
-        cur = conn.cursor()
-        sql_update_step = (f'UPDATE steps SET status = \'{buelon.core.step.StepStatus.pending.value}\', epoch = ? WHERE id = ?')
-        cur.execute(sql_update_step, (time.time(), step_id))
+def _done(self: HubServer, step_id: str):
+    _step = get_step(step_id)
+    sql_update_step = (
+        f'UPDATE steps SET status = \'{buelon.core.step.StepStatus.success.value}\', epoch = ? WHERE id = ?')
+    params = (time.time(), _step.id)
+
+    self.execute_db_query(sql_update_step, params)
+
+    if _step.children:
+        sql_update_children = (
+            f'UPDATE steps SET status = \'{buelon.core.step.StepStatus.pending.value}\', epoch = ? WHERE id IN ({", ".join("?" * len(_step.children))})')
+        children_params = (time.time(), *_step.children)
+
+        self.execute_db_query(sql_update_children, children_params)
+
+    # check_to_delete_bucket_files(self, step_id)
+
+    # with sqlite3.connect(db_path) as conn:
+    #     cur = conn.cursor()
+    #     # set_data(_step.id, result.data)
+    #
+    #     cur.execute(sql_update_step, params)
+    #
+    #     # cur.execute(sql_set_status, (_step.id, ))
+    #     conn.commit()
+    #
+    #     if _step.children:
+    #
+    #         cur.execute(sql_update_children, children_params)
+    #         conn.commit()
+    #
+    #     # check_to_delete_bucket_files(step_id)
+
+
+def _pending(self: HubServer, step_id: str):
+    sql_update_step = (
+        f'UPDATE steps SET status = \'{buelon.core.step.StepStatus.pending.value}\', epoch = ? WHERE id = ?')
+    params = (time.time(), step_id)
+    self.execute_db_query(sql_update_step, params)
+
+    # with sqlite3.connect(db_path) as conn:
+    #     cur = conn.cursor()
+    #     cur.execute(sql_update_step, params)
 
 
 def _cancel(
-        step_id: str,
-        already: set | None = None
+    self: HubServer,
+    step_id: str,
+    already: set | None = None
 ) -> None:
     first_iteration = already is None
     _step = get_step(step_id)
     already = set() if first_iteration else already
 
     sql_update_step = f'UPDATE steps SET status = \'{buelon.core.step.StepStatus.cancel.value}\', epoch = ? WHERE id = ?'
+    params = (time.time(), _step.id)
+    self.execute_db_query(sql_update_step, params)
 
-    with sqlite3.connect(db_path) as conn:
-        cur = conn.cursor()
-        cur.execute(sql_update_step, (time.time(), _step.id))
-        conn.commit()
+    # with sqlite3.connect(db_path) as conn:
+    #     cur = conn.cursor()
+    #     cur.execute(sql_update_step, params)
+    #     conn.commit()
 
     if _step.parents:
         for parent in _step.parents:
             if parent not in already:
                 already.add(parent)
-                _cancel(parent, already)
+                _cancel(self, parent, already)
 
     if _step.children:
         for child in _step.children:
             if child not in already:
                 already.add(child)
-                _cancel(child, already)
+                _cancel(self, child, already)
 
     # if first_iteration:
-    #     check_to_delete_bucket_files(step_id)
+    #     check_to_delete_bucket_files(self, step_id)
 
 
-def _reset(step_id: str, already=None):
+def _reset(self: HubServer, step_id: str, already=None):
     _step = get_step(step_id)
     already = set() if not already else already
     # status = buelon.core.step.StepStatus.pending.value if _step.parents else buelon.core.step.StepStatus.queued.value
     status = buelon.core.step.StepStatus.queued.value if _step.parents else buelon.core.step.StepStatus.pending.value
     sql_update_step = f'UPDATE steps SET status = \'{status}\', epoch = ? WHERE id = ?'
+    params = (time.time(), _step.id)
 
-    with sqlite3.connect(db_path) as conn:
-        cur = conn.cursor()
-        cur.execute(sql_update_step, (time.time(), _step.id))
-        conn.commit()
+    self.execute_db_query(sql_update_step, params)
+
+    # with sqlite3.connect(db_path) as conn:
+    #     cur = conn.cursor()
+    #     cur.execute(sql_update_step, params)
+    #     conn.commit()
 
     if _step.children:
         for child in _step.children:
             if child not in already:
                 already.add(child)
-                _reset(child, already)
+                _reset(self, child, already)
 
     if _step.parents:
         for parent in _step.parents:
             if parent not in already:
                 already.add(parent)
-                _reset(parent, already)
+                _reset(self, parent, already)
 
 
-def _error(step_id: str, msg: str, trace: str):
+def _error(self: HubServer, step_id: str, msg: str, trace: str):
     _step = get_step(step_id)
     sql_update_step = (f'UPDATE steps SET status = \'{buelon.core.step.StepStatus.error.value}\', epoch = ?, msg = ?, trace = ? WHERE id = ?')
+    params = (time.time(), msg, trace, _step.id)
 
-    with sqlite3.connect(db_path) as conn:
-        cur = conn.cursor()
-        cur.execute(sql_update_step, (time.time(), msg, trace, _step.id))
-        conn.commit()
+    self.execute_db_query(sql_update_step, params)
+
+    # with sqlite3.connect(db_path) as conn:
+    #     cur = conn.cursor()
+    #     cur.execute(sql_update_step, params)
+    #     conn.commit()
 
 
-def _fetch_errors(count: int, exclude: list[str] | str | None = None) -> dict:
+def _fetch_errors(self: HubServer, count: int, exclude: list[str] | str | None = None) -> dict:
     if not isinstance(count, int):
         raise ValueError('count must be an integer')
 
@@ -515,42 +579,49 @@ def _fetch_errors(count: int, exclude: list[str] | str | None = None) -> dict:
                                 for ex in exclude)
                          + ')')
 
+    sql = (f'SELECT id, msg, trace FROM steps WHERE status = \'{buelon.core.step.StepStatus.error.value}\''
+           f' {exclude_query}'
+           f' LIMIT ?')
+    params = (count, )
+    error_size_query = (f'SELECT COUNT(*)'
+                        f' FROM steps'
+                        f' WHERE status = \'{buelon.core.step.StepStatus.error.value}\''
+                        f' {exclude_query}')
 
-    with sqlite3.connect(db_path) as conn:
-        cur = conn.cursor()
-        sql = (f'SELECT id, msg, trace FROM steps WHERE status = \'{buelon.core.step.StepStatus.error.value}\''
-               f' {exclude_query}'
-               f' LIMIT ?')
-        cur.execute(sql, (count,))
+    table = self.execute_db_query(sql, params, json_table=True)
+    error_size = self.execute_db_query(error_size_query)[0][0]
 
-        headers = [row[0] for row in cur.description]
-        table = [dict(zip(headers, row)) for row in cur.fetchall()]
-        conn.commit()
+    # with sqlite3.connect(db_path) as conn:
+    #     cur = conn.cursor()
+    #
+    #     cur.execute(sql, params)
+    #
+    #     headers = [row[0] for row in cur.description]
+    #     table = [dict(zip(headers, row)) for row in cur.fetchall()]
+    #     conn.commit()
+    #
+    #
+    #     cur.execute(error_size_query)
+    #     error_size = cur.fetchone()[0]
+    #     if isinstance(error_size, (tuple, list)):
+    #         error_size = error_size[0]
 
-        error_size_query = (f'SELECT COUNT(*)'
-                            f' FROM steps'
-                            f' WHERE status = \'{buelon.core.step.StepStatus.error.value}\''
-                            f' {exclude_query}')
-        cur.execute(error_size_query)
-        error_size = cur.fetchone()[0]
-        if isinstance(error_size, (tuple, list)):
-            error_size = error_size[0]
+    for row in table:
+        row['step'] = get_step(row['id']).to_json()
 
-        for row in table:
-            row['step'] = get_step(row['id']).to_json()
-
-        return {
-            'total': error_size,
-            'count': len(table),
-            'table': table
-        }
+    return {
+        'total': error_size,
+        'count': len(table),
+        'table': table
+    }
 
 
-def get_step_status(step_id: str):
+def get_step_status(self: HubServer, step_id: str):
     """
     Get the hub status of a step.
 
     Args:
+        self: The HubServer instance.
         step_id (str): The id of the step to retrieve.
 
     Returns:
@@ -561,32 +632,36 @@ def get_step_status(step_id: str):
         return [
             row
             for s in step_id.split(',')
-            for row in get_step_status(s.strip())
+            for row in get_step_status(self, s.strip())
         ]
 
-    with sqlite3.connect(db_path) as conn:
-        cur = conn.cursor()
-        sql = (f'SELECT * '
-               f'FROM steps '
-               f'WHERE id = \'{step_id}\'')
+    sql = (f'SELECT * '
+           f'FROM steps '
+           f'WHERE id = \'{step_id}\'')
 
-        cur.execute(sql)
-        rows = cur.fetchall()
+    table = self.execute_db_query(sql, json_table=True)
 
-        table = [dict(zip([row[0] for row in cur.description], row)) for row in rows]
-        for row in table:
-            row['status'] = buelon.core.step.StepStatus(int(row['status'])).name
+    # with sqlite3.connect(db_path) as conn:
+    #     cur = conn.cursor()
+    #
+    #     cur.execute(sql)
+    #     rows = cur.fetchall()
+    #
+    #     table = [dict(zip([row[0] for row in cur.description], row)) for row in rows]
 
-        return table
+    for row in table:
+        row['status'] = buelon.core.step.StepStatus(int(row['status'])).name
+
+    return table
 
 
 def get_steps(
-        scopes: list,
-        limit=50,
-        chunk_size=100,
-        status: int = buelon.core.step.StepStatus.pending.value,
-        include_working: bool = True,
-        reverse: bool=False,
+    scopes: list,
+    limit=50,
+    chunk_size=100,
+    status: int = buelon.core.step.StepStatus.pending.value,
+    include_working: bool = True,
+    reverse: bool=False,
 ):
     """
     Get the steps in the scope, ordered by priority, velocity, then scope position.
@@ -671,7 +746,7 @@ def get_steps(
 
 def reset_tag_usage():
     global tag_usage
-    tag_usage = {}
+    tag_usage = collections.defaultdict(int)  # {}
 
 
 # Function to decrement tag usage every second
@@ -686,12 +761,55 @@ def decrement_tag_usage():
                 tag_usage[tag] = max(0, tag_usage[tag] - 1)
 
 
+class ThreadSafeSQLiteQueue:
+    def __init__(self, path, auto_commit=True):
+        self.path = path
+        self.auto_commit = auto_commit
+        self.local = threading.local()
+
+    def _get_queue(self):
+        if not hasattr(self.local, 'queue'):
+            self.local.queue = persistqueue.SQLiteQueue(self.path, auto_commit=self.auto_commit)
+        return self.local.queue
+
+    def put(self, item):
+        return self._get_queue().put(item)
+
+    def get(self):
+        return self._get_queue().get()
+
+    def task_done(self):
+        return self._get_queue().task_done()
+
+
 class HubServer:
     def __init__(self, host='0.0.0.0', port=65432):
         self.host = host
         self.port = port
         self.transaction_queue = queue.Queue()
-        self.execution_queue = queue.Queue()
+        # self.execution_queue = queue.Queue()
+        self.execution_queue = ThreadSafeSQLiteQueue('execution_queue', auto_commit=True)  # persistqueue.SQLiteQueue('execution_queue', auto_commit=True)
+        self.db_pool = self.create_db_pool()
+
+    def create_db_pool(self, max_connections=10):
+        return ThreadPoolExecutor(max_workers=max_connections)
+
+    def execute_db_query(self, query, params=None, json_table=False):
+        def db_operation():
+            with sqlite3.connect(db_path) as conn:
+                cur = conn.cursor()
+                if params:
+                    cur.execute(query, params)
+                else:
+                    cur.execute(query)
+                conn.commit()
+                if json_table:
+                    headers = [row[0] for row in cur.description]
+                    table = [dict(zip(headers, row)) for row in cur.fetchall()]
+                    return table
+                return cur.fetchall()
+
+        return self.db_pool.submit(db_operation).result()
 
     def start(self):
         server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -770,6 +888,20 @@ class HubServer:
             finally:
                 self.transaction_queue.task_done()
 
+    # def _execute_transaction(self):
+    #     while True:
+    #         method, payload = self.execution_queue.get()
+    #         try:
+    #             print('executing', method)
+    #             self._execute_request(method, payload)
+    #         except KeyboardInterrupt:
+    #             raise
+    #         except Exception as e:
+    #             traceback.print_exc()
+    #             print(f"Error processing transaction: {e}")
+    #         finally:
+    #             self.execution_queue.task_done()
+
     def _execute_transaction(self):
         while True:
             method, payload = self.execution_queue.get()
@@ -786,33 +918,37 @@ class HubServer:
 
     def _execute_request(self, method, payload):
         if method == Method.DONE:
-            _done(payload.decode())
+            # _done(payload.decode())
+            _done(self, payload.decode())
             return
         elif method == Method.PENDING:
-            _pending(payload.decode())
+            _pending(self, payload.decode())
             return
         elif method == Method.CANCEL:
-            _cancel(payload.decode())
+            _cancel(self, payload.decode())
             return
         elif method == Method.RESET:
-            _reset(payload.decode())
+            _reset(self, payload.decode())
             return
         elif method == Method.ERROR:
             values = buelon.helpers.json_parser.loads(payload)
-            _error(values['step_id'], values['msg'], values['trace'])
+            _error(self, values['step_id'], values['msg'], values['trace'])
             return
         elif method == Method.UPLOAD_STEP:
             step_json, status_value = buelon.helpers.json_parser.loads(payload)
-            _upload_step(step_json, status_value)
+            # _upload_step(step_json, status_value)
+            _upload_step(self, step_json, status_value)
             return
         elif method == Method.UPLOAD_STEPS:
             step_jsons, status_values = buelon.helpers.json_parser.loads(payload)
-            _upload_steps(step_jsons, status_values)
+            # _upload_steps(step_jsons, status_values)
+            _upload_steps(self, step_jsons, status_values)
             # for step_json, status_value in zip(step_jsons, status_values):
             #     _upload_step(step_json, status_value)
             return
         elif method == Method.RESET_ERRORS:
-            _reset_errors(payload)
+            # _reset_errors(payload)
+            _reset_errors(self, payload)
             return
         # elif method == Method.DELETE_STEPS:
         #     _delete_steps()
@@ -826,11 +962,12 @@ class HubServer:
             self.execution_queue.put((method, payload))
         if method == Method.GET_STEPS:
             scopes, kwargs = buelon.helpers.json_parser.loads(payload)
-            steps = get_steps(scopes, **kwargs)
+            # steps = get_steps(scopes, **kwargs)
+            steps = self.get_steps(scopes, **kwargs)
             return buelon.helpers.json_parser.dumps(steps)
         elif method == Method.FETCH_ROWS:
             step_id = buelon.helpers.json_parser.loads(payload)['step_id']
-            rows = get_step_status(step_id)
+            rows = get_step_status(self, step_id)
             return buelon.helpers.json_parser.dumps(rows)
         # elif method == Method.DONE:
         #     _done(payload.decode())
@@ -848,12 +985,14 @@ class HubServer:
         #     _upload_step(step_json, status_value)
         elif method == Method.STEP_COUNT:
             kwargs = buelon.helpers.json_parser.loads(payload)
-            result = _get_step_count(kwargs['types'])
+            # result = _get_step_count(kwargs['types'])
+            result = _get_step_count(self, kwargs['types'])
             return buelon.helpers.json_parser.dumps(result)
         # elif method == Method.RESET_ERRORS:
         #     _reset_errors(payload)
         elif method == Method.DELETE_STEPS:
-            _delete_steps()
+            # _delete_steps()
+            _delete_steps(self)
         elif method == Method.FETCH_ERRORS:
             try:
                 config = buelon.helpers.json_parser.loads(payload)
@@ -869,8 +1008,107 @@ class HubServer:
             except ValueError:
                 count = 5
                 exclude = None
-            return buelon.helpers.json_parser.dumps(_fetch_errors(count, exclude))
+            return buelon.helpers.json_parser.dumps(_fetch_errors(self, count, exclude))
         return b'ok'
+
+    def get_steps(self, scopes, limit=100, chunk_size=100, status=buelon.core.step.StepStatus.pending.value,
+                  include_working=True, reverse=False):
+        """
+            Get the steps in the scope, ordered by priority, velocity, then scope position.
+
+            Args:
+                scopes (list): A list of scopes to filter the steps.
+                limit (int): The maximum number of steps to retrieve. Defaults to 50.
+                chunk_size (int): The number of steps to fetch in each chunk. Defaults to 100.
+                status (int | buelon.core.step.StepStatus.value): The status of the steps to retrieve. Defaults to pending.
+                include_working (bool): Whether to include working steps. Defaults to True.
+                reverse (bool): Whether to reverse the order of the steps. Defaults to False.
+
+            Returns:
+                list: A list of steps ordered by priority, velocity, and scope position.
+            """
+        global tag_usage
+
+        # # Fetch velocities for each tag
+        # velocity_sql = 'SELECT tag, velocity FROM tags'  # f'SELECT tag, velocity FROM tags WHERE scope IN ({",".join("?" * len(scopes))})'
+        # cur.execute(velocity_sql)  # (velocity_sql, (*scopes,))
+        # tag_velocities = dict(cur.fetchall())
+
+        # # Initialize tag_usage for new tags
+        # for tag in tag_velocities:
+        #     if tag not in tag_usage:
+        #         tag_usage[tag] = 0
+
+        # case_statement = ' '.join([f"WHEN ? THEN {i}" for i in range(len(scopes))])
+        # offset = 0
+        # steps = []
+
+        expiration_time = time.time() - (60 * 60 * .2)  # (60 * 60 * 2)
+        status = f'{buelon.core.step.StepStatus(status).value}'
+        working_clause = ''
+        if include_working:
+            working_clause = (f' or (epoch < {expiration_time} '
+                              f'     and status = \'{buelon.core.step.StepStatus.working.value}\') ')
+
+        order_by = 'priority desc, epoch'
+        if reverse:
+            order_by = 'priority asc, epoch'
+
+        # ... (keep the existing logic)
+
+        # sql = (f'SELECT id, priority, scope, velocity, tag '
+        #        f'FROM steps '
+        #        f'WHERE scope IN ({",".join("?" * len(scopes))}) '
+        #        f'AND ('
+        #        f'   status = \'{status}\' '
+        #        f'   {working_clause}'
+        #        f')'
+        #        f'ORDER BY  '  # ' CASE scope {case_statement} END, '
+        #        f'   {order_by} '  # , COALESCE(velocity, 1.0/0.0)
+        #        f'LIMIT ? OFFSET ?')
+        #
+        # cur.execute(sql, (*scopes,  # *scopes,
+        #                   chunk_size, offset))
+
+        # Use a single query to fetch all necessary data
+        query = f"""
+        SELECT s.id -- s.id, s.priority, s.scope, s.velocity, s.tag, t.velocity as tag_velocity
+        FROM steps s
+        -- LEFT JOIN tags t ON s.tag = t.tag
+        WHERE s.scope IN ({','.join('?' for _ in scopes)})
+        AND (s.status = ? {working_clause})
+        ORDER BY {order_by}
+        LIMIT ?
+        """
+
+        params = (*scopes, status, limit)
+        rows = self.execute_db_query(query, params)
+
+        steps = []
+        # tag_usage = {}
+
+        # for row in rows:
+        #     step_id, priority, scope, velocity, tag, tag_velocity = row
+        #     if tag_velocity is None or tag_usage[tag] < tag_velocity:
+        #         steps.append(step_id)
+        #         tag_usage[tag] += 1
+        #         if len(steps) >= limit:
+        #             break
+
+        for row in rows:
+            steps.append(row[0])
+
+        # Update status to working for selected steps
+        if steps:
+            update_query = f"""
+            UPDATE steps 
+            SET status = ?, epoch = ?
+            WHERE id IN ({','.join('?' for _ in steps)})
+            """
+            update_params = (buelon.core.step.StepStatus.working.value, time.time(), *steps)
+            self.execute_db_query(update_query, update_params)
+
+        return steps
 
 
 class HubClient:
@@ -975,7 +1213,7 @@ class HubClient:
         )
 
     def reset_errors(self, include_workers):
-        return self.send_request(Method.RESET_ERRORS, b'true' if include_workers else b'false')
+        return self.send_request(Method.RESET_ERRORS, b'true' if include_workers else b'false', timeout=60 * 10, increments=30)
 
     def delete_steps(self):
         return self.send_request(Method.DELETE_STEPS, b'nothing')

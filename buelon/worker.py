@@ -160,11 +160,10 @@ async def work():
 
             async with asyncio_pool.AioPool(size=N_WORKER_PROCESSES) as pool:
                 futures = []
+                fut_steps = await pool.spawn(asyncio.wait_for(get_steps(scopes), timeout=35))
                 for s in steps:
                     fut = await pool.spawn(asyncio.wait_for(run(s), timeout=WORKER_JOB_TIMEOUT))  # 1 hr timeout for each job
                     futures.append((fut, s))
-
-                fut_steps = await pool.spawn(asyncio.wait_for(get_steps(scopes), timeout=35))
 
             for fut, step in futures:
                 try:
@@ -270,12 +269,14 @@ async def cleaner():
     """
     Cleans up hanging scripts created by the worker that were not properly cleaned up
     """
-    for root, dirs, files in os.walk('.'):
-        for file in files:
-            if is_hanging_script(os.path.join(root, file)):
-                os.remove(os.path.join(root, file))
-            await asyncio.sleep(0.1)
-        break
+    while True:
+        for root, dirs, files in os.walk('.'):
+            for file in files:
+                if is_hanging_script(os.path.join(root, file)):
+                    os.remove(os.path.join(root, file))
+                await asyncio.sleep(0.1)
+            break
+        await asyncio.sleep(60 * 10)  # Run every minute
 
 
 def main():
@@ -290,15 +291,16 @@ async def _main():
     Main coroutine to run the worker
     """
     global hub_client
-    asyncio.create_task(cleaner())
+    cleaner_task = asyncio.create_task(cleaner())
     with hub_client:
         await work()
+    cleaner_task.cancel()
 
 
-try:
-    from cython.c_worker import *
-except (ImportError, ModuleNotFoundError):
-    pass
+# try:
+#     from cython.c_worker import *
+# except (ImportError, ModuleNotFoundError):
+#     pass
 
 
 if __name__ == '__main__':
