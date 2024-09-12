@@ -195,7 +195,8 @@ async def work():
         # Check if we need to restart the worker
         if time.time() - start_time > WORKER_RESTART_INTERVAL:
             print("Restarting worker...")
-            os.execv(sys.executable, [sys.executable] + sys.argv)
+            # os.execv(sys.executable, [sys.executable] + sys.argv)
+            return
 
 
 # async def work():
