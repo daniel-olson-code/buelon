@@ -77,7 +77,7 @@ def get_type(val):
     if isinstance(val, (list, dict)):
         return 'json'
     if isinstance(val, datetime.datetime):
-        return 'timestamp'
+        return 'timestamptz'  # 'timestamp'
     if isinstance(val, datetime.date):
         return 'date'
     return 'text'

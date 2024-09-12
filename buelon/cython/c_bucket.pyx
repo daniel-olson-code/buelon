@@ -47,7 +47,7 @@ BUCKET_SERVER_PORT: int = int(os.environ.get('BUCKET_SERVER_PORT', 61535))
 BUCKET_END_TOKEN = b'[-_-]'
 BUCKET_SPLIT_TOKEN = b'[*BUCKET_SPLIT_TOKEN*]'
 
-save_path = '.bucket'
+save_path = os.path.join('.bue', 'bucket')
 
 database: dict[str, bytes] = {}
 database_keys_in_order = []

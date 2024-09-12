@@ -1105,7 +1105,7 @@ class HubServer:
             SET status = ?, epoch = ?
             WHERE id IN ({','.join('?' for _ in steps)})
             """
-            update_params = (buelon.core.step.StepStatus.working.value, time.time(), *steps)
+            update_params = (f'{buelon.core.step.StepStatus.working.value}', time.time(), *steps)
             self.execute_db_query(update_query, update_params)
 
         return steps

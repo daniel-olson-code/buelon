@@ -66,7 +66,7 @@ import sqlite3
 
 
 # home = os.path.expanduser('~')
-default_db_location = os.path.join('.sqlite3_helper', 'pipe.db')  # os.path.join(home, '.sqlite3_helper', 'my.db')
+default_db_location = os.path.join('.bue', 'sqlite3_helper', 'pipe.db')  # os.path.join(home, '.sqlite3_helper', 'my.db')
 
 if not os.path.exists(default_db_location):
     os.makedirs(os.path.dirname(default_db_location), exist_ok=True)
