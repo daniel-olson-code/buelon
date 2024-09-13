@@ -80,6 +80,8 @@ def get_type(val):
         return 'timestamptz'  # 'timestamp'
     if isinstance(val, datetime.date):
         return 'date'
+    if isinstance(val, bytes):
+        return 'bytea'
     return 'text'
 
 
@@ -258,6 +260,8 @@ class Postgres:
             elif isinstance(value, (tuple, list, dict)):
                 return f"{json.dumps(value)}"
             elif isinstance(value, (datetime.datetime, datetime.date)):
+                return value
+            elif isinstance(value, bytes):
                 return value
             raise ValueError(f'cannot place {value} in type "{type(value)}"')
         # check for multiple id_columns
