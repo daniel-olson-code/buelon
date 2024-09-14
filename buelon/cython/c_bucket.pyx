@@ -144,11 +144,22 @@ class Client:
 
         if USING_POSTGRES:
             self.db = buelon.helpers.postgres.get_postgres_from_env()
-            with self.db.connect() as conn:
-                cur = conn.cursor()
-                cur.execute(f'CREATE TABLE IF NOT EXISTS {POSTGRES_TABLE} (key TEXT PRIMARY KEY, data BYTEA, epoch REAL);')
-                cur.execute(f'CREATE INDEX IF NOT EXISTS idx_{POSTGRES_TABLE}_key ON {POSTGRES_TABLE} USING hash (key);')
-                conn.commit()
+            try:
+                with self.db.connect() as conn:
+                    cur = conn.cursor()
+                    cur.execute(f'CREATE TABLE IF NOT EXISTS {POSTGRES_TABLE} (key TEXT PRIMARY KEY, data BYTEA, epoch REAL);')
+                    if '.' in POSTGRES_TABLE:
+                        args = POSTGRES_TABLE.split('.')
+                        schema = args[-2]
+                        table_name = args[-1]
+                    else:
+                        schema = 'public'
+                        table_name = POSTGRES_TABLE
+                    # cur.execute(f'CREATE INDEX IF NOT EXISTS idx_{POSTGRES_TABLE}_key ON {POSTGRES_TABLE} USING hash (key);')
+                    cur.execute(f'CREATE INDEX IF NOT EXISTS idx_{table_name} ON {POSTGRES_TABLE} USING hash (key);')
+                    conn.commit()
+            except psycopg2.errors.InsufficientPrivilege:
+                print('Insufficient privileges to use postgres bucket.')
 
         elif USING_REDIS:
             self.redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)

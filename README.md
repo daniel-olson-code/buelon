@@ -107,7 +107,7 @@ pipe_name()
 -->
 ## Learn by Example
 
-(see below for `example.py`)
+(see below for `example.py` contents)
 
 ```python
 # IMPORTANT: tabs are 4 spaces. white_space == "    "
@@ -118,6 +118,7 @@ pipe_name()
 # And/or how you handle running heavy processes on large machine
 # and small process on small machines
 $ production-small
+!0
 
 # define a job called `accounts`
 accounts:

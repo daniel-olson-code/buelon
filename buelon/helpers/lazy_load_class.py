@@ -28,17 +28,31 @@ class LazyMap:
         # self.__classes = (classes or {})
         # self.__shared_variables = {}
         self.__db_path = (path or os.path.join(TEMP_FILE_DIR, f'lazy_map_{uuid.uuid1().hex}.db'))
-        self.__conn = sqlite3.connect(self.__db_path)
-        self.__conn.execute("""
+        self.__conn = sqlite3.connect(self.__db_path, check_same_thread=False)
+
+        # Enable WAL mode
+        self.__conn.execute('PRAGMA journal_mode=WAL')
+
+        # Increase cache size (adjust the value based on your system's available memory)
+        self.__conn.execute('PRAGMA cache_size = -10000')  # 10MB cache
+
+        # Other performance-related PRAGMAs
+        self.__conn.execute('PRAGMA synchronous = NORMAL')
+        # self.__conn.execute('PRAGMA temp_store = MEMORY')
+        self.__conn.execute(f'PRAGMA temp_store_directory = "{TEMP_FILE_DIR}"')
+
+        # Create table if not exists
+        self.__conn.executescript("""
             CREATE TABLE IF NOT EXISTS lazy_map (
                 key TEXT PRIMARY KEY,
-                value,
+                value ,
                 path TEXT,
                 class TEXT,
-                result
-            )
+                result 
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS lazy_map_idx ON lazy_map(key);
         """)
-        self.__conn.execute('create unique index if not exists lazy_map_idx on lazy_map(key);')
+
         self.__conn.commit()
 
     def add_shared_variable(self, key: str, value: Any) -> None:

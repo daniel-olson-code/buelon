@@ -162,7 +162,7 @@ async def work():
                 futures = []
                 fut_steps = await pool.spawn(asyncio.wait_for(get_steps(scopes), timeout=35))
                 for s in steps:
-                    fut = await pool.spawn(asyncio.wait_for(run(s), timeout=WORKER_JOB_TIMEOUT))  # 1 hr timeout for each job
+                    fut = await pool.spawn(asyncio.wait_for(run(s), timeout=WORKER_JOB_TIMEOUT))
                     futures.append((fut, s))
 
             for fut, step in futures:
@@ -195,7 +195,6 @@ async def work():
         # Check if we need to restart the worker
         if time.time() - start_time > WORKER_RESTART_INTERVAL:
             print("Restarting worker...")
-            # os.execv(sys.executable, [sys.executable] + sys.argv)
             return
 
 
