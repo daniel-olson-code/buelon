@@ -275,6 +275,30 @@ def _upload_steps(self: HubServer, step_jsons: list, status_values: list) -> Non
 def upload_pipe_code(code: str, lazy_steps: bool = False):
     client = HubClient()
     chunk_size = 5000 if not lazy_steps else 500
+    chunk = []
+    statuses = []
+    pending = buelon.core.step.StepStatus.pending.value
+    queued = buelon.core.step.StepStatus.queued.value
+
+    for job in buelon.core.pipe_interpreter.generate_steps_from_code(code):
+        # print('job', job)
+        # continue
+        chunk.append(job)
+        statuses.append(pending if not job.parents else queued)
+
+        if len(chunk) >= chunk_size:
+            set_steps(chunk)
+            client.upload_steps([s.to_json() for s in chunk], statuses)
+            chunk.clear()
+            statuses.clear()
+
+    if chunk:
+        set_steps(chunk)
+        client.upload_steps([s.to_json() for s in chunk], statuses)
+        chunk.clear()
+        statuses.clear()
+
+    return
     variables = buelon.core.pipe_interpreter.get_steps_from_code(code, lazy_steps)
     steps = variables['steps']
     starters = variables['starters']

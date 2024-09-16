@@ -7,3 +7,4 @@ psutil
 unsync
 redis
 persistqueue
+PyYAML
