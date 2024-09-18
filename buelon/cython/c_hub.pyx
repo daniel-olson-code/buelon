@@ -4,6 +4,7 @@ import enum
 import traceback
 import sqlite3
 import os
+import sys
 import socket
 import threading
 import queue
@@ -17,6 +18,7 @@ from typing import Any, Callable
 
 import persistqueue
 import unsync
+import tqdm
 try:
     import dotenv
     dotenv.load_dotenv('.env')
@@ -47,6 +49,7 @@ class Method(enum.Enum):
     FETCH_ROWS = 'fetch-rows'
 
 
+USING_POSTGRES = os.environ.get('USING_POSTGRES_HUB', 'false') == 'true'
 PIPELINE_HOST = os.environ.get('PIPELINE_HOST', '0.0.0.0')
 PIPELINE_PORT = int(os.environ.get('PIPELINE_PORT', 65432))
 
@@ -64,6 +67,12 @@ connection_queue = queue.Queue()
 PIPELINE_SPLIT_TOKEN = b'|-**-|'
 PIPELINE_END_TOKEN = b'[-_-]'
 LENGTH_OF_PIPELINE_END_TOKEN = len(PIPELINE_END_TOKEN)
+
+
+
+def delete_last_line():
+    sys.stdout.write("\033[F")
+    sys.stdout.write("\033[K")
 
 
 def timeout_func(func, args=None, kwargs=None, timeout_duration=1, default=None):
@@ -94,12 +103,16 @@ def timeout_func(func, args=None, kwargs=None, timeout_duration=1, default=None)
     return result
 
 
-
 def receive(conn: socket.socket) -> bytes:
     data = b''
     while not data.endswith(PIPELINE_END_TOKEN):
         v = conn.recv(1024)
         data += v
+        if not v and not data.endswith(PIPELINE_END_TOKEN):
+            try:
+                data = data.decode()
+            except: pass
+            raise ValueError(f'Invalid value received: `{data}`')
     return data[:-LENGTH_OF_PIPELINE_END_TOKEN]
 
 
@@ -272,19 +285,28 @@ def _upload_steps(self: HubServer, step_jsons: list, status_values: list) -> Non
 
 
 
-def upload_pipe_code(code: str, lazy_steps: bool = False):
+def upload_pipe_code(code: str, lazy_steps: bool = False, wait_until_finish: bool = False):
     client = HubClient()
-    chunk_size = 5000 if not lazy_steps else 500
+    chunk_size = 500  # 5000 if not lazy_steps else 500
     chunk = []
     statuses = []
     pending = buelon.core.step.StepStatus.pending.value
     queued = buelon.core.step.StepStatus.queued.value
 
-    for job in buelon.core.pipe_interpreter.generate_steps_from_code(code):
+    if wait_until_finish:
+        conn = sqlite3.connect(db_path)
+        cur = conn.cursor()
+        cur.execute('drop table if exists bue_session_ids;')
+        cur.execute('create table bue_session_ids (id text primary key, attempts int);')
+        conn.commit()
+
+    for job in tqdm.tqdm(buelon.core.pipe_interpreter.generate_steps_from_code(code), desc='Uploading Jobs'):
         # print('job', job)
         # continue
         chunk.append(job)
         statuses.append(pending if not job.parents else queued)
+        if wait_until_finish:
+            cur.execute(f'insert into bue_session_ids (id, attempts) values (\'{job.id}\', 0);')
 
         if len(chunk) >= chunk_size:
             set_steps(chunk)
@@ -297,6 +319,35 @@ def upload_pipe_code(code: str, lazy_steps: bool = False):
         client.upload_steps([s.to_json() for s in chunk], statuses)
         chunk.clear()
         statuses.clear()
+
+    if wait_until_finish:
+        conn.commit()
+        time.sleep(10.)
+        i = 1
+        while (rows := cur.execute('select id, attempts from bue_session_ids limit 10;').fetchall()):
+            key_map = {row[0]: row[1] for row in rows}
+            print('waiting' + ('.' * (i % 4)))
+            i += 1
+            for row in client.get_rows(','.join(row[0] for row in rows)):
+                # print(row)
+                if (row['status'] == buelon.core.step.StepStatus.success.name
+                        or row['status'] == buelon.core.step.StepStatus.cancel.name):
+                    cur.execute(f'delete from bue_session_ids where id = \'{row["id"]}\';')
+                    conn.commit()
+                elif row['status'] == buelon.core.step.StepStatus.error.name:
+                    print('Error:', row['msg'])
+                    if key_map[row['id']] > 3:
+                        raise Exception('Max errors met')
+                    client.reset_errors(False)
+                    cur.execute(f'update bue_session_ids set attempts = attempts + 1 where id = \'{row["id"]}\';')
+                    conn.commit()
+            time.sleep(5.)
+            delete_last_line()
+
+        cur.execute('drop table bue_session_ids;')
+        conn.commit()
+        conn.close()
+        print('Done')
 
     return
     variables = buelon.core.pipe_interpreter.get_steps_from_code(code, lazy_steps)
@@ -342,10 +393,10 @@ def upload_pipe_code(code: str, lazy_steps: bool = False):
         del add_later
 
 
-def upload_pipe_code_from_file(file_path: str, lazy_steps: bool = False):
+def upload_pipe_code_from_file(file_path: str, lazy_steps: bool = False, wait_until_finish: bool = False):
     with open(file_path, 'r') as f:
         code = f.read()
-        upload_pipe_code(code, lazy_steps)
+        upload_pipe_code(code, lazy_steps, wait_until_finish)
 
 
 def get_step(step_id: str) -> buelon.core.step.Step | None:
@@ -363,21 +414,18 @@ def set_step(_step: buelon.core.step.Step) -> None:
 
 
 def set_steps(steps: list[buelon.core.step.Step]) -> None:
-    if not buelon.bucket.USING_POSTGRES and not buelon.bucket.USING_REDIS:
-        # raise ValueError('set_steps only works with postgres and redis')
-        for _step in steps:
-            set_step(_step)
-        return
+    # if not buelon.bucket.USING_POSTGRES and not buelon.bucket.USING_REDIS:
+    #     # raise ValueError('set_steps only works with postgres and redis')
+    #     for _step in steps:
+    #         set_step(_step)
+    #     return
 
     bulk = {}
     for _step in steps:
         # set_step(_step)
         bulk[f'step/{_step.id}'] = buelon.helpers.json_parser.dumps(_step.to_json())
 
-    if buelon.bucket.USING_POSTGRES:
-        bucket_client.postgres_bulk_set(bulk)
-    elif buelon.bucket.USING_REDIS:
-        bucket_client.redis_bulk_set(bulk)
+    bucket_client.bulk_set(bulk, True)
 
 
 def remove_step(step_id: str) -> None:
@@ -1142,6 +1190,9 @@ class HubClient:
         self.conn = None
         self.max_reconnect_attempts = max_reconnect_attempts
 
+        if USING_POSTGRES:
+            self.load_pg()
+
     def __enter__(self):
         # self.connect()
         return self
@@ -1169,7 +1220,16 @@ class HubClient:
                 conn.connect((self.host, self.port))
                 request = method.value.encode() + PIPELINE_SPLIT_TOKEN + data
                 send(conn, request)
-                response = timeout_func(receive, (conn,), timeout_duration=timeout, default='__fail__')
+                try:
+                    response = timeout_func(receive, (conn,), timeout_duration=timeout, default='__fail__')
+                except ValueError as e:
+                    if 'signal only works in main thread of the main interpreter' not in str(e):
+                        raise
+                    import warnings
+                    warnings.warn('HubClient used outside the main thread cannot use signal.py to timeout connections.')
+                    socket.setdefaulttimeout(timeout)
+                    conn.settimeout(timeout)
+                    response = receive(conn,)
                 if response == '__fail__':
                     raise TimeoutError(f"Request timed out after {timeout} seconds")
         except (TimeoutError, socket.timeout, ConnectionRefusedError) as e:
@@ -1200,33 +1260,53 @@ class HubClient:
         #         self.connect()  # Establish a new connection before retrying
 
     def get_steps(self, scopes, **kwargs):
+        if USING_POSTGRES:
+            return self.postgres_get_steps(scopes, **kwargs)
         return buelon.helpers.json_parser.loads(self.send_request(Method.GET_STEPS, buelon.helpers.json_parser.dumps([scopes, kwargs])))
 
     def get_rows(self, step_id):
+        if USING_POSTGRES:
+            return self.postgres_get_rows(step_id)
         return buelon.helpers.json_parser.loads(self.send_request(Method.FETCH_ROWS, buelon.helpers.json_parser.dumps({'step_id': step_id})))
 
     def done(self, step_id):
+        if USING_POSTGRES:
+            return self.postgres_done(step_id)
         return self.send_request(Method.DONE, step_id.encode())
 
     def pending(self, step_id):
+        if USING_POSTGRES:
+            return self.postgres_pending(step_id)
         return self.send_request(Method.PENDING, step_id.encode())
 
     def cancel(self, step_id):
+        if USING_POSTGRES:
+            return self.postgres_cancel(step_id)
         return self.send_request(Method.CANCEL, step_id.encode())
 
     def reset(self, step_id):
+        if USING_POSTGRES:
+            return self.postgres_reset(step_id)
         return self.send_request(Method.RESET, step_id.encode())
 
     def error(self, step_id, msg, trace):
+        if USING_POSTGRES:
+            return self.postgres_error(step_id, msg, trace)
         return self.send_request(Method.ERROR, buelon.helpers.json_parser.dumps({'step_id': step_id, 'msg': msg, 'trace': trace}))
 
     def upload_step(self, step_json, status_value):
+        if USING_POSTGRES:
+            return self.postgres_upload_step(step_json, status_value)
         return self.send_request(Method.UPLOAD_STEP, buelon.helpers.json_parser.dumps([step_json, status_value]))
 
     def upload_steps(self, step_jsons, status_values):
+        if USING_POSTGRES:
+            return self.postgres_upload_steps(step_jsons, status_values)
         return self.send_request(Method.UPLOAD_STEPS, buelon.helpers.json_parser.dumps([step_jsons, status_values]))
 
     def get_step_count(self, types: str | None = None):
+        if USING_POSTGRES:
+            return self.postgres_get_step_count(types)
         return buelon.helpers.json_parser.loads(
             self.send_request(
                 Method.STEP_COUNT,
@@ -1236,10 +1316,14 @@ class HubClient:
             )
         )
 
-    def reset_errors(self, include_workers):
+    def reset_errors(self, include_workers: bool):
+        if USING_POSTGRES:
+            return self.postgres_reset_errors(include_workers)
         return self.send_request(Method.RESET_ERRORS, b'true' if include_workers else b'false', timeout=60 * 10, increments=30)
 
     def delete_steps(self):
+        if USING_POSTGRES:
+            return self.postgres_delete_steps()
         return self.send_request(Method.DELETE_STEPS, b'nothing')
 
     def fetch_errors(self, count: int, exclude: list[str] | str | None = None) -> dict:
@@ -1253,6 +1337,8 @@ class HubClient:
             dict: A dictionary containing `table`, `count`, and `total`.
                 `table` is a list of error dictionaries, each containing `id`, `msg`, and `trace`.
         """
+        if USING_POSTGRES:
+            return self.postgres_fetch_errors(count, exclude)
         return buelon.helpers.json_parser.loads(
             self.send_request(
                 Method.FETCH_ERRORS,
@@ -1262,6 +1348,304 @@ class HubClient:
                 })#f'{count}'.encode()
             )
         )
+
+    def load_pg(self):
+        if not hasattr(self, 'db') or not self.db:
+            self.db = buelon.helpers.postgres.get_postgres_from_env()
+
+        q = '''create table if not exists buelon_jobs (
+            id text primary key,
+            priority int,
+            scope text,
+            velocity real,
+            tag text,
+            status text,
+            epoch real,
+            msg text,
+            trace text
+        );'''
+        qs = [
+            q,
+            'CREATE TABLE IF NOT EXISTS tags (tag text primary key, velocity real);',
+            'create index if not exists idx_buelon_jobs_scope on buelon_jobs using hash (scope);',
+            'create index if not exists idx_buelon_jobs_status on buelon_jobs using hash (status);',
+            'create index if not exists idx_buelon_jobs_priority on buelon_jobs (priority);',
+            'create index if not exists idx_buelon_jobs_epoch on buelon_jobs (epoch);'
+        ]
+        for q in qs:
+            self.db.query(q)
+
+    def postgres_get_steps(
+            self,
+            scopes: list[str],
+            limit=100,
+            chunk_size=100,
+            status=buelon.core.step.StepStatus.pending.value,
+            include_working=True,
+            reverse=False
+    ) -> list[str]:
+        """
+        Get the steps in the scope, ordered by priority, velocity, then scope position.
+
+        Args:
+            scopes (list): A list of scopes to filter the steps.
+            limit (int): The maximum number of steps to retrieve. Defaults to 50.
+            chunk_size (int): The number of steps to fetch in each chunk. Defaults to 100.
+            status (int | buelon.core.step.StepStatus.value): The status of the steps to retrieve. Defaults to pending.
+            include_working (bool): Whether to include working steps. Defaults to True.
+            reverse (bool): Whether to reverse the order of the steps. Defaults to False.
+
+        Returns:
+            list: A list of steps ordered by priority, velocity, and scope position.
+        """
+        if not hasattr(self, 'db') or not self.db:
+            self.db = buelon.helpers.postgres.get_postgres_from_env()
+
+        expiration_time = time.time() - (60 * 60 * .2)  # (60 * 60 * 2)
+
+        working_clause = ''
+        if include_working:
+            working_clause = (f' or (epoch < {expiration_time} '
+                              f'     and status = \'{buelon.core.step.StepStatus.working.value}\') ')
+
+        order_by = 'priority desc, epoch'
+        if reverse:
+            order_by = 'priority asc, epoch'
+
+        if len(scopes) == 1:
+            scope_section = f"s.scope = '{scopes[0]}'"
+        else:
+            scope_section = f"""s.scope IN ({','.join(f"'{s}'" for s in scopes)})"""
+
+        # Use a single query to fetch all necessary data
+        query = f"""
+        drop table if exists current_jobs;
+        create temp table current_jobs as
+        SELECT s.id -- s.id, s.priority, s.scope, s.velocity, s.tag, t.velocity as tag_velocity
+        FROM buelon_jobs s
+        -- LEFT JOIN tags t ON s.tag = t.tag
+        WHERE {scope_section}
+        AND (s.status = '{buelon.core.step.StepStatus.pending.value}' {working_clause})
+        ORDER BY {order_by}
+        LIMIT {limit};
+        
+        UPDATE buelon_jobs 
+        SET status = '{buelon.core.step.StepStatus.working.value}', epoch = {time.time()}
+        WHERE id IN (select id from current_jobs);
+        
+        select *
+        from current_jobs;
+        """
+
+        rows = self.db.download_table(sql=query)
+
+        return [row['id'] for row in rows]
+
+    def postgres_get_rows(self, step_id):
+        if not hasattr(self, 'db') or not self.db:
+            self.db = buelon.helpers.postgres.get_postgres_from_env()
+
+        if ',' in step_id:
+            return [
+                row
+                for s in step_id.split(',')
+                for row in self.postgres_get_rows(s.strip())
+            ]
+
+        table = self.db.download_table(sql=f"SELECT * FROM buelon_jobs WHERE id = '{step_id}';")
+
+        for row in table:
+            row['status'] = buelon.core.step.StepStatus(int(row['status'])).name
+
+        return table
+
+    def postgres_done(self, step_id):
+        if not hasattr(self, 'db') or not self.db:
+            self.db = buelon.helpers.postgres.get_postgres_from_env()
+
+        _step = get_step(step_id)
+        status = buelon.core.step.StepStatus.success.value
+        self.db.query(f"UPDATE buelon_jobs SET status = \'{status}\', epoch = {time.time()} WHERE id = '{_step.id}'")
+
+        if _step.children:
+            status = buelon.core.step.StepStatus.pending.value
+            end = f" id = '{_step.children[0]}'" \
+                if len(_step.children) == 1 else \
+                f' id IN (' + ', '.join(f"'{_id}'" for _id in _step.children) + ')'
+            self.db.query(f"UPDATE buelon_jobs SET status = \'{status}\', epoch = {time.time()} WHERE {end}")
+
+    def postgres_pending(self, step_id):
+        if not hasattr(self, 'db') or not self.db:
+            self.db = buelon.helpers.postgres.get_postgres_from_env()
+
+        status = buelon.core.step.StepStatus.pending.value
+        self.db.query(f"UPDATE buelon_jobs SET status = \'{status}\', epoch = {time.time()} WHERE id = '{step_id}';")
+
+    def postgres_cancel(self, step_id: str, __already: set | None = None):
+        if not hasattr(self, 'db') or not self.db:
+            self.db = buelon.helpers.postgres.get_postgres_from_env()
+
+        first_iteration = __already is None
+        _step = get_step(step_id)
+        __already = set() if first_iteration else __already
+
+        status = buelon.core.step.StepStatus.cancel.value
+        self.db.query(f"UPDATE buelon_jobs SET status = \'{status}\', epoch = {time.time()} WHERE id = '{_step.id}'")
+
+        if _step.parents:
+            for parent in _step.parents:
+                if parent not in __already:
+                    __already.add(parent)
+                    self.postgres_cancel(parent, __already)
+
+        if _step.children:
+            for child in _step.children:
+                if child not in __already:
+                    __already.add(child)
+                    self.postgres_cancel(child, __already)
+
+    def postgres_reset(self, step_id, __already: set | None = None):
+        if not hasattr(self, 'db') or not self.db:
+            self.db = buelon.helpers.postgres.get_postgres_from_env()
+        _step = get_step(step_id)
+        __already = set() if not __already else __already
+        status = buelon.core.step.StepStatus.queued.value if _step.parents else buelon.core.step.StepStatus.pending.value
+
+        self.db.query(f"UPDATE buelon_jobs SET status = \'{status}\', epoch = {time.time()} WHERE id = '{_step.id}'")
+
+        if _step.children:
+            for child in _step.children:
+                if child not in __already:
+                    __already.add(child)
+                    self.postgres_reset(child, __already)
+
+        if _step.parents:
+            for parent in _step.parents:
+                if parent not in __already:
+                    __already.add(parent)
+                    self.postgres_reset(parent, __already)
+
+    def postgres_error(self, step_id, msg, trace):
+        db = buelon.helpers.postgres.get_postgres_from_env()
+
+        status = buelon.core.step.StepStatus.error.value
+        sql_update_step = f"""UPDATE buelon_jobs SET status = \'{status}\', epoch = {time.time()}, 
+             msg = $msg${msg}$msg$, trace = $trace${trace}$trace$ WHERE id = '{step_id}'"""
+
+        db.query(sql_update_step)
+
+    def postgres_upload_step(self, step_json, status_value):
+        return self.postgres_upload_steps([step_json], [status_value])
+
+    def postgres_upload_steps(self, step_jsons, status_values):
+        db = buelon.helpers.postgres.get_postgres_from_env()
+
+        sql = ('INSERT INTO buelon_jobs (id, priority, scope, velocity, tag, status, epoch, msg, trace) '
+               'VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s);')
+
+        values = []
+
+        for step_json, status_value in zip(step_jsons, status_values):
+            status = buelon.core.step.StepStatus(status_value)
+            _step = buelon.core.step.Step().from_json(step_json)
+            params = (_step.id, _step.priority, _step.scope, _step.velocity, _step.tag, f'{status.value}', time.time(), '', '')
+            values.append(params)
+
+        with db.connect() as conn:
+            cur = conn.cursor()
+
+            buelon.helpers.postgres.psycopg2.extras.execute_batch(cur, sql, tuple(values))
+
+            conn.commit()
+
+    def postgres_get_step_count(self, types: str | None = None):
+        db = buelon.helpers.postgres.get_postgres_from_env()
+
+        if types == '*':
+            where = ''
+        else:
+            where = f'''
+            where 
+                status not in (
+                    '{buelon.core.step.StepStatus.success.value}', 
+                    '{buelon.core.step.StepStatus.cancel.value}'
+                )
+            '''
+
+        query = f'''
+        select 
+            status,
+            count(*) as amount
+        from 
+            buelon_jobs
+        {where}
+        group by 
+            status;
+        '''
+        table = db.download_table(sql=query)
+        for row in table:
+            row['status'] = buelon.core.step.StepStatus(int(row['status'])).name
+
+        return table
+
+    def postgres_reset_errors(self, include_workers: bool=False):
+        db = buelon.helpers.postgres.get_postgres_from_env()
+        suffix = '' if not include_workers else f' or status = \'{buelon.core.step.StepStatus.working.value}\''
+        query = f'''
+            update buelon_jobs 
+            set status = \'{buelon.core.step.StepStatus.pending.value}\' 
+            where status = \'{buelon.core.step.StepStatus.error.value}\'
+            {suffix};'''
+        db.query(query)
+
+    def postgres_delete_steps(self):
+        db = buelon.helpers.postgres.get_postgres_from_env()
+        db.query('delete from buelon_jobs;')
+
+    def postgres_fetch_errors(self, count: int, exclude: list[str] | str | None = None) -> dict:
+        try:
+            count = int(count)
+            exclude = exclude
+
+            if not isinstance(exclude, (type(None), str, list)):
+                raise ValueError('exclude must be a string or a list')
+
+            if isinstance(exclude, list) and not all(isinstance(x, str) for x in exclude):
+                raise ValueError('exclude must be a list of strings')
+        except ValueError:
+            count = 5
+            exclude = None
+        allow_chars = ' abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789,!@#$^&*()_+=-[]{};:"|,.<>/?~`|'
+
+        def clean_query_string(query_string: str) -> str:
+            return ''.join(c for c in query_string if c in allow_chars)
+
+        exclude_query = ''
+        if isinstance(exclude, str):
+            exclude_query = f' AND not (lower(msg) like \'%{clean_query_string(exclude)}%\' OR lower(trace) like \'%{clean_query_string(exclude)}%\')'
+        elif isinstance(exclude, list):
+            exclude_query = (' AND not ('
+                             + ' OR '.join(
+                        f'lower(msg) like \'%{clean_query_string(ex)}%\' OR lower(trace) like \'%{clean_query_string(ex)}%\''
+                        for ex in exclude)
+                             + ')')
+
+        sql = f'SELECT id, msg, trace FROM buelon_jobs WHERE status = \'{buelon.core.step.StepStatus.error.value}\' {exclude_query}  LIMIT {count}'
+        error_size_query = f'SELECT COUNT(*)  FROM buelon_jobs WHERE status = \'{buelon.core.step.StepStatus.error.value}\' {exclude_query}'
+
+        db = buelon.helpers.postgres.get_postgres_from_env()
+
+        table = db.download_table(sql=sql)
+        error_size = db.query(error_size_query)[0][0]
+
+        for row in table:
+            row['step'] = get_step(row['id']).to_json()
+
+        return {
+            'total': error_size,
+            'count': len(table),
+            'table': table
+        }
 
     def __getattr__(self, item: str):
         if item.startswith('sync_'):
