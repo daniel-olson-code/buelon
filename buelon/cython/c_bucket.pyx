@@ -14,6 +14,9 @@ import time
 import psutil
 import redis
 import psycopg2
+from kazoo.client import KazooClient
+import kazoo.exceptions
+import tqdm
 
 import buelon.helpers.postgres
 
@@ -44,6 +47,12 @@ BUCKET_CLIENT_PORT: int = int(os.environ.get('BUCKET_CLIENT_PORT', 61535))
 BUCKET_SERVER_HOST: str = os.environ.get('BUCKET_SERVER_HOST', '0.0.0.0')
 BUCKET_SERVER_PORT: int = int(os.environ.get('BUCKET_SERVER_PORT', 61535))
 
+USING_ZOOKEEPER = os.environ.get('USING_ZOOKEEPER', 'false') == 'true'
+ZOOKEEPER_HOSTS: str = os.environ.get('ZOOKEEPER_HOSTS', 'localhost:2181')
+ZOOKEEPER_PATH: str = f"{os.environ.get('ZOOKEEPER_PATH', '/buelon/bucket')}"
+
+PERSISTENT_PATH: str = f"{os.environ.get('PERSISTENT_PATH', '__PERSISTENT__')}"
+
 BUCKET_END_TOKEN = b'[-_-]'
 BUCKET_SPLIT_TOKEN = b'[*BUCKET_SPLIT_TOKEN*]'
 
@@ -54,7 +63,7 @@ database_keys_in_order = []
 # MAX_DATABASE_SIZE: int = min(1024 * 1024 * 1024 * 1, int(psutil.virtual_memory().total / 8))
 MAX_DATABASE_SIZE: int = 50 * 1024 * 1024
 
-if not USING_REDIS and not USING_POSTGRES:
+if not USING_REDIS and not USING_POSTGRES and not USING_ZOOKEEPER:
     if not os.path.exists(save_path):
         os.makedirs(save_path)
 
@@ -100,7 +109,7 @@ def retry_connection(func: callable):
     Returns:
         callable: The decorated function.
     """
-    def wrapper(self, *args, **kwargs):
+    def wrapper(self, *args, **kwargs) -> bytes | None:
         tries = 4
         kwargs['timeout'] = kwargs.get('timeout', 60 * 5.)
         for i in range(tries):
@@ -116,7 +125,7 @@ def retry_connection(func: callable):
 
 
 def redis_secure_connection(func: callable):
-    def wrapper(*args, **kwargs):
+    def wrapper(*args, **kwargs) -> bytes | None:
         try:
             return func(*args, **kwargs)
         except redis.exceptions.ConnectionError:
@@ -142,7 +151,11 @@ class Client:
         self.PORT = BUCKET_CLIENT_PORT
         self.HOST = BUCKET_CLIENT_HOST
 
-        if USING_POSTGRES:
+        if USING_ZOOKEEPER:
+            self.zk = KazooClient(hosts=ZOOKEEPER_HOSTS)
+            self.zk.start(timeout=60 * 15)
+            self.zk.ensure_path(ZOOKEEPER_PATH)
+        elif USING_POSTGRES:
             self.db = buelon.helpers.postgres.get_postgres_from_env()
             try:
                 with self.db.connect() as conn:
@@ -160,19 +173,43 @@ class Client:
                     conn.commit()
             except psycopg2.errors.InsufficientPrivilege:
                 print('Insufficient privileges to use postgres bucket.')
-
         elif USING_REDIS:
             self.redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
             self.set = self.redis_set
             self.get = self.redis_get
             self.delete = self.redis_delete
 
+    def __getattr__(self, item):
+        if item == 'db':
+            if USING_POSTGRES:
+                if not hasattr(self, 'db'):
+                    v = buelon.helpers.postgres.get_postgres_from_env()
+                    self.db = v
+                    return v
+
+    def __enter__(self):
+        return self
+
+    def __del__(self):
+        if USING_ZOOKEEPER:
+            try:
+                self.zk.stop()
+                self.zk.close()
+            except kazoo.exceptions.WriterNotClosedException:
+                pass
+
     def __exit__(self, exc_type, exc_val, exc_tb):
-        if USING_REDIS:
+        if USING_ZOOKEEPER:
+            try:
+                self.zk.stop()
+                self.zk.close()
+            except kazoo.exceptions.WriterNotClosedException:
+                pass
+        elif USING_REDIS:
             self.redis_client.connection.disconnect()
 
     @retry_connection
-    def set(self, key: str, data: bytes, timeout: float | None = 60 * 5.) -> None:
+    def set(self, key: str, data: bytes, timeout: float | None = 60 * 5., persistent: bool = False) -> None:
         """
         Set data for a given key on the server.
 
@@ -181,29 +218,38 @@ class Client:
             data (bytes): The data to store.
             timeout (float, optional): The timeout for the socket connection in seconds. Defaults to 60 * 5.
         """
-        if USING_POSTGRES:
+        if persistent:
+            key = PERSISTENT_PATH + '/' + key  # f'{PERSISTENT_PATH}/{key}'
+        if USING_ZOOKEEPER:
+            if not persistent:
+                key = 'temp/' + key  # f'temp/{key}'
+            key = ZOOKEEPER_PATH + '/' + key  # f'{ZOOKEEPER_PATH}/{key}'
+            self.zk.ensure_path(key)
+            self.zk.set(key, data)
+        elif USING_POSTGRES:
             with self.db.connect() as conn:
                 cur = conn.cursor()
                 cur.execute(f'INSERT INTO {POSTGRES_TABLE} (key, data, epoch) VALUES (%s, %s, %s) '
                              'ON CONFLICT (key) DO UPDATE SET (data, epoch) = (EXCLUDED.data, EXCLUDED.epoch)', (key, data, time.time()))
                 conn.commit()
-            return
-        # raise RuntimeError('Not using redis.')
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-            s.settimeout(timeout)
-            s.connect((self.HOST, self.PORT))
-            if len(data) < 2048:
-                send(s, BUCKET_SPLIT_TOKEN.join([key.encode('utf-8'), b'set', f'{timeout}'.encode(), data]))
-                receive(s)
-            else:
-                send(s, BUCKET_SPLIT_TOKEN.join([key.encode('utf-8'), b'big-set', f'{timeout}'.encode(), f'{len(data)}'.encode()]))
-                receive(s)
-                send(s, data)
-                receive(s)
+        elif USING_REDIS:
+            self.redis_set(key, data, True)
+        else:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                s.settimeout(timeout)
+                s.connect((self.HOST, self.PORT))
+                if len(data) < 2048:
+                    send(s, BUCKET_SPLIT_TOKEN.join([key.encode('utf-8'), b'set', f'{timeout}'.encode(), data]))
+                    receive(s)
+                else:
+                    send(s, BUCKET_SPLIT_TOKEN.join([key.encode('utf-8'), b'big-set', f'{timeout}'.encode(), f'{len(data)}'.encode()]))
+                    receive(s)
+                    send(s, data)
+                    receive(s)
 
     @retry_connection
-    def get(self, key: str, timeout: float | None = 60 * 5.) -> bytes | None:
+    def get(self, key: str, timeout: float | None = 60 * 5., persistent: bool = False) -> bytes | None:
         """
         Retrieve data for a given key from the server.
 
@@ -214,7 +260,17 @@ class Client:
         Returns:
             bytes or None: The retrieved data, or None if the key doesn't exist.
         """
-        if USING_POSTGRES:
+        if persistent:
+            key = PERSISTENT_PATH + '/' + key  # f'{PERSISTENT_PATH}/{key}'
+        if USING_ZOOKEEPER:
+            if not persistent:
+                key = 'temp/' + key  # f'temp/{key}'
+            key = ZOOKEEPER_PATH + '/' + key  # f'{ZOOKEEPER_PATH}/{key}'
+            try:
+                return self.zk.get(key)[0]
+            except (KeyError, kazoo.exceptions.NoNodeError):
+                return None
+        elif USING_POSTGRES:
             with self.db.connect() as conn:
                 cur = conn.cursor()
                 cur.execute(f'SELECT data FROM {POSTGRES_TABLE} WHERE key = %s', (key,))
@@ -222,6 +278,8 @@ class Client:
                 if not data:
                     return None
                 return bytes(data[0])
+        if USING_REDIS:
+            return self.redis_get(key)
         # raise RuntimeError('Not using redis.')
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
@@ -241,7 +299,7 @@ class Client:
             return data
 
     @retry_connection
-    def delete(self, key: str, timeout: float | None = 60 * 5.) -> None:
+    def delete(self, key: str, timeout: float | None = 60 * 5., persistent: bool = False) -> None:
         """
         Delete data for a given key on the server.
 
@@ -249,11 +307,21 @@ class Client:
             key (str): The key to delete data for.
             timeout (float, optional): The timeout for the socket connection in seconds. Defaults to 60 * 5.
         """
-        if USING_POSTGRES:
+        if persistent:
+            key = PERSISTENT_PATH + '/' + key  # f'{PERSISTENT_PATH}/{key}'
+        if USING_ZOOKEEPER:
+            if not persistent:
+                key = 'temp/' + key  # f'temp/{key}'
+            key = ZOOKEEPER_PATH + '/' + key  # f'{ZOOKEEPER_PATH}/{key}'
+            self.zk.delete(key)
+        elif USING_POSTGRES:
             with self.db.connect() as conn:
                 cur = conn.cursor()
                 cur.execute(f'DELETE FROM {POSTGRES_TABLE} WHERE key = %s', (key, ))
                 conn.commit()
+            return
+        if USING_REDIS:
+            self.redis_delete(key)
             return
 
         # raise RuntimeError('Not using redis.')
@@ -265,7 +333,64 @@ class Client:
             send(s, BUCKET_SPLIT_TOKEN.join([key.encode('utf-8'), b'delete', f'{timeout}'.encode(), b'__null__']))
             receive(s)
 
-    # @retry_connection
+    def bulk_set(self, keys_values: dict, save: bool = False, persistent: bool = False):
+        """
+        Set multiple key-value pairs on the server.
+
+        Args:
+            keys_values (dict): A dictionary of key-value pairs to set.
+            save (bool, optional): Whether to save the data to disk. Defaults to False.
+        """
+        if USING_ZOOKEEPER:
+            for k, v in tqdm.tqdm(keys_values.items(), desc=f'setting {len(keys_values)} paths'):
+                self.set(k, v, persistent=persistent)
+            # for path in tqdm.tqdm(keys_values, desc=f'ensuring {len(keys_values)} paths'):
+            #     self.zk.ensure_path(path)
+            # transaction = self.zk.transaction()
+            # for k, v in keys_values.items():
+            #     transaction.set_data(k, v)
+            #     # transaction.create(k, v, makepath=True)
+            # results = transaction.commit()
+            # print('done uploading paths')
+            # # print('results', results)
+        elif USING_POSTGRES:
+            return self.postgres_bulk_set(keys_values, save)
+        elif USING_REDIS:
+            return self.redis_bulk_set(keys_values, save)
+        else:
+            for k, v in keys_values.items():
+                self.set(k, v, save=save, persistent=persistent)
+
+    def clean_up(self):
+        """
+        Clean up the database by removing expired keys.
+        """
+        t = time.time()
+        object_lifetime = 60 * 60 * 24
+        if USING_ZOOKEEPER:
+            self.zk.delete(ZOOKEEPER_PATH + '/temp', recursive=True)  # (f'{ZOOKEEPER_PATH}/temp', recursive=True)
+            self.zk.ensure_path(ZOOKEEPER_PATH + '/temp')  # (f'{ZOOKEEPER_PATH}/temp')
+            base_path = ZOOKEEPER_PATH + '/temp'  # f'{ZOOKEEPER_PATH}/temp'
+            for child in self.zk.get_children(base_path):
+                path = ZOOKEEPER_PATH + '/temp/' + child  # f'{ZOOKEEPER_PATH}/temp/{child}'
+                data, config = self.zk.get(path)
+                if (t - (config.mtime / 1000)) > object_lifetime:
+                    self.zk.delete(path)
+        elif USING_POSTGRES:
+            with self.db.connect() as conn:
+                cur = conn.cursor()
+                cur.execute(f'DELETE FROM {POSTGRES_TABLE} WHERE epoch < {t - object_lifetime} and key not like \'{PERSISTENT_PATH}%\';')
+                conn.commit()
+        elif USING_REDIS:
+            pass
+        # else:
+        #     for root, dirs, files in os.walk(save_path, topdown=True):
+        #         dirs[:] = [d for d in dirs if d != PERSISTENT_PATH]
+        #         for file in files:
+        #             path = os.path.join(root, file)
+        #             if (t - os.path.getmtime(path)) > object_lifetime:
+        #                 os.remove(path)
+
     def postgres_bulk_set(self, keys_values: dict, save: bool = False):
         """
         Set multiple key-value pairs in the PostgreSQL database.
@@ -544,8 +669,9 @@ def cleanup(slow=True):
     #     ])
 
     for root, dirs, files in os.walk(save_path, topdown=True):
+        dirs[:] = [d for d in dirs if d != PERSISTENT_PATH]
         for f in files:
-            if os.path.getmtime(os.path.join(root, f)) + 60 * 60 * 24 * 7 > time.time():
+            if os.path.getmtime(os.path.join(root, f)) + 60 * 60 * 24 > time.time():
                 os.remove(os.path.join(root, f))
             if slow:
                 time.sleep(0.01)
