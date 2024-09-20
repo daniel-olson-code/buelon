@@ -175,9 +175,6 @@ class Client:
                 print('Insufficient privileges to use postgres bucket.')
         elif USING_REDIS:
             self.redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
-            self.set = self.redis_set
-            self.get = self.redis_get
-            self.delete = self.redis_delete
 
     def __getattr__(self, item):
         if item == 'db':
