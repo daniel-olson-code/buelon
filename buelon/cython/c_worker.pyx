@@ -67,6 +67,7 @@ def new_client_if_subprocess():
 
 
 def job(step_id: str | None = None) -> None:
+    global bucket_client
     if step_id:
         _step = buelon.hub.get_step(step_id)
     else:
@@ -105,7 +106,10 @@ def job(step_id: str | None = None) -> None:
                 str(e),
                 f'{traceback.format_exc()}'
             )
-
+    finally:
+        if PIPE_WORKER_SUBPROCESS_JOBS == 'true':
+            del bucket_client
+            del buelon.hub.bucket_client
 
 async def run(step_id: str | None = None) -> str:
     if PIPE_WORKER_SUBPROCESS_JOBS != 'true':
@@ -248,21 +252,27 @@ async def work():
 #             steps = []
 
 
-def is_hanging_script(path: str):
+def is_hanging_script(path: str, extension: str = '.py'):
     """
     Checks if a temporary script created by the worker that was not properly cleaned up
 
     Args:
         path: file path
+        extension: file extension
 
     Returns: True if the file is a hanging script
     """
     # example: temp_ace431278698111efab2de73d545b8b66.py
     file_name = os.path.basename(path)
+    # temp_bue_
     return (file_name.startswith('temp_')
-            and file_name.endswith('.py')
+            and file_name.endswith(extension)
             # and len(file_name) == 41
             and (time.time() - os.path.getmtime(path)) > TEMP_FILE_LIFETIME)
+
+
+def file_age(path: str):
+    return time.time() - os.path.getmtime(path)
 
 
 async def cleaner():
@@ -276,7 +286,13 @@ async def cleaner():
                     os.remove(os.path.join(root, file))
                 await asyncio.sleep(0.1)
             break
-        await asyncio.sleep(60 * 10)  # Run every minute
+        if os.path.exists('./__pycache__'):
+            for root, dirs, files in os.walk('./__pycache__'):
+                for file in files:
+                    if is_hanging_script(os.path.join(root, file), '.pyc'):
+                        os.remove(os.path.join(root, file))
+                break
+        await asyncio.sleep(60 * 10)  # Run every 10 minutes
 
 
 def main():
@@ -297,11 +313,10 @@ async def _main():
     cleaner_task.cancel()
 
 
-# try:
-#     from cython.c_worker import *
-# except (ImportError, ModuleNotFoundError):
-#     pass
+
 
 
 if __name__ == '__main__':
     main()
+
+
