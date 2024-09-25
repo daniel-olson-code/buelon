@@ -287,7 +287,7 @@ def _upload_steps(self: HubServer, step_jsons: list, status_values: list) -> Non
 
 def upload_pipe_code(code: str, lazy_steps: bool = False, wait_until_finish: bool = False):
     client = HubClient()
-    chunk_size = 500  # 5000 if not lazy_steps else 500
+    chunk_size = 2000  # 5000 if not lazy_steps else 500
     chunk = []
     statuses = []
     pending = buelon.core.step.StepStatus.pending.value
@@ -336,6 +336,8 @@ def upload_pipe_code(code: str, lazy_steps: bool = False, wait_until_finish: boo
                     conn.commit()
                 elif row['status'] == buelon.core.step.StepStatus.error.name:
                     print('Error:', row['msg'])
+                    # print('Trace:', row['trace'])
+                    print('')  # last line deleted
                     if key_map[row['id']] > 3:
                         raise Exception('Max errors met')
                     client.reset_errors(False)
@@ -1373,6 +1375,7 @@ class HubClient:
             'create index if not exists idx_buelon_jobs_status on buelon_jobs using hash (status);',
             'create index if not exists idx_buelon_jobs_priority on buelon_jobs (priority);',
             'create index if not exists idx_buelon_jobs_epoch on buelon_jobs (epoch);',
+            'CREATE INDEX if not exists idx_buelon_jobs_active_scope_status_priority_epoch ON buelon_jobs (scope, status, priority, epoch);',
             'CREATE TABLE IF NOT EXISTS "buelon_jobs_waiting" PARTITION OF "buelon_jobs" FOR VALUES IN (\'waiting\');',
             'CREATE TABLE IF NOT EXISTS "buelon_jobs_active" PARTITION OF "buelon_jobs" FOR VALUES IN (\'active\');',
             'CREATE TABLE IF NOT EXISTS "buelon_jobs_archived" PARTITION OF "buelon_jobs" FOR VALUES IN (\'archived\');',
@@ -1390,7 +1393,8 @@ class HubClient:
             chunk_size=100,
             status=buelon.core.step.StepStatus.pending.value,
             include_working=True,
-            reverse=False
+            reverse=False,
+            min_table_size: int = 2000
     ) -> list[str]:
         """
         Get the steps in the scope, ordered by priority, velocity, then scope position.
@@ -1409,43 +1413,93 @@ class HubClient:
         if not hasattr(self, 'db') or not self.db:
             self.db = buelon.helpers.postgres.get_postgres_from_env()
 
-        expiration_time = time.time() - (60 * 60 * .2)  # (60 * 60 * 2)
+        # expiration_time = time.time() - (60 * 60 * .2)  # (60 * 60 * 2)
+        #
+        # working_clause = ''
+        # if include_working:
+        #     working_clause = (f' or (epoch < {expiration_time} '
+        #                       f'     and status = \'{buelon.core.step.StepStatus.working.value}\') ')
+        #
+        # order_by = 'priority desc, epoch'
+        # if reverse:
+        #     order_by = 'priority asc, epoch'
+        #
+        # if len(scopes) == 1:
+        #     scope_section = f"s.scope = '{scopes[0]}'"
+        # else:
+        #     scope_section = f"""s.scope IN ({','.join(f"'{s}'" for s in scopes)})"""
+        #
+        # # Use a single query to fetch all necessary data
+        # query = f"""
+        # drop table if exists current_jobs;
+        # create temp table current_jobs as
+        # SELECT s.id -- s.id, s.priority, s.scope, s.velocity, s.tag, t.velocity as tag_velocity
+        # FROM buelon_jobs_active s
+        # -- LEFT JOIN tags t ON s.tag = t.tag
+        # WHERE {scope_section}
+        # AND (s.status = '{buelon.core.step.StepStatus.pending.value}' {working_clause})
+        # ORDER BY {order_by}
+        # LIMIT {limit};
+        #
+        # UPDATE buelon_jobs_active
+        # SET status = '{buelon.core.step.StepStatus.working.value}', epoch = {time.time()}
+        # WHERE id IN (select id from current_jobs);
+        #
+        # select *
+        # from current_jobs;
+        # """
+
+        expiration_time = time.time() - (60 * 60 * 0.2)  # (60 * 60 * 2)
 
         working_clause = ''
         if include_working:
-            working_clause = (f' or (epoch < {expiration_time} '
-                              f'     and status = \'{buelon.core.step.StepStatus.working.value}\') ')
+            working_clause = f"OR (epoch < {expiration_time} AND status = '{buelon.core.step.StepStatus.working.value}')"
 
-        order_by = 'priority desc, epoch'
-        if reverse:
-            order_by = 'priority asc, epoch'
+        order_by = 'priority DESC, epoch' if not reverse else 'priority ASC, epoch'
 
+        # scope_section = "s.scope = %s" if len(scopes) == 1 else "s.scope = ANY(%s)"
         if len(scopes) == 1:
             scope_section = f"s.scope = '{scopes[0]}'"
         else:
-            scope_section = f"""s.scope IN ({','.join(f"'{s}'" for s in scopes)})"""
+            # scope_section = f"""s.scope IN ({','.join(f"'{s}'" for s in scopes)})"""
+            # same as above
+            scope_section = f"""s.scope = ANY(array[{','.join(f"'{s}'" for s in scopes)}])"""
 
-        # Use a single query to fetch all necessary data
         query = f"""
-        drop table if exists current_jobs;
-        create temp table current_jobs as
-        SELECT s.id -- s.id, s.priority, s.scope, s.velocity, s.tag, t.velocity as tag_velocity
-        FROM buelon_jobs_active s
-        -- LEFT JOIN tags t ON s.tag = t.tag
-        WHERE {scope_section}
-        AND (s.status = '{buelon.core.step.StepStatus.pending.value}' {working_clause})
-        ORDER BY {order_by}
-        LIMIT {limit};
-        
-        UPDATE buelon_jobs_active 
-        SET status = '{buelon.core.step.StepStatus.working.value}', epoch = {time.time()}
-        WHERE id IN (select id from current_jobs);
-        
-        select *
-        from current_jobs;
+        WITH updated_jobs AS (
+            UPDATE buelon_jobs_active s
+            SET status = '{buelon.core.step.StepStatus.working.value}', epoch = {time.time()}
+            WHERE s.id IN (
+                SELECT s.id
+                FROM buelon_jobs_active s
+                WHERE {scope_section}
+                AND (s.status = '{buelon.core.step.StepStatus.pending.value}' {working_clause})
+                ORDER BY {order_by}
+                LIMIT {limit}
+                FOR UPDATE SKIP LOCKED
+            )
+            RETURNING *
+        )
+        SELECT * FROM updated_jobs;
         """
 
         rows = self.db.download_table(sql=query)
+
+        amount = self.db.download_table(sql='select count(*) as amount from buelon_jobs_active')[0]['amount']
+        if amount < min_table_size:
+            query = f"""
+            UPDATE buelon_jobs s
+            SET state = 'active'
+            WHERE s.id IN (
+                SELECT s.id
+                FROM buelon_jobs s
+                WHERE {scope_section}
+                AND (s.status = '{buelon.core.step.StepStatus.pending.value}' {working_clause})
+                ORDER BY {order_by}
+                LIMIT {min_table_size}
+                FOR UPDATE SKIP LOCKED
+            );"""
+            self.db.query(query)
 
         return [row['id'] for row in rows]
 
@@ -1480,14 +1534,16 @@ class HubClient:
             end = f" id = '{_step.children[0]}'" \
                 if len(_step.children) == 1 else \
                 f' id IN (' + ', '.join(f"'{_id}'" for _id in _step.children) + ')'
-            self.db.query(f"UPDATE buelon_jobs SET status = \'{status}\', epoch = {time.time()}, state=\'active\' WHERE {end}")
+            # self.db.query(f"UPDATE buelon_jobs SET status = \'{status}\', epoch = {time.time()}, state=\'active\' WHERE {end}")
+            self.db.query(f"UPDATE buelon_jobs SET status = \'{status}\', epoch = {time.time()}, state=\'waiting\' WHERE {end}")
 
     def postgres_pending(self, step_id):
         if not hasattr(self, 'db') or not self.db:
             self.db = buelon.helpers.postgres.get_postgres_from_env()
 
         status = buelon.core.step.StepStatus.pending.value
-        self.db.query(f"UPDATE buelon_jobs SET status = \'{status}\', epoch = {time.time()}, state=\'active\' WHERE id = '{step_id}';")
+        # self.db.query(f"UPDATE buelon_jobs SET status = \'{status}\', epoch = {time.time()}, state=\'active\' WHERE id = '{step_id}';")
+        self.db.query(f"UPDATE buelon_jobs SET status = \'{status}\', epoch = {time.time()}, state=\'waiting\' WHERE id = '{step_id}';")
 
     def postgres_cancel(self, step_id: str, __already: set | None = None):
         if not hasattr(self, 'db') or not self.db:
@@ -1520,7 +1576,8 @@ class HubClient:
         status = buelon.core.step.StepStatus.queued.value if _step.parents else buelon.core.step.StepStatus.pending.value
         state = 'waiting' if _step.parents else 'active'
 
-        self.db.query(f"UPDATE buelon_jobs SET status = \'{status}\', epoch = {time.time()}, state=\'{state}\' WHERE id = '{_step.id}'")
+        # self.db.query(f"UPDATE buelon_jobs SET status = \'{status}\', epoch = {time.time()}, state=\'{state}\' WHERE id = '{_step.id}'")
+        self.db.query(f"UPDATE buelon_jobs SET status = \'{status}\', epoch = {time.time()}, state=\'waiting\' WHERE id = '{_step.id}'")
 
         if _step.children:
             for child in _step.children:
@@ -1538,8 +1595,10 @@ class HubClient:
         db = buelon.helpers.postgres.get_postgres_from_env()
 
         status = buelon.core.step.StepStatus.error.value
+        # sql_update_step = f"""UPDATE buelon_jobs_active SET status = \'{status}\', epoch = {time.time()},
+        #      msg = $msg${msg}$msg$, trace = $trace${trace}$trace$ WHERE id = '{step_id}'"""
         sql_update_step = f"""UPDATE buelon_jobs_active SET status = \'{status}\', epoch = {time.time()}, 
-             msg = $msg${msg}$msg$, trace = $trace${trace}$trace$ WHERE id = '{step_id}'"""
+             msg = $msg${msg}$msg$, trace = $trace${trace}$trace$, state=\'waiting\' WHERE id = '{step_id}'"""
 
         db.query(sql_update_step)
 
@@ -1557,7 +1616,8 @@ class HubClient:
         for step_json, status_value in zip(step_jsons, status_values):
             status = buelon.core.step.StepStatus(status_value)
             _step = buelon.core.step.Step().from_json(step_json)
-            params = (_step.id, _step.priority, _step.scope, _step.velocity, _step.tag, f'{status.value}', time.time(), '', '', 'active' if status == buelon.core.step.StepStatus.pending else 'waiting')
+            state = 'waiting'  # 'active' if status == buelon.core.step.StepStatus.pending else 'waiting'
+            params = (_step.id, _step.priority, _step.scope, _step.velocity, _step.tag, f'{status.value}', time.time(), '', '', state)
             values.append(params)
 
         with db.connect() as conn:
@@ -1602,7 +1662,7 @@ class HubClient:
         suffix = '' if not include_workers else f' or status = \'{buelon.core.step.StepStatus.working.value}\''
         query = f'''
             update buelon_jobs_active
-            set status = \'{buelon.core.step.StepStatus.pending.value}\' 
+            set status = \'{buelon.core.step.StepStatus.pending.value}\'
             where status = \'{buelon.core.step.StepStatus.error.value}\'
             {suffix};'''
         db.query(query)
