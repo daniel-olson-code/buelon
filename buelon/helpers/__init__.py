@@ -3,6 +3,7 @@ from . import pipe_util
 from . import postgres
 from . import sqlite3_helper
 from . import lazy_load_class
+from . import persistqueue
 
 
 __all__ = [
@@ -11,4 +12,5 @@ __all__ = [
     'postgres',
     'sqlite3_helper',
     'lazy_load_class',
+    'persistqueue'
 ]

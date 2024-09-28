@@ -5,6 +5,11 @@ import sys
 import enum
 import contextlib
 import gc
+import queue
+import collections
+import threading
+import tempfile
+import json
 
 import asyncio_pool
 
@@ -12,6 +17,7 @@ import buelon.core.step
 import buelon.hub
 import buelon.bucket
 import buelon.helpers.json_parser
+import buelon.helpers.persistqueue
 
 import time
 
@@ -25,7 +31,7 @@ DEFAULT_SCOPES = 'production-heavy,production-medium,production-small,testing-he
 
 WORKER_HOST = os.environ.get('PIPE_WORKER_HOST', 'localhost')
 WORKER_PORT = int(os.environ.get('PIPE_WORKER_PORT', 65432))
-PIPE_WORKER_SUBPROCESS_JOBS = os.environ.get('PIPE_WORKER_SUBPROCESS_JOBS', 'true')
+PIPE_WORKER_SUBPROCESS_JOBS = os.environ.get('PIPE_WORKER_SUBPROCESS_JOBS', 'false') == 'true'
 try:
     N_WORKER_PROCESSES: int = int(os.environ['N_WORKER_PROCESSES'])
 except (KeyError, ValueError):
@@ -48,6 +54,8 @@ JOB_CMD = f'{sys.executable} -c "import buelon.worker;buelon.worker.job()"'
 
 TEMP_FILE_LIFETIME = 60 * 60 * 3
 
+transactions = buelon.helpers.persistqueue.JsonPersistentQueue(os.path.join('.bue', 'worker_queue.queue'))  # persistqueue.Queue(os.path.join('.bue', 'worker_queue.queue'))  # persistqueue.SQLiteQueue(os.path.join('.bue', 'worker_queue.db'), auto_commit=True)  # queue.Queue()
+
 
 class HandleStatus(enum.Enum):
     success = 'success'
@@ -59,17 +67,142 @@ class HandleStatus(enum.Enum):
 @contextlib.contextmanager
 def new_client_if_subprocess():
     global hub_client
-    if PIPE_WORKER_SUBPROCESS_JOBS == 'true':
+    if PIPE_WORKER_SUBPROCESS_JOBS:
         with buelon.hub.HubClient(WORKER_HOST, WORKER_PORT) as client:
             yield client
     else:
         yield hub_client
 
 
-def job(step_id: str | None = None) -> None:
+def transaction_worker():
+    def convert_transaction(transaction: tuple[dict, dict] | tuple[buelon.core.step.Step, buelon.core.step.Result] | None):
+        if transaction is None:
+            return None
+
+        _step, r = transaction
+
+        if isinstance(_step, dict):
+            _step = buelon.core.step.Step().from_json(_step)
+
+        if isinstance(r, dict):
+            r = buelon.core.step.Result().from_dict(r)
+
+        return _step, r
+
+    while True:
+        transaction = convert_transaction(transactions.get())
+
+        if transaction is None:
+            break
+
+        chunk = None
+        _step, r = transaction
+
+        if 100 < transactions.qsize() or True:
+            print('** running bulk!!')
+            chunk = []
+            if isinstance(r, dict) and 'error' in r:
+                with new_client_if_subprocess() as client:
+                    client.error(_step.id, r['e'], r['trace'])
+            else:
+                chunk.append((_step, r))
+            for _ in range(max(1, min(1000, transactions.qsize()))):
+                transaction = convert_transaction(transactions.get())
+                if transaction is None:
+                    transactions.put(None)
+                    break
+                _step, r = transaction
+                if isinstance(r, dict) and 'error' in r:
+                    with new_client_if_subprocess() as client:
+                        client.error(_step.id, r['e'], r['trace'])
+                else:
+                    chunk.append((_step, r))
+            try:
+                buelon.hub.bulk_set_data({_step.id: r.data for _step, r in chunk})
+                with new_client_if_subprocess() as client:
+                    client: buelon.hub.HubClient
+
+                    dones = [s for s, r in chunk if r.status == buelon.core.step.StepStatus.success]
+                    if dones:
+                        client.dones(dones)
+                    pendings = [s for s, r in chunk if r.status == buelon.core.step.StepStatus.pending]
+                    if pendings:
+                        client.pendings(pendings)
+                    resets = [s for s, r in chunk if r.status == buelon.core.step.StepStatus.reset]
+                    if resets:
+                        client.resets(resets)
+                    cancels = [s for s, r in chunk if r.status == buelon.core.step.StepStatus.cancel]
+                    if cancels:
+                        client.cancels(cancels)
+            except:
+                for _step, r in chunk:
+                    try:
+                        with new_client_if_subprocess() as client:
+                            client: buelon.hub.HubClient
+                            if r.status == buelon.core.step.StepStatus.success:
+                                client.done(_step.id)
+                            elif r.status == buelon.core.step.StepStatus.pending:
+                                client.pending(_step.id)
+                            elif r.status == buelon.core.step.StepStatus.reset:
+                                client.reset(_step.id)
+                            elif r.status == buelon.core.step.StepStatus.cancel:
+                                client.cancel(_step.id)
+                            else:
+                                raise Exception('Invalid step status')
+                        del _step
+                        del r
+                    except Exception as e:
+                        print(' - Error - ')
+                        print(str(e))
+                        traceback.print_exc()
+                        with new_client_if_subprocess() as client:
+                            client.error(
+                                _step.id,
+                                str(e),
+                                f'{traceback.format_exc()}'
+                            )
+        else:
+            if isinstance(r, dict) and 'error' in r:
+                with new_client_if_subprocess() as client:
+                    client.error(_step.id, r['e'], r['trace'])
+                continue
+
+            try:
+                buelon.hub.set_data(_step.id, r.data)
+
+                with new_client_if_subprocess() as client:
+                    client: buelon.hub.HubClient
+                    if r.status == buelon.core.step.StepStatus.success:
+                        client.done(_step.id)
+                    elif r.status == buelon.core.step.StepStatus.pending:
+                        client.pending(_step.id)
+                    elif r.status == buelon.core.step.StepStatus.reset:
+                        client.reset(_step.id)
+                    elif r.status == buelon.core.step.StepStatus.cancel:
+                        client.cancel(_step.id)
+                    else:
+                        raise Exception('Invalid step status')
+                del _step
+                del r
+            except Exception as e:
+                print(' - Error - ')
+                print(str(e))
+                traceback.print_exc()
+                with new_client_if_subprocess() as client:
+                    client.error(
+                        _step.id,
+                        str(e),
+                        f'{traceback.format_exc()}'
+                    )
+
+
+def job(step_id: str | buelon.core.step.Step | None, datas: dict | None = None) -> None:
     global bucket_client
     if step_id:
-        _step = buelon.hub.get_step(step_id)
+        if not isinstance(step_id, buelon.core.step.Step):
+            _step = buelon.hub.get_step(step_id)
+        else:
+            _step = step_id
     else:
         _step = buelon.hub.get_step(os.environ['STEP_ID'])
 
@@ -80,22 +213,31 @@ def job(step_id: str | None = None) -> None:
 
     print('handling', _step.name)
     try:
-        args = [buelon.hub.get_data(_id) for _id in _step.parents]
-        r: buelon.core.step.Result = _step.run(*args)
-        buelon.hub.set_data(_step.id, r.data)
-
-        with new_client_if_subprocess() as client:
-            client: buelon.hub.HubClient
-            if r.status == buelon.core.step.StepStatus.success:
-                client.done(_step.id)
-            elif r.status == buelon.core.step.StepStatus.pending:
-                client.pending(_step.id)
-            elif r.status == buelon.core.step.StepStatus.reset:
-                client.reset(_step.id)
-            elif r.status == buelon.core.step.StepStatus.cancel:
-                client.cancel(_step.id)
+        args = []  # [buelon.hub.get_data(_id) for _id in _step.parents]
+        for _id in _step.parents:
+            if isinstance(datas, dict) and datas.get(_id):
+                args.append(datas[_id])
             else:
-                raise Exception('Invalid step status')
+                args.append(buelon.hub.get_data(_id))
+        r: buelon.core.step.Result = _step.run(*args)
+        if not PIPE_WORKER_SUBPROCESS_JOBS:
+            # _step.to_json()
+            transactions.put((_step.to_json(), r.to_dict()))
+        else:
+            buelon.hub.set_data(_step.id, r.data)
+
+            with new_client_if_subprocess() as client:
+                client: buelon.hub.HubClient
+                if r.status == buelon.core.step.StepStatus.success:
+                    client.done(_step.id)
+                elif r.status == buelon.core.step.StepStatus.pending:
+                    client.pending(_step.id)
+                elif r.status == buelon.core.step.StepStatus.reset:
+                    client.reset(_step.id)
+                elif r.status == buelon.core.step.StepStatus.cancel:
+                    client.cancel(_step.id)
+                else:
+                    raise Exception('Invalid step status')
     except Exception as e:
         print(' - Error - ')
         print(str(e))
@@ -111,10 +253,15 @@ def job(step_id: str | None = None) -> None:
             del bucket_client
             del buelon.hub.bucket_client
 
-async def run(step_id: str | None = None) -> str:
-    if PIPE_WORKER_SUBPROCESS_JOBS != 'true':
-        job(step_id)
+
+async def run(step_id: str | buelon.core.step.Step | None = None, data=None) -> str:
+    if not PIPE_WORKER_SUBPROCESS_JOBS:
+        await asyncio.sleep(0)
+        await asyncio.to_thread(job, step_id, data)
+        # job(step_id, data)
         return 'done'
+    if isinstance(step_id, buelon.core.step.Step):
+        step_id = step_id.id
     env = {**os.environ, 'STEP_ID': step_id}
     p = await asyncio.create_subprocess_shell(JOB_CMD, env=env)
     await p.wait()
@@ -157,6 +304,10 @@ async def work():
                 if last_loop_had_steps:
                     last_loop_had_steps = False
                     print('waiting..')
+                else:
+                    # one shot for testing
+                    if os.environ.get('WORKER_ONE_SHOT') == 'true':
+                        return
                 await asyncio.sleep(1.)
                 continue
 
@@ -165,9 +316,16 @@ async def work():
             async with asyncio_pool.AioPool(size=N_WORKER_PROCESSES) as pool:
                 futures = []
                 fut_steps = await pool.spawn(asyncio.wait_for(get_steps(scopes), timeout=35))
+
+                step_objs = buelon.hub.bulk_get_step(steps)
+                parents = [step_id for s in step_objs.values() for step_id in s.parents]
+                step_data = buelon.hub.bulk_get_data(parents) if parents else {}
                 for s in steps:
-                    fut = await pool.spawn(asyncio.wait_for(run(s), timeout=WORKER_JOB_TIMEOUT))
+                    fut = await pool.spawn(asyncio.wait_for(run(step_objs[s], step_data), timeout=WORKER_JOB_TIMEOUT))
                     futures.append((fut, s))
+                # for s in steps:
+                #     fut = await pool.spawn(asyncio.wait_for(run(s), timeout=WORKER_JOB_TIMEOUT))
+                #     futures.append((fut, s))
 
             for fut, step in futures:
                 try:
@@ -199,7 +357,14 @@ async def work():
         # Check if we need to restart the worker
         if time.time() - start_time > WORKER_RESTART_INTERVAL:
             print("Restarting worker...")
-            return
+            break
+
+        if os.environ.get('WORKER_ONCE', 'false') == 'true':
+            break
+
+        if not PIPE_WORKER_SUBPROCESS_JOBS:
+            if transactions.qsize() > 1000:
+                break
 
 
 # async def work():
@@ -308,15 +473,23 @@ async def _main():
     """
     global hub_client
     cleaner_task = asyncio.create_task(cleaner())
+    transaction_thread = threading.Thread(target=transaction_worker, daemon=True)
+    transaction_thread.start()
+
     with hub_client:
         await work()
     cleaner_task.cancel()
 
+    transactions.put(None)
+    print('waiting on transactions', transactions.qsize())
+    transaction_thread.join()
+    print('done', transactions.qsize())
 
-try:
-    from cython.c_worker import *
-except (ImportError, ModuleNotFoundError):
-    pass
+
+# try:
+#     from cython.c_worker import *
+# except (ImportError, ModuleNotFoundError):
+#     pass
 
 
 if __name__ == '__main__':
