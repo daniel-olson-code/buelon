@@ -330,6 +330,26 @@ class Client:
             send(s, BUCKET_SPLIT_TOKEN.join([key.encode('utf-8'), b'delete', f'{timeout}'.encode(), b'__null__']))
             receive(s)
 
+    def bulk_get(self, keys: list, save: bool = False, persistent: bool = False):
+        output = {}
+        if USING_POSTGRES:
+            output = {k: None for k in keys}
+            with self.db.connect() as conn:
+                cur = conn.cursor()
+                cur.execute(f'SELECT key, data FROM {POSTGRES_TABLE} WHERE key in %s', (tuple(keys),))
+                data = cur.fetchall()
+
+                if not data:
+                    return output
+
+                for key, value in data:
+                    output[key] = bytes(value)
+        else:
+            for key in keys:
+                output[key] = self.get(key, persistent=persistent)
+
+        return output
+
     def bulk_set(self, keys_values: dict, save: bool = False, persistent: bool = False):
         """
         Set multiple key-value pairs on the server.
