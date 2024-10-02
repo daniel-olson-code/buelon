@@ -290,7 +290,14 @@ class Postgres:
             self.check_for_table(conn, cur, table_name, table, id_column, partition, partition_type)
 
             if partition_query:
-                cur.execute(partition_query)
+                try:
+                    cur.execute(partition_query)
+                except psycopg2.errors.DuplicateTable:
+                    for _query in partition_query.split(';'):
+                        try:
+                            cur.execute(_query)
+                        except psycopg2.errors.DuplicateTable:
+                            pass
                 conn.commit()
             keys = ', '.join([f'"{k}"' for k in table[0].keys()])
             vals = ', '.join(['%s'] * len(table[0].keys()))
