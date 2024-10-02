@@ -106,17 +106,18 @@ def transaction_worker():
                     client.error(_step.id, r['e'], r['trace'])
             else:
                 chunk.append((_step, r))
-            for _ in range(max(1, min(1000, transactions.qsize()))):
-                transaction = convert_transaction(transactions.get())
-                if transaction is None:
-                    transactions.put(None)
-                    break
-                _step, r = transaction
-                if isinstance(r, dict) and 'error' in r:
-                    with new_client_if_subprocess() as client:
-                        client.error(_step.id, r['e'], r['trace'])
-                else:
-                    chunk.append((_step, r))
+            if transactions.qsize() > 1:
+                for _ in range(max(1, min(1000, transactions.qsize()))):
+                    transaction = convert_transaction(transactions.get())
+                    if transaction is None:
+                        transactions.put(None)
+                        break
+                    _step, r = transaction
+                    if isinstance(r, dict) and 'error' in r:
+                        with new_client_if_subprocess() as client:
+                            client.error(_step.id, r['e'], r['trace'])
+                    else:
+                        chunk.append((_step, r))
             try:
                 buelon.hub.bulk_set_data({_step.id: r.data for _step, r in chunk})
                 with new_client_if_subprocess() as client:
