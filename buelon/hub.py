@@ -284,8 +284,7 @@ def _upload_steps(self: HubServer, step_jsons: list, status_values: list) -> Non
     #     conn.commit()
 
 
-
-def upload_pipe_code(code: str, lazy_steps: bool = False, wait_until_finish: bool = False, return_job_ids: bool = False):
+def upload_pipe_code(code: str, lazy_steps: bool = False, wait_until_finish: bool = False, return_job_ids: bool = False, return_job_def_id: str | list[str] | None = None):
     client = HubClient()
     chunk_size = 2000  # 5000 if not lazy_steps else 500
     chunk = []
@@ -303,6 +302,14 @@ def upload_pipe_code(code: str, lazy_steps: bool = False, wait_until_finish: boo
         conn.commit()
 
     for job in tqdm.tqdm(buelon.core.pipe_interpreter.generate_steps_from_code(code), desc='Uploading Jobs'):
+        if return_job_def_id:
+            if isinstance(return_job_def_id, str):
+                if job.name == return_job_def_id:
+                    return_job_def_id = job.id
+            elif isinstance(return_job_def_id, list):
+                if job.name in return_job_def_id:
+                    return_job_def_id[return_job_def_id.index(job.name)] = job.id
+
         if return_job_ids:
             job_ids.append(job.id)
         # print('job', job)
@@ -356,7 +363,11 @@ def upload_pipe_code(code: str, lazy_steps: bool = False, wait_until_finish: boo
         print('Done')
 
     if return_job_ids:
+        if return_job_def_id:
+            return return_job_def_id, job_ids
         return job_ids
+    elif return_job_def_id:
+        return return_job_def_id
 
     return
     variables = buelon.core.pipe_interpreter.get_steps_from_code(code, lazy_steps)
@@ -1556,21 +1567,33 @@ class HubClient:
 
         rows = self.db.download_table(sql=query)
 
-        amount = self.db.download_table(sql=f'select count(*) as amount from buelon_jobs_active where status != \'{buelon.core.step.StepStatus.working.value}\';')[0]['amount']
-        if amount < min_table_size:
-            query = f"""
-            UPDATE buelon_jobs s
-            SET state = 'active'
-            WHERE s.id IN (
-                SELECT s.id
-                FROM buelon_jobs s
-                WHERE {scope_section}
-                AND (s.status = '{buelon.core.step.StepStatus.pending.value}' {working_clause})
-                ORDER BY {order_by}
-                LIMIT {min_table_size}
-                FOR UPDATE SKIP LOCKED
-            );"""
-            self.db.query(query)
+        def check_active_state(min_table_size, scope_section, working_clause, order_by):
+            db = buelon.helpers.postgres.get_postgres_from_env()
+            row = db.download_table(sql=f'select count(*) as amount, min(priority) as priority from buelon_jobs_active where status != \'{buelon.core.step.StepStatus.working.value}\';')[0]
+            amount = row['amount']
+            priority = row['priority']  # waiting
+            row = db.download_table(sql=f'select max(priority) as priority from buelon_jobs_waiting;')[0]
+            waiting_priority = row['priority']
+            if amount < min_table_size or priority < waiting_priority:
+                query = f"""
+                UPDATE buelon_jobs s
+                SET state = 'active'
+                WHERE s.id IN (
+                    SELECT s.id
+                    FROM buelon_jobs s
+                    WHERE {scope_section}
+                    AND (s.status = '{buelon.core.step.StepStatus.pending.value}' {working_clause})
+                    ORDER BY {order_by}
+                    LIMIT {min_table_size}
+                    FOR UPDATE SKIP LOCKED
+                );"""
+                db.query(query)
+
+        thread = threading.Thread(
+            target=check_active_state,
+            args=(min_table_size, scope_section, working_clause, order_by)
+        )
+        thread.start()
 
         return [row['id'] for row in rows]
 
