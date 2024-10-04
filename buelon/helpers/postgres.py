@@ -319,8 +319,11 @@ class Postgres:
             else:
                 table = (tuple(row.values()) for row in table)
             # table = (tuple(row.values()) for row in table)
-
-            psycopg2.extras.execute_batch(cur, q, table)
+            try:
+                psycopg2.extras.execute_batch(cur, q, table)
+            except psycopg2.errors.InFailedSqlTransaction:
+                conn.rollback()
+                raise
 
             conn.commit()
 
