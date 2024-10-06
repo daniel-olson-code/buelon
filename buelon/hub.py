@@ -284,7 +284,14 @@ def _upload_steps(self: HubServer, step_jsons: list, status_values: list) -> Non
     #     conn.commit()
 
 
-def upload_pipe_code(code: str, lazy_steps: bool = False, wait_until_finish: bool = False, return_job_ids: bool = False, return_job_def_id: str | list[str] | None = None):
+def upload_pipe_code(
+        code: str,
+        lazy_steps: bool = False,
+        wait_until_finish: bool = False,
+        return_job_ids: bool = False,
+        return_job_def_id: str | list[str] | None = None,
+        job_handler: callable | None = None
+) -> str | list[str] | tuple[str | list[str] | None, list[str]] | None:
     client = HubClient()
     chunk_size = 2000  # 5000 if not lazy_steps else 500
     chunk = []
@@ -302,6 +309,11 @@ def upload_pipe_code(code: str, lazy_steps: bool = False, wait_until_finish: boo
         conn.commit()
 
     for job in tqdm.tqdm(buelon.core.pipe_interpreter.generate_steps_from_code(code), desc='Uploading Jobs'):
+        if job_handler:
+            try:
+                job_handler(job)
+            except: pass
+
         if return_job_def_id:
             if isinstance(return_job_def_id, str):
                 if job.name == return_job_def_id:
