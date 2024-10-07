@@ -350,7 +350,6 @@ class Client:
 
         return output
 
-
     def bulk_set(self, keys_values: dict, save: bool = False, persistent: bool = False):
         """
         Set multiple key-value pairs on the server.
