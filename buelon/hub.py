@@ -1791,7 +1791,7 @@ class HubClient:
     def postgres_upload_steps(self, step_jsons, status_values):
         db = buelon.helpers.postgres.get_postgres_from_env()
 
-        sql = ('INSERT INTO buelon_jobs (id, priority, scope, velocity, tag, status, epoch, msg, trace, state) '
+        sql = ('INSERT INTO buelon_jobs_waiting (id, priority, scope, velocity, tag, status, epoch, msg, trace, state) '
                'VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s);')
 
         values = []
