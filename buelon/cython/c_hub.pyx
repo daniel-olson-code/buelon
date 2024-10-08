@@ -9,6 +9,7 @@ import socket
 import threading
 import queue
 import time
+import uuid
 import string
 import platform
 import signal
@@ -284,7 +285,14 @@ def _upload_steps(self: HubServer, step_jsons: list, status_values: list) -> Non
     #     conn.commit()
 
 
-def upload_pipe_code(code: str, lazy_steps: bool = False, wait_until_finish: bool = False, return_job_ids: bool = False, return_job_def_id: str | list[str] | None = None, job_handler: callable | None = None):
+def upload_pipe_code(
+        code: str,
+        lazy_steps: bool = False,
+        wait_until_finish: bool = False,
+        return_job_ids: bool = False,
+        return_job_def_id: str | list[str] | None = None,
+        job_handler: callable | None = None
+) -> str | list[str] | tuple[str | list[str] | None, list[str]] | None:
     client = HubClient()
     chunk_size = 2000  # 5000 if not lazy_steps else 500
     chunk = []
@@ -422,6 +430,23 @@ def upload_pipe_code_from_file(file_path: str, lazy_steps: bool = False, wait_un
     with open(file_path, 'r') as f:
         code = f.read()
         upload_pipe_code(code, lazy_steps, wait_until_finish)
+
+
+def submit_pipe_code_from_file(file_path: str, scope: str | None = None):
+    with open(file_path) as f:
+        return submit_pipe_code(f.read(), scope)
+
+
+def submit_pipe_code(code: str, scope: str | None = None):
+    if scope is None:
+        scope = buelon.worker.DEFAULT_SCOPES.split(',')[-1]
+    bucket = buelon.bucket.Client()
+
+    key = f'submit-jobs/{uuid.uuid1()}'
+    bucket.set(key, code.encode())
+    code = "\nTAB = '  '\n$ {scope}\n\njob:\n  python\n  main\n  `\nimport buelon as pete\ndef main(*args):\n    bucket = pete.bucket.Client()\n    code = bucket.get('{key}').decode()\n    pete.hub.upload_pipe_code(code)\n`\n\npipe = | job\npipe()\n"
+    code = code.format(scope=scope, key=key)
+    upload_pipe_code(code)
 
 
 def get_step(step_id: str) -> buelon.core.step.Step | None:
@@ -1784,7 +1809,7 @@ class HubClient:
     def postgres_upload_steps(self, step_jsons, status_values):
         db = buelon.helpers.postgres.get_postgres_from_env()
 
-        sql = ('INSERT INTO buelon_jobs (id, priority, scope, velocity, tag, status, epoch, msg, trace, state) '
+        sql = ('INSERT INTO buelon_jobs_waiting (id, priority, scope, velocity, tag, status, epoch, msg, trace, state) '
                'VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s);')
 
         values = []

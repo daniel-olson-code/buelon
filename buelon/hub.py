@@ -9,6 +9,7 @@ import socket
 import threading
 import queue
 import time
+import uuid
 import string
 import platform
 import signal
@@ -429,6 +430,24 @@ def upload_pipe_code_from_file(file_path: str, lazy_steps: bool = False, wait_un
     with open(file_path, 'r') as f:
         code = f.read()
         upload_pipe_code(code, lazy_steps, wait_until_finish)
+
+
+def submit_pipe_code_from_file(file_path: str, scope: str | None = None):
+    with open(file_path) as f:
+        return submit_pipe_code(f.read(), scope)
+
+
+def submit_pipe_code(code: str, scope: str | None = None):
+    if scope is None:
+        scope = buelon.worker.DEFAULT_SCOPES.split(',')[-1]
+    bucket = buelon.bucket.Client()
+
+    key = f'submit-jobs/{uuid.uuid1()}'
+    bucket.set(key, code.encode())
+    # Cython does not allow an f-string here
+    code = "TAB = '  '\n$ {scope}\n\njob:\n  python\n  main\n  `\nimport buelon as pete\ndef main(*args):\n    bucket = pete.bucket.Client()\n    code = bucket.get('{key}').decode()\n    pete.hub.upload_pipe_code(code)\n`\n\npipe = | job\npipe()\n"
+    code = code.format(scope=scope, key=key)
+    upload_pipe_code(code)
 
 
 def get_step(step_id: str) -> buelon.core.step.Step | None:

@@ -3,12 +3,13 @@ import os
 import json
 import sys
 import time
+import uuid
 
 import dotenv
 dotenv.load_dotenv('.env')
 
 # Import necessary modules from buelon
-import buelon as bue
+import buelon as pete
 
 
 def delete_last_line():
@@ -29,7 +30,7 @@ def run_hub(args):
         os.environ['POSTGRES_HOST'], os.environ['POSTGRES_PORT'], os.environ['POSTGRES_USER'], os.environ['POSTGRES_PASSWORD'], os.environ['POSTGRES_DATABASE'] = args.postgres.split(':')
 
     # Run the hub
-    bue.hub.main()
+    pete.hub.main()
 
 
 def run_worker(args):
@@ -53,7 +54,7 @@ def run_worker(args):
         os.environ['POSTGRES_HOST'], os.environ['POSTGRES_PORT'], os.environ['POSTGRES_USER'], os.environ['POSTGRES_PASSWORD'], os.environ['POSTGRES_DATABASE'] = args.postgres.split(':')
 
     # Run the worker
-    bue.worker.main()
+    pete.worker.main()
 
 
 def run_bucket(args):
@@ -62,28 +63,38 @@ def run_bucket(args):
         os.environ['BUCKET_SERVER_HOST'], os.environ['BUCKET_SERVER_PORT'] = args.binding.split(':')
 
     # Run the bucket
-    bue.bucket.main()
+    pete.bucket.main()
 
 def run_demo():
     # Run the demo
-    bue.examples.demo.main()
+    pete.examples.demo.main()
 
 
 def run_example():
     # Run the example
-    bue.examples.example.setup()
+    pete.examples.example.setup()
 
 
 def upload_pipe_code(file_path, binding, lazy_steps):
     if binding:
         os.environ['PIPE_WORKER_HOST'], os.environ['PIPE_WORKER_PORT'] = binding.split(':')
-    bue.hub.upload_pipe_code_from_file(file_path, lazy_steps)
+    pete.hub.upload_pipe_code_from_file(file_path, lazy_steps)
+
+
+def submit_pipe_code(file_path, binding, bucket_binding, scope):
+    if binding:
+        os.environ['PIPE_WORKER_HOST'], os.environ['PIPE_WORKER_PORT'] = binding.split(':')
+
+    if bucket_binding:
+        os.environ['BUCKET_CLIENT_HOST'], os.environ['BUCKET_CLIENT_PORT'] = bucket_binding.split(':')
+
+    pete.hub.submit_pipe_code_from_file(file_path, scope)
 
 
 def display_status(args):
     if args.binding:
         os.environ['PIPE_WORKER_HOST'], os.environ['PIPE_WORKER_PORT'] = args.binding.split(':')
-    client = bue.hub.HubClient()
+    client = pete.hub.HubClient()
     refuse_count = 0
     def display_status_worker():
         nonlocal refuse_count
@@ -97,7 +108,7 @@ def display_status(args):
             print(f'{e}')
             return 1
         # client.get_step_count()
-        # bue.hub.get_step_count(args.binding)
+        # pete.hub.get_step_count(args.binding)
         for row in data:
             name, amount = row['status'], row['amount']
             print(f'{name}: {amount:,}')
@@ -136,7 +147,7 @@ def fetch_errors(args):
 
     print('exclude', exclude)
 
-    client = bue.hub.HubClient()
+    client = pete.hub.HubClient()
     return_value = client.fetch_errors(count, exclude)
     count, total, table = return_value['count'], return_value['total'], return_value['table']
     print(f'Fetched {count} errors of {total} total errors.\n')
@@ -148,9 +159,14 @@ def fetch_errors(args):
         print(f'Trace: \n  {_trace}\n\n--**--\n')
 
 
+def has_postgres_env_vars() -> bool:
+    return all([var in os.environ for var in [
+        'POSTGRES_HOST', 'POSTGRES_PORT', 'POSTGRES_USER', 'POSTGRES_PASSWORD', 'POSTGRES_DATABASE']])
+
+
 def cli():
     parser = argparse.ArgumentParser(description='Buelon command-line interface')
-    parser.add_argument('-v', '--version', action='version', version='Buelon 1.0.60-alpha4')
+    parser.add_argument('-v', '--version', action='version', version='Buelon 1.0.65-alpha31')
     parser.add_argument('-b', '--binding', help='Binding for uploading pipe code (host:port)')
     parser.add_argument('file_path', nargs='?', default='nothing', help='File path for uploading pipe code')
 
@@ -159,9 +175,15 @@ def cli():
     # Check if environment variables are already set
     hub_binding_required = not ('PIPELINE_HOST' in os.environ and 'PIPELINE_PORT' in os.environ)
     hub_bucket_required = not ('BUCKET_CLIENT_HOST' in os.environ and 'BUCKET_CLIENT_PORT' in os.environ)
+    if os.environ.get('USING_POSTGRES_BUCKET', 'false') == 'true':
+        hub_bucket_required = not has_postgres_env_vars()
 
     worker_binding_required = not ('PIPE_WORKER_HOST' in os.environ and 'PIPE_WORKER_PORT' in os.environ)
     worker_bucket_required = not ('BUCKET_CLIENT_HOST' in os.environ and 'BUCKET_CLIENT_PORT' in os.environ)
+    if os.environ.get('USING_POSTGRES_HUB', 'false') == 'true':
+        worker_binding_required = not has_postgres_env_vars()
+    if os.environ.get('USING_POSTGRES_BUCKET', 'false') == 'true':
+        worker_bucket_required = not has_postgres_env_vars()
 
     bucket_binding_required = not ('BUCKET_SERVER_HOST' in os.environ and 'BUCKET_SERVER_PORT' in os.environ)
 
@@ -214,6 +236,13 @@ def cli():
     run_step_parser = subparsers.add_parser('run-step', help='View Error Logs')
     run_step_parser.add_argument('-s', '--step', required=True, help='The step id')
 
+    # Fetch Errors
+    submit_parser = subparsers.add_parser('submit', help='View Error Logs')
+    submit_parser.add_argument('-f', '--file', required=True, help='File path to buelon script')
+    submit_parser.add_argument('-k', '--bucket-binding', required=worker_bucket_required, help='Bucket binding (host:port)')
+    submit_parser.add_argument('-b', '--binding', required=worker_binding_required, help='Main binding for hub (host:port)')
+    submit_parser.add_argument('-s', '--scope', default=pete.worker.DEFAULT_SCOPES.split(',')[-1])
+
     # Demo command
     demo_parser = subparsers.add_parser('demo', help='Run the demo')
     # demo_parser.set_defaults(func=run_demo)
@@ -237,18 +266,20 @@ def cli():
         run_example()
     elif args.command == 'upload':
         upload_pipe_code(args.file_path, args.hub_binding, args.lazy)
+    elif args.command == 'submit':
+        submit_pipe_code(args.file, args.binding, args.bucket_binding, args.scope)
     elif args.command == 'reset':
         if args.binding:
             os.environ['PIPE_WORKER_HOST'], os.environ['PIPE_WORKER_PORT'] = args.binding.split(':')
-        # bue.hub.reset_errors(args.include_working is not None)
-        client = bue.hub.HubClient()
+        # pete.hub.reset_errors(args.include_working is not None)
+        client = pete.hub.HubClient()
         client.reset_errors(args.include_working == 'true')
     elif args.command == 'status':
         display_status(args)
     elif args.command == 'delete':
         if args.binding:
             os.environ['PIPE_WORKER_HOST'], os.environ['PIPE_WORKER_PORT'] = args.binding.split(':')
-        client = bue.hub.HubClient()
+        client = pete.hub.HubClient()
         client.sync_delete_steps()
     elif args.command == 'errors':
         fetch_errors(args)
@@ -260,7 +291,7 @@ def cli():
 
         step_id = args.step
 
-        bue.worker.job(step_id)
+        pete.worker.job(step_id)
     else:
         # Handle the case where a file path is given without a command
         if args.binding and remaining_args:
@@ -284,7 +315,7 @@ if __name__ == '__main__':
 # import sys
 #
 # # Import necessary modules from buelon
-# import buelon as bue
+# import buelon as pete
 #
 # def run_hub(args):
 #     # Set environment variables for hub
@@ -296,7 +327,7 @@ if __name__ == '__main__':
 #         os.environ['POSTGRES_HOST'], os.environ['POSTGRES_PORT'], os.environ['POSTGRES_USER'], os.environ['POSTGRES_PASSWORD'], os.environ['POSTGRES_DATABASE'] = args.postgres.split(':')
 #
 #     # Run the hub
-#     bue.hub.main()
+#     pete.hub.main()
 #
 # def run_worker(args):
 #     # Set environment variables for worker
@@ -316,26 +347,26 @@ if __name__ == '__main__':
 #         os.environ['POSTGRES_HOST'], os.environ['POSTGRES_PORT'], os.environ['POSTGRES_USER'], os.environ['POSTGRES_PASSWORD'], os.environ['POSTGRES_DATABASE'] = args.postgres.split(':')
 #
 #     # Run the worker
-#     bue.worker.main()
+#     pete.worker.main()
 #
 # def run_bucket(args):
 #     # Set environment variables for bucket
 #     os.environ['BUCKET_SERVER_HOST'], os.environ['BUCKET_SERVER_PORT'] = args.binding.split(':')
 #
 #     # Run the bucket
-#     bue.bucket.main()
+#     pete.bucket.main()
 #
 # def run_demo():
 #     # Run the demo
-#     bue.examples.demo.main()
+#     pete.examples.demo.main()
 #
 # def run_example():
 #     # Run the example
-#     bue.examples.example.main()
+#     pete.examples.example.main()
 #
 # def upload_pipe_code(file_path, binding):
 #     os.environ['PIPE_WORKER_HOST'], os.environ['PIPE_WORKER_PORT'] = binding.split(':')
-#     bue.hub.upload_pipe_code_from_file(file_path)
+#     pete.hub.upload_pipe_code_from_file(file_path)
 #
 # def cli():
 #     parser = argparse.ArgumentParser(description='Buelon command-line interface')
