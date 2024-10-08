@@ -10,6 +10,7 @@ Constants:
     LANGUAGES (dict): A dictionary mapping language names to their standardized identifiers.
 """
 import sys
+import inspect
 import string
 import sqlite3
 import json
@@ -276,7 +277,7 @@ def line_is_execution(line: str):
 
 class PipelineParser:
     """
-    TODO: check for variable passing and asignment on parse
+    TODO: check for variable passing and assignment on parse
     """
     scope: str = 'default'
     priority: int = 0
@@ -295,9 +296,10 @@ class PipelineParser:
         self.conn.execute('DROP table if exists jobs;')
         self.conn.execute('CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, starter, value)')
         self.conn.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_id ON jobs (id);')
+        self.conn.execute('CREATE INDEX IF NOT EXISTS idx_jobs_starter_id ON jobs (starter, id);')
         self.conn.commit()
         self._build_index = 0
-        print(f'{self._build_index:,} builds')
+        print(f'{self._build_index:,} compiles')
         i = 0
         # for job in self._build(yaml.load(prepared_content, yaml.Loader)):
         #     i += 1
@@ -309,8 +311,8 @@ class PipelineParser:
         self._build(yaml.load(prepared_content, yaml.Loader))
 
         # print('deploying initiators')
-        print(f"Saved {self.conn.execute('SELECT count(*) FROM jobs').fetchall()[0][0]:,} jobs")
-        q = 'SELECT starter, value FROM jobs order by id limit {limit} offset {offset}'
+        print(f"Built {self.conn.execute('SELECT count(*) FROM jobs').fetchall()[0][0]:,} jobs")
+        q = 'SELECT starter, value FROM jobs order by starter, id limit {limit} offset {offset}'
         limit = 500
         offset = 0
         chunk = self.conn.execute(q.format(limit=limit, offset=offset)).fetchall()
@@ -344,7 +346,7 @@ class PipelineParser:
     def _build(self, variables: dict, values: dict | None = None):
         self._build_index += 1
         delete_last_line()
-        print(f'{self._build_index:,} builds')
+        print(f'{self._build_index:,} compiles')
         # varibales = {
         #     'scope': self.scope,
         #     'priority': self.priority,
@@ -434,6 +436,14 @@ class PipelineParser:
         if local:
             # jobs = next(self.build_execution(loop['pipe_execution'], values, variables, store_result=False))
             jobs = self.build_execution(loop['pipe_execution'], values, variables, store_result=False)
+
+            if jobs[0].parents:
+                # TODO: fix this. This only works for linear job pipes and not a pipe with arguments
+                raise BuelonBuildError(f'Loop `{loop["name"]}`. '
+                                       f'Currently only pipe loops with no arguments are supported. '
+                                       f'Example: only --> `\npipe = job1 | job2 | job3\n\nfor v in pipe():'
+                                       f'\n{self.tab}any_pipe(v)`')
+
             data = []
 
             for job in jobs:
@@ -442,9 +452,12 @@ class PipelineParser:
                 del job
                 data = new_data
 
+            if not isinstance(data, list) and not inspect.isgenerator(data):
+                raise BuelonBuildError(f'Loop `{loop["name"]}` must return a list or a generator. Returned `{type(data)}`')
+
             i = 0
             for value in data:
-                job_def = self.job_for_loop(i, value, loop)
+                job_def = self.job_for_loop(i, value, loop, variables)
                 pipe = {
                     'name': loop["name"],
                     'jobs': [job_def['name']]
@@ -472,16 +485,20 @@ class PipelineParser:
                 self._build(merged, values=values)
                 i += 1
 
-    def job_for_loop(self, i, value, loop):
+    def job_for_loop(self, i, value, loop, variables):
         # self.job_from_definition
+        _pipe = self.get_pipe(loop['pipe_execution']['name'], variables)
+        loop_job_def = self.get_job_definition(_pipe['jobs'][-1], variables)
+        priority: int = loop_job_def['priority']
+        scope: str = loop_job_def['scope']
         return {
             'name': f'{loop["name"]}_{i}',
             'language': 'PYTHON',
             'local': False,
             'code': f'import json\ndef main(*args):\n    return json.loads({json.dumps(json.dumps(value))})',
             'relation': 'main',
-            'priority': loop['varibales']['priority'],
-            'scope': loop['varibales']['scope'],
+            'priority': priority,
+            'scope': scope,
             'args': [],
             'result': None
         }
@@ -698,16 +715,17 @@ class PipelineParser:
 
         ]
 
-    def fetch_job_definitions(self, lines: str):
+    def fetch_job_definitions(self, lines: list[str]):
         definitions = []
         consumed_lines = []
 
         definition_starts = [
             index for index, line in enumerate(lines)
             if not line.strip().startswith('for')
-               and line.strip().endswith(':')
-               and not self.in_string(index, 0)
-               and not line.startswith(' ')
+                and not line.strip().startswith('loop')
+                and line.strip().endswith(':')
+                and not self.in_string(index, 0)
+                and not line.startswith(' ')
         ]
 
         def check_indentation(line: str, index: int):
@@ -715,8 +733,8 @@ class PipelineParser:
                 raise BuelonSyntaxError(f'Line: {index + 1} Invalid indentation. `{line}`')
 
         for start in definition_starts:
-            scope = 'default'
-            priority = 0
+            scope = self.scope
+            priority = self.priority
 
             def check_scope(i: int):
                 nonlocal scope, start, consumed_lines
@@ -863,6 +881,154 @@ class PipelineParser:
                 # lines[i] = ''
                 self.set_line_at_index(i, '', lines)
             consumed_lines = []
+
+        def get_import_values(i: int, arg: str, scope: str, priority: int):
+            alias = None
+
+            if '$' in arg:
+                if arg.count('$') > 1:
+                    raise BuelonSyntaxError(f'Line: ~{i + 1} Invalid pipe definition. More than 1 `$` found.')
+                arg, scope = arg.split('$')
+                if '!' in scope:
+                    if scope.count('!') > 1:
+                        raise BuelonSyntaxError(f'Line: ~{i + 1} Invalid pipe definition. More than 1 `!` found.')
+                    scope, priority = scope.split('!')
+                elif '!' in arg:
+                    if arg.count('!') > 1:
+                        raise BuelonSyntaxError(f'Line: ~{i + 1} Invalid pipe definition. More than 1 `!` found.')
+                    arg, priority = arg.split('!')
+            elif '!' in arg:
+                if arg.count('!') > 1:
+                    raise BuelonSyntaxError(f'Line: ~{i + 1} Invalid pipe definition. More than 1 `!` found.')
+                arg, priority = arg.split('!')
+
+            if ' as ' in arg:
+                if arg.count(' as ') > 1:
+                    raise BuelonSyntaxError(f'Line: ~{i + 1} Invalid pipe definition. More than 1 `as` found.')
+                arg, alias = arg.split(' as ')
+            else:
+                alias = arg
+
+            if not valid_word(arg):
+                raise BuelonSyntaxError(f'Line: ~{i + 1} Invalid char in name for Job Definition. `{arg}`')
+            if not valid_word(alias):
+                raise BuelonSyntaxError(f'Line: ~{i + 1} Invalid char in alias for Job Definition. `{alias}`')
+            if not valid_word(scope):
+                raise BuelonSyntaxError(f'Line: ~{i + 1} Invalid char in scope for Job Definition. `{scope}`')
+            try:
+                priority = int(priority.strip() if isinstance(priority, str) else priority)
+            except ValueError:
+                raise BuelonSyntaxError(f'Line: ~{i + 1} Invalid priority for Job Definition. `{priority}`')
+
+            name_warning(arg)
+            name_warning(alias)
+            name_warning(scope)
+
+            return arg.strip(), alias.strip(), scope.strip(), priority
+
+        i = 0
+        consume = []
+        while i < len(lines):
+            line = lines[i]
+            if (line.startswith('import')
+                    and any(line[len('import'):].lstrip().startswith(k + ' ') for k in LANGUAGES.keys())):
+                line = line[len('import'):].lstrip()
+                if '(' not in line:
+                    raise BuelonSyntaxError(f'Line: {i + 1} Invalid pipe definition. Missing `(`')
+                if line.count('(') > 1:
+                    raise BuelonSyntaxError(f'Line: {i + 1} Invalid pipe definition. More than 1 `(` found.')
+
+                consume.append(i)
+
+                language, rest = line.split('(')
+                language = language.strip()
+
+                if language not in LANGUAGES:
+                    raise BuelonSyntaxError(f'Line: {i + 1} Invalid pipe definition. `{language}` not found.')
+
+                if ')' in line:
+                    if line.count(')') > 1:
+                        raise BuelonSyntaxError(f'Line: {i + 1} Invalid pipe definition. More than 1 `)` found.')
+
+                    imports, code = rest.split(')')
+                else:
+                    imports = rest
+
+                    while ')' not in line:
+                        i += 1
+                        if i >= len(lines):
+                            raise BuelonSyntaxError(f'Line: {i + 1} Invalid pipe definition. Missing `)`')
+                        line = lines[i]
+                        consume.append(i)
+                        if ')' in line:
+                            if line.count(')') > 1:
+                                raise BuelonSyntaxError(f'Line: {i + 1} Invalid pipe definition. More than 1 `)` found.')
+                        else:
+                            imports += line
+
+                    _imports, code = line.split(')')
+                    imports += _imports
+                    imports = imports.replace('\n', ' ')
+
+                args = [get_import_values(i, arg.strip(), self.scope, self.priority) for arg in imports.split(',')]
+
+                if not code.strip().startswith('`'):
+                    local = True
+                    code = code.strip()
+                    if not code:
+                        raise BuelonSyntaxError(f'Line: {i + 1} Invalid code for Job Definition. No code provided.')
+                else:
+                    local = False
+                    if code.count('`') > 2:
+                        raise BuelonSyntaxError(
+                            f'Line: {i + 1} Invalid code for Job Definition. More than 2 "`" found in "{code}"')
+                    if code.count('`') == 2:
+                        begin, middle, end = code.split('`')
+                        if end.strip():
+                            raise BuelonSyntaxError(
+                                f'Line: {i + 1} Invalid code for Job Definition. Code ends with `{end.strip()}`')
+                        if begin.strip():
+                            raise BuelonSyntaxError(
+                                f'Line: {i + 1} Invalid code for Job Definition. Code starts with `{begin.strip()}`')
+                        code = middle
+                    else:
+                        begin, end = code.split('`')
+                        if begin.strip():
+                            raise BuelonSyntaxError(
+                                f'Line: {i + 1} Invalid code for Job Definition. Code starts with `{begin.strip()}`')
+                        code = end
+                        i += 1
+                        while i < len(lines) and '`' not in lines[i]:
+                            code += '\n' + lines[i]
+                            consume.append(i)
+                            i += 1
+                        if lines[i].count('`') > 1:
+                            raise BuelonSyntaxError(
+                                f'Line: {i + 1} Invalid code for Job Definition. More than 1 "`" found.')
+                        consume.append(i)
+                        begin, end = lines[i].split('`')
+                        if end.strip():
+                            raise BuelonSyntaxError(
+                                f'Line: {i + 1} Invalid code for Job Definition. Code ends with `{end.strip()}`')
+                        code += '\n' + begin
+
+                print(language, args, code)
+
+                for arg in args:
+                    func, alias, scope, priority = arg
+                    definitions.append({
+                        'name': func,
+                        'language': LANGUAGES[language],
+                        'relation': alias,
+                        'code': code,
+                        'local': local,
+                        'scope': scope,
+                        'priority': priority,
+                    })
+            i += 1
+        for j in consume:
+            self.set_line_at_index(j, '', lines)
+
         return definitions
 
     def fetch_pipes(self, lines: list[str]):
@@ -1065,9 +1231,7 @@ class PipelineParser:
 
 
 def generate_steps_from_code(code: str) -> Generator[step.Step, None, None]:
-    """DEPRECATED: Use run() instead.
-
-    Extract steps and starters from the given pipeline code.
+    """Extract steps and starters from the given pipeline code.
 
     Args:
         code (str): The pipeline code to be processed.
