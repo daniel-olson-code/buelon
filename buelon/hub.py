@@ -126,7 +126,7 @@ def load_db():
         cur = conn.cursor()
         cur.execute('PRAGMA journal_mode=WAL')
         cur.execute('CREATE TABLE IF NOT EXISTS steps ('
-                    'id, priority, scope, velocity, tag, status, epoch, msg, trace);')
+                    'id, priority, scope, timeout, retries, velocity, tag, status, epoch, msg, trace);')
         cur.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_steps_id ON steps (id);')
         cur.execute('CREATE INDEX IF NOT EXISTS idx_steps_status ON steps (status);')
         cur.execute('CREATE INDEX IF NOT EXISTS idx_steps_priority ON steps (priority);')
@@ -252,10 +252,10 @@ def upload_step(_step: buelon.core.step.Step, status: buelon.core.step.StepStatu
 
 def _upload_step(self: HubServer, step_json: dict, status_value: int) -> None:
     status = buelon.core.step.StepStatus(status_value)
-    _step = buelon.core.step.Step().from_json(step_json)
-    sql = ('INSERT INTO steps (id, priority, scope, velocity, tag, status, epoch, msg, trace) '
-           'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);')
-    params = (_step.id, _step.priority, _step.scope, _step.velocity, _step.tag, f'{status.value}', time.time(), '', '')
+    _step: buelon.core.step.Step = buelon.core.step.Step().from_json(step_json)
+    sql = ('INSERT INTO steps (id, priority, scope, timeout, retries, velocity, tag, status, epoch, msg, trace) '
+           'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);')
+    params = (_step.id, _step.priority, _step.scope, _step.timeout, _step.retries, _step.velocity, _step.tag, f'{status.value}', time.time(), '', '')
 
     self.execute_db_query(sql, params)
 
@@ -266,13 +266,13 @@ def _upload_step(self: HubServer, step_json: dict, status_value: int) -> None:
 
 
 def _upload_steps(self: HubServer, step_jsons: list, status_values: list) -> None:
-    sql = ('INSERT INTO steps (id, priority, scope, velocity, tag, status, epoch, msg, trace) '
-           'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);')
+    sql = ('INSERT INTO steps (id, priority, scope, timeout, retries, velocity, tag, status, epoch, msg, trace) '
+           'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);')
     for step_json, status_value in zip(step_jsons, status_values):
         status = buelon.core.step.StepStatus(status_value)
-        _step = buelon.core.step.Step().from_json(step_json)
+        _step: buelon.core.step.Step = buelon.core.step.Step().from_json(step_json)
         params = (
-            _step.id, _step.priority, _step.scope, _step.velocity, _step.tag, f'{status.value}', time.time(), '', '')
+            _step.id, _step.priority, _step.scope, _step.timeout, _step.retries, _step.velocity, _step.tag, f'{status.value}', time.time(), '', '')
         self.execute_db_query(sql, params)
     # with sqlite3.connect(db_path) as conn:
     #     cur = conn.cursor()
@@ -437,16 +437,19 @@ def submit_pipe_code_from_file(file_path: str, scope: str | None = None):
         return submit_pipe_code(f.read(), scope)
 
 
-def submit_pipe_code(code: str, scope: str | None = None):
+def submit_pipe_code(code: str, scope: str | None = None, priority: int = 0):
     if scope is None:
         scope = buelon.worker.DEFAULT_SCOPES.split(',')[-1]
+    if not isinstance(priority, int):
+        priority = 0
+
     bucket = buelon.bucket.Client()
 
     key = f'submit-jobs/{uuid.uuid1()}'
     bucket.set(key, code.encode())
     # Cython does not allow an f-string here
-    code = "TAB = '  '\n$ {scope}\n\njob:\n  python\n  main\n  `\nimport buelon as pete\ndef main(*args):\n    bucket = pete.bucket.Client()\n    code = bucket.get('{key}').decode()\n    pete.hub.upload_pipe_code(code)\n`\n\npipe = | job\npipe()\n"
-    code = code.format(scope=scope, key=key)
+    code = "TAB = '  '\n!scope {scope}\n!priority {priority}\n\njob:\n  python\n  main\n  `\nimport buelon as pete\ndef main(*args):\n    bucket = pete.bucket.Client()\n    code = bucket.get('{key}').decode()\n    pete.hub.upload_pipe_code(code)\n`\n\npipe = | job\npipe()\n"
+    code = code.format(scope=scope, key=key, priority=f'{priority}')
     upload_pipe_code(code)
 
 
@@ -1467,6 +1470,8 @@ class HubClient:
             id text,
             priority int,
             scope text,
+            timeout real,
+            retries int,
             velocity real,
             tag text,
             status text,
@@ -1810,16 +1815,16 @@ class HubClient:
     def postgres_upload_steps(self, step_jsons, status_values):
         db = buelon.helpers.postgres.get_postgres_from_env()
 
-        sql = ('INSERT INTO buelon_jobs_waiting (id, priority, scope, velocity, tag, status, epoch, msg, trace, state) '
-               'VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s);')
+        sql = ('INSERT INTO buelon_jobs_waiting (id, priority, scope, timeout, retries, velocity, tag, status, epoch, msg, trace, state) '
+               'VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);')
 
         values = []
 
         for step_json, status_value in zip(step_jsons, status_values):
             status = buelon.core.step.StepStatus(status_value)
-            _step = buelon.core.step.Step().from_json(step_json)
+            _step: buelon.core.step.Step = buelon.core.step.Step().from_json(step_json)
             state = 'waiting'  # 'active' if status == buelon.core.step.StepStatus.pending else 'waiting'
-            params = (_step.id, _step.priority, _step.scope, _step.velocity, _step.tag, f'{status.value}', time.time(), '', '', state)
+            params = (_step.id, _step.priority, _step.scope, _step.timeout, _step.retries, _step.velocity, _step.tag, f'{status.value}', time.time(), '', '', state)
             values.append(params)
 
         with db.connect() as conn:
