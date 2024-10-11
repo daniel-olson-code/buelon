@@ -199,6 +199,7 @@ def transaction_worker():
 
 def job(step_id: str | buelon.core.step.Step | None, datas: dict | None = None) -> None:
     global bucket_client
+    os.environ['BUELON_JOB'] = 'true'
     if step_id:
         if not isinstance(step_id, buelon.core.step.Step):
             _step = buelon.hub.get_step(step_id)
