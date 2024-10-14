@@ -1571,7 +1571,8 @@ class HubClient:
 
         working_clause = ''
         if include_working:
-            working_clause = f"OR (epoch < {expiration_time} AND status = '{buelon.core.step.StepStatus.working.value}')"
+            # working_clause = f"OR (epoch < {expiration_time} AND status = '{buelon.core.step.StepStatus.working.value}')"
+            working_clause = f"OR (epoch < coalesce(timeout, {expiration_time}) AND status = '{buelon.core.step.StepStatus.working.value}')"
 
         order_by = 'priority DESC, epoch' if not reverse else 'priority ASC, epoch'
 
