@@ -7,7 +7,8 @@ and handling dynamic variable substitution in code strings.
 from __future__ import annotations
 import os
 import sys
-import  tempfile
+import time
+import tempfile
 import importlib
 import contextlib
 from typing import List, Dict, Any
@@ -35,16 +36,31 @@ def temp_mod(txt: str):
         txt (str): The Python code to be written to the temporary module.
 
     Yields:
-        str: The name of the temporary module.
-
-    Raises:
-        PipeLineException: If there's an error in creating or removing the temporary module.
+        types.ModuleType: The imported temporary module.
     """
     mod = f'temp_bue_{pipe_util.get_id()}'
     with tempfile.NamedTemporaryFile(prefix=mod, dir=os.getcwd(), suffix='.py') as tf:
         tf.write(txt.encode())
         tf.flush()
-        yield tf.name.replace('.py', '').split(os.sep)[-1]
+        # os.fsync(tf.fileno())
+        module_name = tf.name.replace('.py', '').split(os.sep)[-1]
+
+        spec = importlib.util.spec_from_file_location(module_name, tf.name)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+        spec.loader.exec_module(module)
+
+        try:
+            yield module
+        finally:
+            if module_name in sys.modules:
+                del sys.modules[module_name]
+            # os.unlink(tf.name)
+
+        # try:
+        #     yield tf.name.replace('.py', '').split(os.sep)[-1]
+        # except ModuleNotFoundError:
+        #     raise ModuleNotFoundError(f'Module not found, "{tf.name}", {os.path.exists(tf.name)}, ' + tf.name.replace('.py', '').split(os.sep)[-1])
     # path = os.path.join(os.getcwd(), f'{mod}.py')
     # try:
     #     with open(path, 'w') as f:
@@ -226,14 +242,15 @@ def run_py(txt: str, func: str, *args, __pure__=False, **kwargs) -> Any:
     Raises:
         PipeLineException: If the specified function is not found in the code.
     """
-    txt = apply_kwargs_to_txt(txt, kwargs)
-    txt, uuids = check_for_uuid_kwargs(txt, kwargs)
-    txt = place_null_values(txt)
+    # txt = apply_kwargs_to_txt(txt, kwargs)
+    # txt, uuids = check_for_uuid_kwargs(txt, kwargs)
+    # txt = place_null_values(txt)
 
-    with temp_mod(txt) as mod:
-        module = importlib.import_module(mod)
+    with temp_mod(txt) as module:  # mod:
+        # module = importlib.import_module(mod)
         if hasattr(module, func):
             r = getattr(module, func)(*args)
+            del module
             return r
         else:
             raise PipeLineException(f'function {func} not found.')
