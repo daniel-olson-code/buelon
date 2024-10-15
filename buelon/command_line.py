@@ -166,7 +166,7 @@ def has_postgres_env_vars() -> bool:
 
 def cli():
     parser = argparse.ArgumentParser(description='Buelon command-line interface')
-    parser.add_argument('-v', '--version', action='version', version='Buelon 1.0.65-alpha31')
+    parser.add_argument('-v', '--version', action='version', version='Buelon 1.0.65-alpha37')
     parser.add_argument('-b', '--binding', help='Binding for uploading pipe code (host:port)')
     parser.add_argument('file_path', nargs='?', default='nothing', help='File path for uploading pipe code')
 
