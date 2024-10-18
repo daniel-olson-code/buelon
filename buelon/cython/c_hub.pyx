@@ -126,7 +126,7 @@ def load_db():
         cur = conn.cursor()
         cur.execute('PRAGMA journal_mode=WAL')
         cur.execute('CREATE TABLE IF NOT EXISTS steps ('
-                    'id, priority, scope, velocity, tag, status, epoch, msg, trace);')
+                    'id, priority, scope, timeout, retries, velocity, tag, status, epoch, msg, trace);')
         cur.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_steps_id ON steps (id);')
         cur.execute('CREATE INDEX IF NOT EXISTS idx_steps_status ON steps (status);')
         cur.execute('CREATE INDEX IF NOT EXISTS idx_steps_priority ON steps (priority);')
@@ -252,10 +252,10 @@ def upload_step(_step: buelon.core.step.Step, status: buelon.core.step.StepStatu
 
 def _upload_step(self: HubServer, step_json: dict, status_value: int) -> None:
     status = buelon.core.step.StepStatus(status_value)
-    _step = buelon.core.step.Step().from_json(step_json)
-    sql = ('INSERT INTO steps (id, priority, scope, velocity, tag, status, epoch, msg, trace) '
-           'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);')
-    params = (_step.id, _step.priority, _step.scope, _step.velocity, _step.tag, f'{status.value}', time.time(), '', '')
+    _step: buelon.core.step.Step = buelon.core.step.Step().from_json(step_json)
+    sql = ('INSERT INTO steps (id, priority, scope, timeout, retries, velocity, tag, status, epoch, msg, trace) '
+           'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);')
+    params = (_step.id, _step.priority, _step.scope, _step.timeout, _step.retries, _step.velocity, _step.tag, f'{status.value}', time.time(), '', '')
 
     self.execute_db_query(sql, params)
 
@@ -266,13 +266,13 @@ def _upload_step(self: HubServer, step_json: dict, status_value: int) -> None:
 
 
 def _upload_steps(self: HubServer, step_jsons: list, status_values: list) -> None:
-    sql = ('INSERT INTO steps (id, priority, scope, velocity, tag, status, epoch, msg, trace) '
-           'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);')
+    sql = ('INSERT INTO steps (id, priority, scope, timeout, retries, velocity, tag, status, epoch, msg, trace) '
+           'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);')
     for step_json, status_value in zip(step_jsons, status_values):
         status = buelon.core.step.StepStatus(status_value)
-        _step = buelon.core.step.Step().from_json(step_json)
+        _step: buelon.core.step.Step = buelon.core.step.Step().from_json(step_json)
         params = (
-            _step.id, _step.priority, _step.scope, _step.velocity, _step.tag, f'{status.value}', time.time(), '', '')
+            _step.id, _step.priority, _step.scope, _step.timeout, _step.retries, _step.velocity, _step.tag, f'{status.value}', time.time(), '', '')
         self.execute_db_query(sql, params)
     # with sqlite3.connect(db_path) as conn:
     #     cur = conn.cursor()
@@ -437,15 +437,19 @@ def submit_pipe_code_from_file(file_path: str, scope: str | None = None):
         return submit_pipe_code(f.read(), scope)
 
 
-def submit_pipe_code(code: str, scope: str | None = None):
+def submit_pipe_code(code: str, scope: str | None = None, priority: int = 0):
     if scope is None:
         scope = buelon.worker.DEFAULT_SCOPES.split(',')[-1]
+    if not isinstance(priority, int):
+        priority = 0
+
     bucket = buelon.bucket.Client()
 
     key = f'submit-jobs/{uuid.uuid1()}'
     bucket.set(key, code.encode())
-    code = "\nTAB = '  '\n$ {scope}\n\njob:\n  python\n  main\n  `\nimport buelon as pete\ndef main(*args):\n    bucket = pete.bucket.Client()\n    code = bucket.get('{key}').decode()\n    pete.hub.upload_pipe_code(code)\n`\n\npipe = | job\npipe()\n"
-    code = code.format(scope=scope, key=key)
+    # Cython does not allow an f-string here
+    code = "TAB = '  '\n!scope {scope}\n!priority {priority}\n\njob:\n  python\n  main\n  `\nimport buelon as pete\ndef main(*args):\n    bucket = pete.bucket.Client()\n    code = bucket.get('{key}').decode()\n    pete.hub.upload_pipe_code(code)\n`\n\npipe = | job\npipe()\n"
+    code = code.format(scope=scope, key=key, priority=f'{priority}')
     upload_pipe_code(code)
 
 
@@ -1458,6 +1462,12 @@ class HubClient:
             )
         )
 
+    def repair(self):
+        if USING_POSTGRES:
+            return self.postgres_repair()
+        import warnings
+        warnings.warn('HubClient.repair() is only implemented for postgres')
+
     def load_pg(self):
         if not hasattr(self, 'db') or not self.db:
             self.db = buelon.helpers.postgres.get_postgres_from_env()
@@ -1466,6 +1476,8 @@ class HubClient:
             id text,
             priority int,
             scope text,
+            timeout real,
+            retries int,
             velocity real,
             tag text,
             status text,
@@ -1565,7 +1577,8 @@ class HubClient:
 
         working_clause = ''
         if include_working:
-            working_clause = f"OR (epoch < {expiration_time} AND status = '{buelon.core.step.StepStatus.working.value}')"
+            # working_clause = f"OR (epoch < {expiration_time} AND status = '{buelon.core.step.StepStatus.working.value}')"
+            working_clause = f"OR (epoch < coalesce(timeout, {expiration_time}) AND status = '{buelon.core.step.StepStatus.working.value}')"
 
         order_by = 'priority DESC, epoch' if not reverse else 'priority ASC, epoch'
 
@@ -1809,16 +1822,16 @@ class HubClient:
     def postgres_upload_steps(self, step_jsons, status_values):
         db = buelon.helpers.postgres.get_postgres_from_env()
 
-        sql = ('INSERT INTO buelon_jobs_waiting (id, priority, scope, velocity, tag, status, epoch, msg, trace, state) '
-               'VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s);')
+        sql = ('INSERT INTO buelon_jobs_waiting (id, priority, scope, timeout, retries, velocity, tag, status, epoch, msg, trace, state) '
+               'VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);')
 
         values = []
 
         for step_json, status_value in zip(step_jsons, status_values):
             status = buelon.core.step.StepStatus(status_value)
-            _step = buelon.core.step.Step().from_json(step_json)
+            _step: buelon.core.step.Step = buelon.core.step.Step().from_json(step_json)
             state = 'waiting'  # 'active' if status == buelon.core.step.StepStatus.pending else 'waiting'
-            params = (_step.id, _step.priority, _step.scope, _step.velocity, _step.tag, f'{status.value}', time.time(), '', '', state)
+            params = (_step.id, _step.priority, _step.scope, _step.timeout, _step.retries, _step.velocity, _step.tag, f'{status.value}', time.time(), '', '', state)
             values.append(params)
 
         with db.connect() as conn:
@@ -1916,6 +1929,42 @@ class HubClient:
             'count': len(table),
             'table': table
         }
+
+    def postgres_repair(self):
+        if not hasattr(self, 'db') or not self.db:
+            self.db = buelon.helpers.postgres.get_postgres_from_env()
+
+        print('Fetching queued (not finished) jobs')
+        rows = self.db.download_table(sql='select * from buelon_jobs where status =\'2\'')
+        ss = [bulk_get_step([row['id'] for row in rows[i:i+1000]]) for i in tqdm.tqdm(range(0, len(rows), 1000), desc='Fetching data for jobs by 1,000\'s')]
+        steps = [s for d in ss for s in d.values()]
+        parents = [p for s in steps for p in s.parents]
+
+        def get_statuses(ids: list[str]):
+            return {
+                row['id']: row['status'] for row in
+                self.db.download_table(sql=f'select id, status from buelon_jobs where id in ('+",".join([f"\'{i}\'" for i in ids])+')')}
+
+        parent_statuses = {}
+
+        for i in tqdm.tqdm(range(0, len(parents), 1000), desc='Fetching parents of jobs by 1,000\'s'):
+            parent_statuses = {**parent_statuses, **get_statuses(parents[i:i + 1000])}
+            for p in parents[i:i + 1000]:
+                parent_statuses[p] = parent_statuses.get(p, f'{buelon.core.step.StepStatus.success.value}')
+
+        def should_finish(s: buelon.core.step.Step):
+            # return all(parent_statuses[p] in [f'{buelon.core.step.StepStatus.success.value}', f'{buelon.core.step.StepStatus.cancel.value}'] for p in s.parents)
+            return all(parent_statuses[p] == f'{buelon.core.step.StepStatus.success.value}' for p in s.parents)
+
+        chunk = []
+        for s in tqdm.tqdm(steps, desc='Repairing Steps (Commits every 1,000 repairs)'):
+            if should_finish(s):
+                chunk.append(s)
+                if len(chunk) >= 1000:
+                    self.dones(chunk)
+                    chunk = []
+        if chunk:
+            self.dones(chunk)
 
     def __getattr__(self, item: str):
         if item.startswith('sync_'):
