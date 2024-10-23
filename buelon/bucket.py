@@ -11,7 +11,7 @@ import os
 import sys
 import time
 
-import psutil
+# import psutil
 import redis
 import psycopg2
 from kazoo.client import KazooClient
