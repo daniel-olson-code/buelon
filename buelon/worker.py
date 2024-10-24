@@ -10,6 +10,7 @@ import collections
 import threading
 import tempfile
 import json
+from typing import Any
 
 import asyncio_pool
 
@@ -62,6 +63,13 @@ class HandleStatus(enum.Enum):
     pending = 'pending'
     almost = 'almost'
     none = 'none'
+
+
+def try_for_int(v: Any, default_value: int = 0) -> int:
+    try:
+        return int(v)
+    except (ValueError, TypeError):
+        return default_value
 
 
 @contextlib.contextmanager
@@ -285,88 +293,93 @@ async def work():
     last_loop_had_steps = True
 
     steps = []
-    while True:
-        try:
-            if os.environ.get('STOP_WORKER', 'false') == 'true':
-                return
-
-            if not steps:
-                try:
-                    steps = await asyncio.wait_for(get_steps(scopes), timeout=30)
-                except asyncio.TimeoutError:
-                    print("Timeout while getting steps from hub")
-                    await asyncio.sleep(5)
-                    continue
-                except Exception as e:
-                    print('Error getting steps:', e)
-                    await asyncio.sleep(5)
-                    continue
-
-            if not steps:
-                if last_loop_had_steps:
-                    last_loop_had_steps = False
-                    print('waiting..')
-                else:
-                    # one shot for testing
-                    if os.environ.get('WORKER_ONE_SHOT') == 'true':
-                        return
-                await asyncio.sleep(1.)
-                continue
-
-            last_loop_had_steps = True
-
-            async with asyncio_pool.AioPool(size=N_WORKER_PROCESSES) as pool:
-                futures = []
-                fut_steps = await pool.spawn(asyncio.wait_for(get_steps(scopes), timeout=35))
-
-                step_objs = buelon.hub.bulk_get_step(steps)
-                parents = [step_id for s in step_objs.values() for step_id in s.parents]
-                step_data = buelon.hub.bulk_get_data(parents) if parents else {}
-                for s in steps:
-                    fut = await pool.spawn(asyncio.wait_for(run(step_objs[s], step_data), timeout=WORKER_JOB_TIMEOUT))
-                    futures.append((fut, s))
-                # for s in steps:
-                #     fut = await pool.spawn(asyncio.wait_for(run(s), timeout=WORKER_JOB_TIMEOUT))
-                #     futures.append((fut, s))
-
-            for fut, step in futures:
-                try:
-                    fut.result()
-                except asyncio.TimeoutError:
-                    print(f"Job timed out for step: {step}")
-                    await hub_client.error(step, "Job timed out", "")
-                except Exception as e:
-                    print(f'Error running step: {e}', step)
-                    await hub_client.error(step, str(e), traceback.format_exc())
-
+    try:
+        while True:
             try:
-                steps = fut_steps.result()
-            except asyncio.TimeoutError:
-                print("Timeout while getting next batch of steps")
-                steps = []
-            except Exception as e:
-                print('Error getting next batch of steps:', e)
-                steps = []
+                if os.environ.get('STOP_WORKER', 'false') == 'true':
+                    return
 
-        except Exception as e:
-            print(f"Unexpected error in work loop: {e}")
-            traceback.print_exc()
-            await asyncio.sleep(5)
+                if not steps:
+                    try:
+                        steps = await asyncio.wait_for(get_steps(scopes), timeout=30)
+                    except asyncio.TimeoutError:
+                        print("Timeout while getting steps from hub")
+                        await asyncio.sleep(5)
+                        continue
+                    except Exception as e:
+                        print('Error getting steps:', e)
+                        await asyncio.sleep(5)
+                        continue
 
-        # Force garbage collection
-        gc.collect()
+                if not steps:
+                    if last_loop_had_steps:
+                        last_loop_had_steps = False
+                        print('waiting..')
+                    else:
+                        # one shot for testing
+                        if os.environ.get('WORKER_ONE_SHOT') == 'true':
+                            return
+                    await asyncio.sleep(1.)
+                    continue
 
-        # Check if we need to restart the worker
-        if time.time() - start_time > WORKER_RESTART_INTERVAL:
-            print("Restarting worker...")
-            break
+                last_loop_had_steps = True
 
-        if os.environ.get('WORKER_ONCE', 'false') == 'true':
-            break
+                async with asyncio_pool.AioPool(size=N_WORKER_PROCESSES) as pool:
+                    futures = []
+                    fut_steps = await pool.spawn(asyncio.wait_for(get_steps(scopes), timeout=35))
 
-        if not PIPE_WORKER_SUBPROCESS_JOBS:
-            if transactions.qsize() > 1000:
+                    step_objs = buelon.hub.bulk_get_step(steps)
+                    parents = [step_id for s in step_objs.values() for step_id in s.parents]
+                    step_data = buelon.hub.bulk_get_data(parents) if parents else {}
+                    for s in steps:
+                        fut = await pool.spawn(asyncio.wait_for(run(step_objs[s], step_data), timeout=try_for_int(step_objs[s].timeout, WORKER_JOB_TIMEOUT)))
+                        futures.append((fut, s))
+                    # for s in steps:
+                    #     fut = await pool.spawn(asyncio.wait_for(run(s), timeout=WORKER_JOB_TIMEOUT))
+                    #     futures.append((fut, s))
+
+                for fut, step in futures:
+                    try:
+                        fut.result()
+                    except asyncio.TimeoutError:
+                        print(f"Job timed out for id: {step}")
+                        await hub_client.error(step, "Job timed out", "")
+                    except Exception as e:
+                        print(f'Error running step: {e}', step)
+                        await hub_client.error(step, str(e), traceback.format_exc())
+
+                try:
+                    steps = fut_steps.result()
+                except asyncio.TimeoutError:
+                    print("Timeout while getting next batch of steps")
+                    steps = []
+                except Exception as e:
+                    print('Error getting next batch of steps:', e)
+                    steps = []
+            except KeyboardInterrupt:
+                print('Gracefully quitting')
                 break
+            except Exception as e:
+                print(f"Unexpected error in work loop: {e}")
+                traceback.print_exc()
+                await asyncio.sleep(5)
+
+            # Force garbage collection
+            gc.collect()
+
+            # Check if we need to restart the worker
+            if time.time() - start_time > WORKER_RESTART_INTERVAL:
+                print("Restarting worker...")
+                break
+
+            if os.environ.get('WORKER_ONCE', 'false') == 'true':
+                break
+
+            if not PIPE_WORKER_SUBPROCESS_JOBS:
+                if transactions.qsize() > 1000:
+                    break
+    except KeyboardInterrupt:
+        print('Gracefully quitting')
 
 
 # async def work():
@@ -488,10 +501,10 @@ async def _main():
     print('done', transactions.qsize())
 
 
-# try:
-#     from cython.c_worker import *
-# except (ImportError, ModuleNotFoundError):
-#     pass
+try:
+    from cython.c_worker import *
+except (ImportError, ModuleNotFoundError):
+    pass
 
 
 if __name__ == '__main__':
