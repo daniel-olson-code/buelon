@@ -1462,6 +1462,12 @@ class HubClient:
             )
         )
 
+    def repair(self):
+        if USING_POSTGRES:
+            return self.postgres_repair()
+        import warnings
+        warnings.warn('HubClient.repair() is only implemented for postgres')
+
     def load_pg(self):
         if not hasattr(self, 'db') or not self.db:
             self.db = buelon.helpers.postgres.get_postgres_from_env()
@@ -1495,8 +1501,9 @@ class HubClient:
             'CREATE TABLE IF NOT EXISTS "buelon_jobs_archived" PARTITION OF "buelon_jobs" FOR VALUES IN (\'archived\');',
         ]
         try:
-            for q in qs:
-                self.db.query(q)
+            # for q in qs:
+            #     self.db.query(q)
+            self.db.query(';'.join(qs))
             self.db.upload_table('buelon_status_map', [
                 {'value': e.value, 'name': e.name}
                 for e in buelon.core.step.StepStatus
@@ -1923,6 +1930,42 @@ class HubClient:
             'count': len(table),
             'table': table
         }
+
+    def postgres_repair(self):
+        if not hasattr(self, 'db') or not self.db:
+            self.db = buelon.helpers.postgres.get_postgres_from_env()
+
+        print('Fetching queued (not finished) jobs')
+        rows = self.db.download_table(sql='select * from buelon_jobs where status =\'2\'')
+        ss = [bulk_get_step([row['id'] for row in rows[i:i+1000]]) for i in tqdm.tqdm(range(0, len(rows), 1000), desc='Fetching data for jobs by 1,000\'s')]
+        steps = [s for d in ss for s in d.values()]
+        parents = [p for s in steps for p in s.parents]
+
+        def get_statuses(ids: list[str]):
+            return {
+                row['id']: row['status'] for row in
+                self.db.download_table(sql=f'select id, status from buelon_jobs where id in ('+",".join([f"\'{i}\'" for i in ids])+')')}
+
+        parent_statuses = {}
+
+        for i in tqdm.tqdm(range(0, len(parents), 1000), desc='Fetching parents of jobs by 1,000\'s'):
+            parent_statuses = {**parent_statuses, **get_statuses(parents[i:i + 1000])}
+            for p in parents[i:i + 1000]:
+                parent_statuses[p] = parent_statuses.get(p, f'{buelon.core.step.StepStatus.success.value}')
+
+        def should_finish(s: buelon.core.step.Step):
+            # return all(parent_statuses[p] in [f'{buelon.core.step.StepStatus.success.value}', f'{buelon.core.step.StepStatus.cancel.value}'] for p in s.parents)
+            return all(parent_statuses[p] == f'{buelon.core.step.StepStatus.success.value}' for p in s.parents)
+
+        chunk = []
+        for s in tqdm.tqdm(steps, desc='Repairing Steps (Commits every 1,000 repairs)'):
+            if should_finish(s):
+                chunk.append(s)
+                if len(chunk) >= 1000:
+                    self.dones(chunk)
+                    chunk = []
+        if chunk:
+            self.dones(chunk)
 
     def __getattr__(self, item: str):
         if item.startswith('sync_'):
