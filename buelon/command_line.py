@@ -166,7 +166,7 @@ def has_postgres_env_vars() -> bool:
 
 def cli():
     parser = argparse.ArgumentParser(description='Buelon command-line interface')
-    parser.add_argument('-v', '--version', action='version', version='Buelon 1.0.65-alpha37')
+    parser.add_argument('-v', '--version', action='version', version='Buelon 1.0.66')
     parser.add_argument('-b', '--binding', help='Binding for uploading pipe code (host:port)')
     parser.add_argument('file_path', nargs='?', default='nothing', help='File path for uploading pipe code')
 
@@ -243,6 +243,10 @@ def cli():
     submit_parser.add_argument('-b', '--binding', required=worker_binding_required, help='Main binding for hub (host:port)')
     submit_parser.add_argument('-s', '--scope', default=pete.worker.DEFAULT_SCOPES.split(',')[-1])
 
+    # Repair
+    repair_parser = subparsers.add_parser('repair', help='Reset errors')
+    repair_parser.add_argument('-b', '--binding', required=worker_binding_required, help='Main binding for hub (host:port)')
+
     # Demo command
     demo_parser = subparsers.add_parser('demo', help='Run the demo')
     # demo_parser.set_defaults(func=run_demo)
@@ -283,6 +287,11 @@ def cli():
         client.sync_delete_steps()
     elif args.command == 'errors':
         fetch_errors(args)
+    elif args.command == 'repair':
+        if args.binding:
+            os.environ['PIPE_WORKER_HOST'], os.environ['PIPE_WORKER_PORT'] = args.binding.split(':')
+        client = pete.hub.HubClient()
+        client.repair()
     elif args.command == 'run-step':
         if args.binding:
             os.environ['PIPE_WORKER_HOST'], os.environ['PIPE_WORKER_PORT'] = args.binding.split(':')
