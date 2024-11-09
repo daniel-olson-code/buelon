@@ -292,13 +292,15 @@ class Postgres:
             if partition_query:
                 try:
                     cur.execute(partition_query)
+                    conn.commit()
                 except psycopg2.errors.DuplicateTable:
+                    conn.rollback()
                     for _query in partition_query.split(';'):
                         try:
                             cur.execute(_query)
+                            conn.commit()
                         except psycopg2.errors.DuplicateTable:
-                            pass
-                conn.commit()
+                            conn.rollback()
             keys = ', '.join([f'"{k}"' for k in table[0].keys()])
             vals = ', '.join(['%s'] * len(table[0].keys()))
             q = f'INSERT INTO {table_name} ({keys}) VALUES ({vals})'
@@ -390,6 +392,7 @@ class Postgres:
                 cur.execute(sql)
                 conn.commit()
             except psycopg2.errors.UniqueViolation as e:
+                conn.rollback()
                 print(e)
         elif not skip_alterations:
             db_schema = dict(self.table_schema(table_name, cur))
@@ -401,6 +404,7 @@ class Postgres:
                         cur.execute(f'ALTER TABLE {table_name} ADD COLUMN "{col}" {schema[col]};')
                         conn.commit()
                     except psycopg2.errors.DuplicateColumn as e:
+                        conn.rollback()
                         print(e)
                 elif col in db_schema:
                     pass
