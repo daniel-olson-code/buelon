@@ -4,6 +4,7 @@ import json
 import sys
 import time
 import uuid
+import logging
 
 import dotenv
 dotenv.load_dotenv('.env')
@@ -247,6 +248,10 @@ def cli():
     repair_parser = subparsers.add_parser('repair', help='Reset errors')
     repair_parser.add_argument('-b', '--binding', required=worker_binding_required, help='Main binding for hub (host:port)')
 
+    # Repair
+    run_parser = subparsers.add_parser('run', help='Run script locally (Alpha Command)')
+    run_parser.add_argument('-f', '--file', required=True, help='File path to buelon script')
+
     # Demo command
     demo_parser = subparsers.add_parser('demo', help='Run the demo')
     # demo_parser.set_defaults(func=run_demo)
@@ -300,7 +305,12 @@ def cli():
 
         step_id = args.step
 
+        logging.getLogger().setLevel(logging.DEBUG)
         pete.worker.job(step_id)
+    elif args.command == 'run':
+        if args.file:
+            with open(args.file) as f:
+                pete.core.pipe_interpreter.run_code(f.read())
     else:
         # Handle the case where a file path is given without a command
         if args.binding and remaining_args:
