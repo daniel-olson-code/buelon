@@ -1501,8 +1501,9 @@ class HubClient:
             'CREATE TABLE IF NOT EXISTS "buelon_jobs_archived" PARTITION OF "buelon_jobs" FOR VALUES IN (\'archived\');',
         ]
         try:
-            for q in qs:
-                self.db.query(q)
+            # for q in qs:
+            #     self.db.query(q)
+            self.db.query(';'.join(qs))
             self.db.upload_table('buelon_status_map', [
                 {'value': e.value, 'name': e.name}
                 for e in buelon.core.step.StepStatus
