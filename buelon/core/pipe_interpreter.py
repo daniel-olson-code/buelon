@@ -16,6 +16,8 @@ import sqlite3
 import json
 import traceback
 import enum
+import threading
+import tempfile
 from typing import Dict, Any, Generator
 
 import yaml
@@ -23,6 +25,7 @@ import yaml
 # import buelon.core.step
 from buelon.helpers import pipe_util, lazy_load_class
 import buelon.helpers.pipe_util
+import buelon.helpers.persistqueue
 from . import step_definition
 from . import pipe
 from . import action
@@ -305,58 +308,94 @@ class PipelineParser:
         }
 
     def build(self, prepared_content: str):
-        self.conn = sqlite3.connect('.bue/test.db')  # (':memory:')
-        self.conn.execute('PRAGMA journal_mode=WAL')
-        self.conn.execute('PRAGMA synchronous=NORMAL')
-        self.conn.execute('DROP table if exists jobs;')
-        self.conn.execute('CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, starter, value)')
-        self.conn.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_id ON jobs (id);')
-        self.conn.execute('CREATE INDEX IF NOT EXISTS idx_jobs_starter_id ON jobs (starter, id);')
-        self.conn.commit()
-        self._build_index = 0
-        print(f'{self._build_index:,} compiles')
-        i = 0
-        # for job in self._build(yaml.load(prepared_content, yaml.Loader)):
-        #     i += 1
-        #     if job.parents:
-        #         yield job
-        #     else:
-        #         self.conn.execute("INSERT INTO jobs (id, starter, value) VALUES (?, ?, ?)",
-        #                           (job.id, not job.parents, json.dumps(job.to_json())))
-        self._build(yaml.load(prepared_content, yaml.Loader))
+        with tempfile.NamedTemporaryFile(mode='w', dir='.bue', suffix='.db') as temp_file:
+            self.conn = sqlite3.connect(temp_file.name)  # ('.bue/test.db')  # (':memory:')
+            self.conn.execute('PRAGMA journal_mode=WAL')
+            self.conn.execute('PRAGMA synchronous=NORMAL')
+            self.conn.execute('DROP table if exists jobs;')
+            self.conn.execute('CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, starter, value)')
+            self.conn.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_id ON jobs (id);')
+            self.conn.execute('CREATE INDEX IF NOT EXISTS idx_jobs_starter_id ON jobs (starter, id);')
+            self.conn.commit()
+            self._build_index = 0
+            print(f'{self._build_index:,} compiles')
+            i = 0
+            # for job in self._build(yaml.load(prepared_content, yaml.Loader)):
+            #     i += 1
+            #     if job.parents:
+            #         yield job
+            #     else:
+            #         self.conn.execute("INSERT INTO jobs (id, starter, value) VALUES (?, ?, ?)",
+            #                           (job.id, not job.parents, json.dumps(job.to_json())))
+            self._build(yaml.load(prepared_content, yaml.Loader))
 
-        # print('deploying initiators')
-        print(f"Built {self.conn.execute('SELECT count(*) FROM jobs').fetchall()[0][0]:,} jobs")
-        q = 'SELECT starter, value FROM jobs order by starter, id limit {limit} offset {offset}'
-        limit = 500
-        offset = 0
-        chunk = self.conn.execute(q.format(limit=limit, offset=offset)).fetchall()
-        while chunk:
-            for starter, job_json in chunk:
-                i += 1
-                yield step.Step().from_json(json.loads(job_json))
-            offset += limit
+            # print('deploying initiators')
+            print(f"Built {self.conn.execute('SELECT count(*) FROM jobs').fetchall()[0][0]:,} jobs")
+            q = 'SELECT starter, value FROM jobs order by starter, id limit {limit} offset {offset}'
+            limit = 500
+            offset = 0
             chunk = self.conn.execute(q.format(limit=limit, offset=offset)).fetchall()
+            while chunk:
+                for starter, job_json in chunk:
+                    i += 1
+                    yield step.Step().from_json(json.loads(job_json))
+                offset += limit
+                chunk = self.conn.execute(q.format(limit=limit, offset=offset)).fetchall()
 
-        # print(f'{i:,} jobs')
-        # for _id, s, j in self.conn.execute('SELECT * FROM jobs where starter').fetchall():
-        #     print(step.Step().from_json(json.loads(j)).name)
-        # print(f"Saved {self.conn.execute('SELECT count(*) FROM jobs').fetchall()[0][0]:,} jobs")
-        # print(self.conn.execute('SELECT starter, count(*) FROM jobs group by starter').fetchall())
-        # t = time.time()
-        # q = 'SELECT starter, value FROM jobs order by starter, id limit {limit} offset {offset}'
-        # limit = 1000
-        # offset = 0
-        # chunk = self.conn.execute(q.format(limit=limit, offset=offset)).fetchall()
-        # while chunk:
-        #     for starter, job_json in chunk:
-        #         # yield starter, step.Step().from_json(json.loads(job_json))
-        #         _ = step.Step().from_json(json.loads(job_json))
-        #         del _
-        #     offset += limit
-        #     chunk = self.conn.execute(q.format(limit=limit, offset=offset)).fetchall()
-        # print(f'{time.time() - t:0.2f} sec(s)')
-        # yield '', ''
+            # print(f'{i:,} jobs')
+            # for _id, s, j in self.conn.execute('SELECT * FROM jobs where starter').fetchall():
+            #     print(step.Step().from_json(json.loads(j)).name)
+            # print(f"Saved {self.conn.execute('SELECT count(*) FROM jobs').fetchall()[0][0]:,} jobs")
+            # print(self.conn.execute('SELECT starter, count(*) FROM jobs group by starter').fetchall())
+            # t = time.time()
+            # q = 'SELECT starter, value FROM jobs order by starter, id limit {limit} offset {offset}'
+            # limit = 1000
+            # offset = 0
+            # chunk = self.conn.execute(q.format(limit=limit, offset=offset)).fetchall()
+            # while chunk:
+            #     for starter, job_json in chunk:
+            #         # yield starter, step.Step().from_json(json.loads(job_json))
+            #         _ = step.Step().from_json(json.loads(job_json))
+            #         del _
+            #     offset += limit
+            #     chunk = self.conn.execute(q.format(limit=limit, offset=offset)).fetchall()
+            # print(f'{time.time() - t:0.2f} sec(s)')
+            # yield '', ''
+
+    def run(self, prepared_content: str):
+        with tempfile.NamedTemporaryFile(mode='w', dir='.bue', suffix='.jsonl') as temp_file:
+            q = buelon.helpers.persistqueue.JsonPersistentQueue(temp_file.name)
+            data = {}  # buelon.helpers.lazy_load_class.LazyMap()
+
+            def run(job: buelon.core.step.Step):
+                # job = self._get_job(job_id)
+                job_id = job.id
+                r: buelon.core.step.Result = job.run(*(data[parent] for parent in job.parents))
+                data[job_id] = r.data
+
+                if r.status == buelon.core.step.StepStatus.success:
+                    for child in job.children:
+                        q.put(child)
+                elif r.status == buelon.core.step.StepStatus.pending:
+                    q.put(job_id)
+                elif r.status == buelon.core.step.StepStatus.reset:
+                    parents = job.parents.copy()
+                    while parents:
+                        p = parents.pop(0)
+                        j = self._get_job(p)
+                        if not j.parents:
+                            q.put(p)
+                        else:
+                            parents.extend(j.parents)
+
+            for job in self.build(prepared_content):
+                if not job.parents:
+                    q.put(job.id)
+
+            while q.qsize():
+                job_id = q.get()
+                job = self._get_job(job_id)
+                run(job)
 
     def _get_job(self, job_id: str) -> step.Step:
         job_json = self.conn.execute("SELECT value FROM jobs WHERE id = ?", (job_id,)).fetchone()[0]
@@ -367,8 +406,10 @@ class PipelineParser:
             job = self._get_job(job)
 
         args = job.parents
+
         if args:
             args = [self._run_job(arg) for arg in args]
+
         return job.run(*args).data
 
     def _build(self, variables: dict, values: dict | None = None):
@@ -1388,3 +1429,22 @@ def generate_steps_from_code(code: str) -> Generator[step.Step, None, None]:
         # print(j)
         yield job
         del job
+
+
+def run_code(code: str):
+    """Extract steps and starters from the given pipeline code.
+
+    Args:
+        code (str): The pipeline code to be processed.
+        lazy_steps (bool, optional): Whether to use lazy loading for steps. Defaults to False.
+
+    Raises:
+        Exception: If an error occurs during parsing or execution.
+
+    Returns:
+        dict: A dictionary containing the extracted steps and starters.
+    """
+    pipeline_parser = PipelineParser()
+    content = pipeline_parser.prepare(code)
+    pipeline_parser.run(content)
+
