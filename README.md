@@ -40,9 +40,11 @@ these scripts, but they do provide a significant performance boost.
 
 
 ## Quick Start
-1. Get example template: `bue example` (warning: this command will over-write `.env`)
-2. Start Bucket server, Hub and 3 workers: `bue demo`
-3. Upload script and wait for results: `python3 example.py`
+
+1. Run bucket server: `bue bucket -b 0.0.0.0:61535`
+2. Run hub: `bue hub -b 0.0.0.0:65432 -k localhost:61535`
+3. Run n worker(s): `bue worker -b localhost:65432 -k localhost:61535`
+4. Upload code: `bue upload  -b localhost:65432 -f path/to/file.bue`
 
 ## Production Start
 
@@ -50,98 +52,101 @@ these scripts, but they do provide a significant performance boost.
 a private network **only** 
 (you will need a web server or something similar
 under the same private network
-to access this tool using `bue upload`)
+to access this tool using `bue upload -f path/to/file.bue`)
 
-1. Run bucket server: `bue bucket -b 0.0.0.0:61535`
-2. Run hub: `bue hub -b 0.0.0.0:65432 -k localhost:61535`
-3. Run worker(s): `bue worker -b localhost:65432 -k localhost:61535`
-4. Upload code: `bue upload  -b localhost:65432 -f ./example.bue`
+### With Postgres (Under 1,000,000 Jobs at once)
+
+1. Create a `.env` file
+```properties
+PIPE_WORKER_SCOPES=production-very-heavy,production-heavy,production-medium,production-small,testing-heavy,testing-medium,testing-small,default
+PIPE_WORKER_SUBPROCESS_JOBS=false
+N_WORKER_PROCESSES="25"
+
+USING_POSTGRES_HUB=true
+USING_POSTGRES_BUCKET="true"
+POSTGRES_HOST="123.45.67.89"
+POSTGRES_PORT="5432"
+POSTGRES_USER="daniel"
+POSTGRES_PASSWORD="Password123"
+POSTGRES_DATABASE="my_db"
+```
+
+2. Run n worker(s): `bue worker -b localhost:65432 -k localhost:61535`
+3. Upload code: `bue upload  -b localhost:65432 -f ./example.bue`
+
+### Without Postgres (Under 10,000 jobs at once)
+
+1. Create a `.env` file
+```properties
+PIPE_WORKER_SCOPES=production-very-heavy,production-heavy,production-medium,production-small,testing-heavy,testing-medium,testing-small,default
+PIPE_WORKER_SUBPROCESS_JOBS=false
+N_WORKER_PROCESSES="15"
+PIPE_WORKER_HOST="123.45.67.89"
+PIPE_WORKER_PORT="65432"
+
+PIPELINE_HOST="0.0.0.0"
+PIPELINE_PORT="65432"
+
+BUCKET_SERVER_HOST="0.0.0.0"
+BUCKET_SERVER_PORT="61535"
+BUCKET_CLIENT_HOST="123.45.67.89"
+BUCKET_CLIENT_PORT="61535"
+```
+1. Run bucket server: `bue bucket`
+2. Run hub: `bue hub`
+3. Run n worker(s): `bue worker`
+4. Upload code: `bue upload -f ./example.bue`
 
 ## Supported Languages
 - Python
 - SQLite3
 - PostgreSQL
 
-<!--
-## Configuration
-* Setup at least 4 servers on a private network (they can be small, you can technically run all these on one server like `demo.py` does but that's not recommended)
-* Create a server running `python bucket.py` or something like `python -c "import c_bucket;c_bucket.main()"` 
-* Create a server running `python pipeline.py` or something like `python -c "import c_pipeline;c_pipeline.main()"` 
-* Create a server running `python worker.py` or something like `python -c "import c_worker;c_worker.main()"` 
-* Edit the `.env` on each server to access the private ip. Change `PIPE_WORKER_HOST` to refer to the server running `pipeline.py` on server running `worker.py` and change `BUCKET_CLIENT_HOST` to refer to the server running `bucket.py` on both the `worker.py` server and the `pipeline.py` server
-* Add "worker" servers until desired speed
-* Create a server with private and public network access and use this to run `pipeline.upload_pipe_code_from_file` or `pipeline.upload_pipe_code` uploading the script to the server to be run.
-* All workers must also have the files necessary to run your code, pip installs and all
-
-
-* (Optionally) The `PIPE_WORKER_SUBPROCESS_JOBS` value within the `.env` file can be set to `true` or `false`(really anything but true). This configuration lets you run python code in a subprocess or within the "worker" script. Setting it to false gives a very slight performance increase, but requires you restart the server every time you make a change to your project.
-
-
-## Usage
-
-Pipeline uses a custom scripting language to define ETL processes. Here's how to use it:
-
-### Basic Structure
-
-A Pipeline script consists of steps and pipes. Each step defines a task, and pipes determine the order of execution.
-
-```python
-# Step definition
-step_name:
-    language
-    function_or_table_name
-    source_file_or_code
-
-# Pipe definition
-pipe_name = step1 | step2 | step3
-
-# Execution
-pipe_name()
-```
-
-### Supported Languages
-
-- python: For Python code
-- sqlite3: For SQLite queries
-- postgres: For PostgreSQL queries
--->
 ## Learn by Example
 
 (see below for `example.py` contents)
 
 ```python
 # IMPORTANT: tabs are 4 spaces. white_space == "    "
+# [Optional] change tab sizes like this
+TAB = '    '
 
+# set config values globally
+!scope production-small  # job scope [see bellow]
+!priority 0  # higher priority jobs are run first
+!timeout 20 * 60  # job's max time to run in seconds
+!retries 0  # how many times a job can run after error
 
 # setting scopes is how you make new jobs with errors
-# not slow down your servers by setting them to a lower scope.
-# And/or how you handle running heavy processes on large machine
+# not interfere with all servers job queues
+# and/or how you handle running heavy processes on large machine
 # and small process on small machines
-$ production-small
-!0
 
-# define a job called `accounts`
+# define a single job called `accounts`
 accounts:
-    python  # <-- select the language to be run. currently only python, sqlite3 and postgres are currently available
+    python  # <-- select the language to be run. currently only python, sqlite3 and postgres are available
     accounts  # select the function(for python) or table(for sql) name that will be used
     example.py  # either provide a file or write code directly using the "`" char (see below example)
 
-request:
-    python
-    request_report
-    example.py
+# or
 
-status:
-    python
-    $ testing-small  # <-- "scope" for a single step. A lower scope will be given less priority over higher scopes. See PIPE_WORKER_SCOPES in `.env` file generated by `bue example`
-    get_status
-    example.py
+# define multiple jobs with:
+import python (
+    request_report 
+        as request,
+    get_status 
+        as status 
+        !scope testing-small,
+    get_report 
+        as download 
+        !priority 9
+        !timeout 60**2 * 5 / (1 % 2) // (1 + 1 - 1),  # 5 hrs
+    transform_data 
+        as py_transform 
+        !scope production-heavy,
+    upload_to_db as upload
+) example.py  # <-- file path or using "`" like sql below
 
-download:
-    python
-    !9  # <-- "priority" higher numbers are more important and run first within their scope.
-    get_report
-    example.py
 
 manipulate_data:
     sqlite3
@@ -172,23 +177,16 @@ FROM some_table
 #from another_table
 #`
 
-py_transform:
-    python
-    $ testing-heavy
-    transform_data
-    example.py
-
-upload:
-    python
-    upload_to_db
-    example.py
-
-
 # these are pipes and what will tell the server what order to run the steps
 # and also transfer the returned  data between steps
 # each step will be run individually and could be run on a different computer each time
 accounts_pipe = | accounts  # single pipes currently need a `|` before or behind the value
-api_pipe = request | status | download | manipulate_data | py_transform | upload
+# api_pipe = request | status | download | manipulate_data | py_transform | upload
+# # or
+api_pipe = (
+    request | status | download 
+    | manipulate_data | py_transform | upload
+)
 
 
 # currently there are only two syntax's for "running" pipes.
@@ -203,8 +201,6 @@ api_pipe = request | status | download | manipulate_data | py_transform | upload
 # v = pipe()  # <-- single call
 # pipe2(v)
 
-# right not you cannot pass arguments within the pipe being used for the for loop.
-# in this case `accounts_pipe()` cannot be `accounts_pipe(some_value)`
 for account in accounts_pipe():
     api_pipe(account)
 ```
@@ -352,117 +348,24 @@ def upload_to_db(data: Dict[str, Union[Dict, List[Dict]]]) -> None:
     logger.info(f"Uploaded {len(table_data)} rows to the database for account: {account_name}")
 ```
 
-<!--
-### Scopes and Priorities
-
-Use scopes and priorities to control execution:
-
-```python
-$ production  # Set default scope
-
-
-step_name:
-    python
-    !9  # Set priority (higher numbers run first within their scope)
-    $ testing     # Set a lower priority scope
-    function_name
-    source_file
-```
-
-### Writing Code Directly
-
-For short snippets, you can write code directly in the script:
-
-```python
-step_name:
-    sqlite3
-    table_name
-    `
-    SELECT * FROM table_name
-    WHERE condition = 'value'
-    `
-```
-
-### Defining Pipes
-
-Pipes determine the order of step execution:
-
-```python
-single_pipe = | step1  # or `step1 |`
-normal_pipe = step1 | step2 | step3
-```
-
-### Executing Pipes
-
-There are two ways to execute pipes:
-
-#### Single call
-
-```python
-pipe1()
-result1 = pipe2()
-result2 = pipe3(result1)
-pipe4(result2)
-
-pipe5(result1, result2)
-
-# incorrect -> `pipe3(pipe2())`  #  this syntax is currently not supported
-# also incorrect, they must be on one line as of now:
-# `pipe3(
-#   result1
-# )`
-```
-
-#### Looped execution
-
-```python
-for item in pipe1():
-    pipe2(item)
-# incorrect -> `for item in pipe1(result):`  # syntax not supported for now
-```
-
-### Running Your Pipeline
-
-- Save your pipeline script as a .pipe file.
-- Use the Pipeline API to upload and run your script:
-```python
-# example.py
-import pipeline
-
-pipeline.upload_pipe_code_from_file('your_script.pipe')
-```
-
-
-## Performance
-Pipeline is specifically designed to handle I/O-heavy workloads efficiently. It excels in scenarios such as:
-
-- Making numerous API calls, especially to services with long processing times
-- Handling large-scale data transfers between different systems
-- Concurrent database operations
-
-For instance, Pipeline is currently being used by an agency to request 30,000 reports daily from the Amazon Ads API, resulting in at least 90,000 API calls per day. This process, which includes pushing data into a PostgreSQL server with over 600 GB of data, is completed within a few hours(adding more workers could make this alot faster). The system's efficiency allows for this level of performance at a cost of under $100, including database expenses, actually the servers requesting the data are about $25.
-
-The asynchronous nature of Pipeline makes it particularly suited for APIs like Amazon Ads, where there are significant wait times between requesting a report and its availability for download. Traditional synchronous ETL processes struggle with such APIs, especially for agencies with numerous profiles.
-
--->
-
-
 ## Known Defects
 
-Currently the error handling for this scripting language is not the best.
-When the script is run it is build into python, 
-so it then uses its error handling, which is very good.
-Because of the language's current simplicity, this is not marked as a high priority.
-
+Error handling and logging are currently lacking
 
 
 ## Future Plans
 
-If this projects sees some love, or I just find more free time, I'd like to support more languages. Even compiled languages such as `rust`, `go` and `c++`. Allowing teams that write different languages to work on the same program.
+If this projects sees some love, 
+or I just find more free time, 
+I'd like to support more languages like `node` or `deno` and
+even compiled languages such as 
+`rust`, `go` and `c++`. 
+Allowing teams that write different 
+languages to work on the same program.
 
-Better bue script errors handling.
+Web app for logging, execution and worker management
 
-Possibly build in `rust` once more mature for better performance.
+Add a scheduler process to allow scheduled pipelines
 
 <!---
 your comment goes here
