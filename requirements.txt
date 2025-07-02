@@ -6,6 +6,8 @@ asyncio-pool
 psutil
 unsync
 redis
+persist-queue
 persistqueue
 PyYAML
 kazoo
+asyncpg

@@ -8,10 +8,15 @@ from __future__ import annotations
 import os
 import sys
 import time
+import asyncio
+import concurrent
+import inspect
 import tempfile
 import importlib
 import contextlib
 from typing import List, Dict, Any
+
+import unsync
 
 from buelon.helpers import pipe_util
 import buelon.helpers.postgres
@@ -39,28 +44,34 @@ def temp_mod(txt: str):
         types.ModuleType: The imported temporary module.
     """
     mod = f'temp_bue_{pipe_util.get_id()}'
-    with tempfile.NamedTemporaryFile(prefix=mod, dir=os.getcwd(), suffix='.py') as tf:
-        tf.write(txt.encode())
-        tf.flush()
-        # os.fsync(tf.fileno())
-        module_name = tf.name.replace('.py', '').split(os.sep)[-1]
+    path = os.path.join(os.getcwd(), f'{mod}.py')
+    with open(path, 'w') as f:
+        f.write(txt)
+        f.flush()
+    # with tempfile.NamedTemporaryFile(prefix=mod, dir=os.getcwd(), suffix='.py') as tf:
+    #     tf.write(txt.encode())
+    #     tf.flush()
+    #     os.fsync(tf.fileno())
+    #     module_name = tf.name.replace('.py', '').split(os.sep)[-1]
+    module_name = mod
 
-        spec = importlib.util.spec_from_file_location(module_name, tf.name)
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[module_name] = module
-        spec.loader.exec_module(module)
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    # spec = importlib.util.spec_from_file_location(module_name, tf.name)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
 
-        try:
-            yield module
-        finally:
-            if module_name in sys.modules:
-                del sys.modules[module_name]
-            # os.unlink(tf.name)
+    try:
+        yield module
+    finally:
+        if module_name in sys.modules:
+            del sys.modules[module_name]
+        os.unlink(path)
 
-        # try:
-        #     yield tf.name.replace('.py', '').split(os.sep)[-1]
-        # except ModuleNotFoundError:
-        #     raise ModuleNotFoundError(f'Module not found, "{tf.name}", {os.path.exists(tf.name)}, ' + tf.name.replace('.py', '').split(os.sep)[-1])
+    # try:
+    #     yield tf.name.replace('.py', '').split(os.sep)[-1]
+    # except ModuleNotFoundError:
+    #     raise ModuleNotFoundError(f'Module not found, "{tf.name}", {os.path.exists(tf.name)}, ' + tf.name.replace('.py', '').split(os.sep)[-1])
     # path = os.path.join(os.getcwd(), f'{mod}.py')
     # try:
     #     with open(path, 'w') as f:
@@ -249,7 +260,81 @@ def run_py(txt: str, func: str, *args, __pure__=False, **kwargs) -> Any:
     with temp_mod(txt) as module:  # mod:
         # module = importlib.import_module(mod)
         if hasattr(module, func):
-            r = getattr(module, func)(*args)
+            f = getattr(module, func)
+            if not inspect.iscoroutinefunction(f):
+                r = f(*args)
+            else:
+                r = unsync.unsync(f)(*args).result(timeout=60 * 60 * 24)
+            del module
+            return r
+        else:
+            raise PipeLineException(f'function {func} not found.')
+    return True, []
+
+
+async def run_py_async(txt: str, func: str, *args, mut=None, __pure__=False, **kwargs) -> Any:
+    """
+    Run Python code from a string.
+
+    Args:
+        txt (str): The Python code to run.
+        func (str): The name of the function to call in the code.
+        *args: Positional arguments to pass to the function.
+        __pure__ (bool): If True, return the raw output of the function.
+        **kwargs: Keyword arguments to apply to the code.
+
+    Returns:
+        The result of the function execution, processed based on the __pure__ flag.
+
+    Raises:
+        PipeLineException: If the specified function is not found in the code.
+    """
+    # txt = apply_kwargs_to_txt(txt, kwargs)
+    # txt, uuids = check_for_uuid_kwargs(txt, kwargs)
+    # txt = place_null_values(txt)
+
+    def check_if_kwargs(func, ks):
+        sig = inspect.signature(func)
+        return all(k in sig.parameters for k in ks)
+
+    def has_mut(func):
+        return check_if_kwargs(func, ['mut'])
+
+    with temp_mod(txt) as module:  # mod:
+        # module = importlib.import_module(mod)
+        if hasattr(module, func):
+            f = getattr(module, func)
+
+            kws = {'mut': mut} if has_mut(f) else {}
+
+            if not inspect.iscoroutinefunction(f):
+                r = await asyncio.to_thread(f, *args, **kws)
+            else:
+                # async def run_async_in_thread(async_func, *args, **kwargs):
+                #     return await asyncio.to_thread(lambda: asyncio.run(async_func(*args, **kwargs)))
+
+                async def run_async_in_thread(async_func, *args, **kwargs):
+                    """
+                    Run an async function in a separate thread while maintaining
+                    asynchronous behavior.
+
+                    :param async_func: The async function to run
+                    :param args: Positional arguments for the async function
+                    :param kwargs: Keyword arguments for the async function
+                    :return: Result of the async function
+                    """
+                    # loop = asyncio.get_running_loop()
+                    # with concurrent.futures.ThreadPoolExecutor() as pool:
+                    #     return await loop.run_in_executor(
+                    #         pool,
+                    #         lambda: asyncio.run(async_func(*args, **kwargs))
+                    #     )
+                    def run(*args, **kwargs):
+                        return unsync.unsync(async_func)(*args, **kwargs).result()
+
+                    return await asyncio.to_thread(run, *args, **kwargs)
+                # r = await f(*args, **kws)
+                r = await run_async_in_thread(f, *args, **kws)
             del module
             return r
         else:

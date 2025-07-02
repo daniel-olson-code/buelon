@@ -1,12 +1,12 @@
 from setuptools import setup, find_packages, Extension
-from Cython.Build import cythonize
-
-# List of Cython files to compile
-extensions = [
-    Extension("buelon.cython.c_bucket", ["buelon/cython/c_bucket.pyx"]),
-    Extension("buelon.cython.c_worker", ["buelon/cython/c_worker.pyx"]),
-    Extension("buelon.cython.c_hub", ["buelon/cython/c_hub.pyx"])
-]
+# from Cython.Build import cythonize
+#
+# # List of Cython files to compile
+# extensions = [
+#     Extension("buelon.cython.c_bucket", ["buelon/cython/c_bucket.pyx"]),
+#     Extension("buelon.cython.c_worker", ["buelon/cython/c_worker.pyx"]),
+#     Extension("buelon.cython.c_hub", ["buelon/cython/c_hub.pyx"])
+# ]
 
 # Requirements  for the package
 requirements = [
@@ -18,11 +18,12 @@ requirements = [
     'psutil',
     'unsync',
     'redis',
-    'persist-queue',
-    # 'persistqueue',
+    # 'persist-queue',
+    'persistqueue',
     'PyYAML',
     'kazoo',
-    'tqdm'
+    'tqdm',
+    'asyncpg'
 ]
 
 # Read the long description from the README file
@@ -31,7 +32,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="buelon",
-    version="1.0.66",
+    version="1.0.68-alpha8",
     author="Daniel Olson",
     author_email="daniel@orphos.cloud",
     description="A scripting language to simply manage a very large amount of i/o heavy workloads. Such as API calls "
@@ -50,10 +51,14 @@ setup(
     },
     include_package_data=True,
     package_name="buelon",
-    ext_modules=cythonize(extensions),
+    # ext_modules=cythonize(extensions),
     install_requires=requirements,
     entry_points={
-        'console_scripts': ['bue=buelon.command_line:cli'],
+        'console_scripts': [
+            'boo=buelon.command_line:cli',
+            'bue=buelon.command_line:cli',
+            'pete=buelon.command_line:cli'
+        ],
     },
     classifiers=[
         "Development Status :: 3 - Alpha",

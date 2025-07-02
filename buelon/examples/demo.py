@@ -10,9 +10,9 @@ import os
 import multiprocessing
 import time
 
-from buelon.worker import main as run_worker
+from buelon.worker import run_worker
 from buelon.bucket import main as run_bucket
-from buelon.hub import main as run_hub
+from buelon.hub import run_server as run_hub
 
 
 def attempted_to_kill(process: multiprocessing.Process) -> None:

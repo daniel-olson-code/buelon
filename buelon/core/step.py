@@ -7,15 +7,17 @@ their results, and associated utilities in a pipeline structure.
 from __future__ import annotations
 import enum
 import os
+import inspect
 from typing import Any, List
 
 import orjson
+import unsync
 
 from . import execution
 from buelon.helpers import pipe_util
-import buelon.hub
+# import buelon.hub
 
-import pickle
+# import pickle
 
 
 class Result:
@@ -62,6 +64,33 @@ class Result:
         self.priority = p
         self.velocity = v
         self.data = data
+        return self
+
+    def to_dict(self):
+        """Convert the Result object to a dictionary.
+
+        Returns:
+            dict: A dictionary representation of the Result object.
+        """
+        return {
+            'status': self.status.value if self.status else None,
+            'env': self.env,
+            'priority': self.priority,
+            'velocity': self.velocity,
+            'data': self.data
+        }
+
+    def from_dict(self, d):
+        """Populate the Result object from a dictionary.
+
+        Args:
+            d (dict): A dictionary containing result data.
+        """
+        self.status = StepStatus(d['status']) if d['status'] else None
+        self.env = d['env']
+        self.priority = d['priority']
+        self.velocity = d['velocity']
+        self.data = d['data']
         return self
 
 
@@ -130,6 +159,8 @@ class Step(pipe_util.PipeObject):
         tag (str): Tag associated with the step.
         priority (int): Priority of the step.
         velocity (float): Velocity associated with the step.
+        attempts (int): Number of attempts made for the step.
+        timeout (float): Timeout for the step execution.
         parents (list[str]): List of parent step IDs.
         children (List[str]): List of child step IDs.
     """
@@ -144,6 +175,8 @@ class Step(pipe_util.PipeObject):
     tag: str = None
     priority: int = 0
     velocity: float = None
+    retries: int = 0
+    timeout: float = 0.0
 
     parents: list[str] = None
     children: List[str] = None
@@ -183,6 +216,35 @@ class Step(pipe_util.PipeObject):
 
         if self.type == python:
             return create_return_value(execution.run_py(code, self.func, *args, **self.kwargs))
+
+        if self.type == sqlite3:
+            return create_return_value(execution.run_sqlite3(code, self.func, *args, **self.kwargs))
+
+        raise ValueError(f"Unrecognized step language type: {self.type}")
+
+    async def run_async(self, *args: Any, mut = None) -> Result:
+        """Execute the step.
+
+        Args:
+            *args: Variable length argument list to be passed to the execution function.
+
+        Returns:
+            Result: The result of the step execution.
+
+        Raises:
+            ValueError: If the step type is not recognized.
+        """
+        code = self.get_code()
+
+        postgres = LanguageTypes.postgres.value
+        python = LanguageTypes.python.value
+        sqlite3 = LanguageTypes.sqlite3.value
+
+        if self.type == postgres:
+            return create_return_value(execution.run_postgres(code, self.func, *args, **self.kwargs))
+
+        if self.type == python:
+            return create_return_value(await execution.run_py_async(code, self.func, *args, mut=mut, **self.kwargs))
 
         if self.type == sqlite3:
             return create_return_value(execution.run_sqlite3(code, self.func, *args, **self.kwargs))

@@ -1025,7 +1025,7 @@ class PipelineParser:
                 args = args or {}
                 for token, config in PIPE_TOKENS['job args'].items():
                     if f'!{token}' in arg:
-                        arg, rest = arg.split(f'!{token}')
+                        arg, rest = arg.split(f'!{token}', 1)
                         _arg, _args = extract_args(rest, args)
                         _arg = _arg.strip()
                         if config['type'] == 'string':
@@ -1447,4 +1447,6 @@ def run_code(code: str):
     pipeline_parser = PipelineParser()
     content = pipeline_parser.prepare(code)
     pipeline_parser.run(content)
+
+
 
