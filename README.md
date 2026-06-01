@@ -1,6 +1,8 @@
 # Buelon
 
-![Buelon logo](buelon/static/logo.png)
+<p align="center">
+  <img src="https://raw.githubusercontent.com/daniel-olson-code/buelon/refs/heads/main/buelon/static/logo.png" alt="Buelon logo" width="50%">
+</p>
 
 Buelon is a Python orchestration system with a DML for managing large amounts of I/O-heavy work, such as API calls for ETL, ELT, and other programs that need coordinated Python and/or SQL execution.
 
