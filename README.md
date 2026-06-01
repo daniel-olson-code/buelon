@@ -1,6 +1,6 @@
 # Buelon
 
-A scripting language to simply manage a very large amount of i/o heavy workloads. Such as API calls for your ETL, ELT or any program needing Python and/or SQL
+Buelon is a Python orchestration system with a DML for managing large amounts of I/O-heavy work, such as API calls for ETL, ELT, and other programs that need coordinated Python and/or SQL execution.
 
 ## Table of Contents
 <!--
@@ -10,7 +10,8 @@ A scripting language to simply manage a very large amount of i/o heavy workloads
 - [Quick Start](#quick-start)
 - [Supported Languages](#supported-languages) <!-- - [Configuration](#configuration) - [Usage](#usage) -->
 - [Learn by Example](#learn-by-example) <!-- - [Performance](#performance)   - [Contributing](#contributing) -->
-- [Future of Buelon](#plans)
+- [Future of Buelon](#future-plans)
+- [In Loving Memory](#in-loving-memory)
 - [License](#license)
 
 <!--
@@ -366,6 +367,12 @@ languages to work on the same program.
 Web app for logging, execution and worker management
 
 Add a scheduler process to allow scheduled pipelines
+
+Create an official programming/scripting language for parallel processing. This would be separate from the current DML while still being designed to use the Buelon orchestration system.
+
+## In Loving Memory
+
+In loving memory of Buelon Rexford Moss.
 
 <!---
 your comment goes here
