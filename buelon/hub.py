@@ -1611,7 +1611,7 @@ async def _test_upload(code: str, return_jobs: bool = False) -> None | list[buel
 
 # region bi_test
 
-from bisocket.main import Server as BiServer, Client as BiClient, BiMessage, ServerRequest, OnCloseInfo, OnOpenInfo
+from bisocket.main import Server as BiServer, Client as BiClient, BiMessage, ServerRequest, OnCloseInfo, OnOpenInfo, OnFinallyInfo
 
 
 class BiWorkerClient:
@@ -1928,8 +1928,23 @@ def bi_on_close(close_info: OnCloseInfo):
         d.clear()
 
 
+def bi_on_finally(finally_info: OnFinallyInfo):
+    if finally_info.client_id:
+        try:
+            upload_steps(list(holds_v2[finally_info.client_id].values()))
+        except: pass
+
+        d = holds_v2.pop(finally_info.client_id, None)
+        if isinstance(d, dict):
+            d.clear()
+        
+        d = workers.pop(finally_info.client_id, None)
+        if isinstance(d, dict):
+            d.clear()
+
+
 def bi_test_server():
-    server = BiServer(settings.hub.host, settings.hub.port, bi_handle_messages, on_open=bi_on_open, on_close=bi_on_close)
+    server = BiServer(settings.hub.host, settings.hub.port, bi_handle_messages, on_open=bi_on_open, on_close=bi_on_close, on_finally=bi_on_finally)
     server.start()
 
 

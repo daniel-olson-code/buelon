@@ -27,7 +27,7 @@ requirements = [
     'websockets',
     'fastapi',
     'uvicorn',
-    'bisocket==0.0.5-alpha3',
+    'bisocket==0.0.6',
 ]
 
 # Read the long description from the README file
@@ -36,7 +36,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="buelon",
-    version="1.0.77-alpha3",
+    version="1.0.77-alpha4",
     author="Daniel Olson",
     author_email="daniel@orphos.cloud",
     description="A scripting language to simply manage a very large amount of i/o heavy workloads. Such as API calls "
