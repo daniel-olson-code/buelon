@@ -1,5 +1,7 @@
 # Buelon
 
+![Buelon logo](buelon/static/logo.png)
+
 Buelon is a Python orchestration system with a DML for managing large amounts of I/O-heavy work, such as API calls for ETL, ELT, and other programs that need coordinated Python and/or SQL execution.
 
 ## Table of Contents
