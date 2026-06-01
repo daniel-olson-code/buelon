@@ -351,14 +351,14 @@ def upload_to_db(data: Dict[str, Union[Dict, List[Dict]]]) -> None:
 
 ## Known Defects
 
-Error handling and logging are currently lacking
+Error handling and logging exists but are currently lacking in features
 
 
 ## Future Plans
 
 If this projects sees some love, 
 or I just find more free time, 
-I'd like to support more languages like `node` or `deno` and
+I'd like to support more languages like `javascript` and
 even compiled languages such as 
 `rust`, `go` and `c++`. 
 Allowing teams that write different 
