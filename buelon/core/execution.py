@@ -33,7 +33,7 @@ class PipeLineException(Exception):
 
 
 @contextlib.contextmanager
-def temp_mod(txt: str):
+def temp_mod(txt: str, module_name: str | None = None):
     """
     Create a temporary Python module from a string.
 
@@ -43,30 +43,45 @@ def temp_mod(txt: str):
     Yields:
         types.ModuleType: The imported temporary module.
     """
-    mod = f'temp_bue_{pipe_util.get_id()}'
-    path = os.path.join(os.getcwd(), f'{mod}.py')
-    with open(path, 'w') as f:
-        f.write(txt)
-        f.flush()
-    # with tempfile.NamedTemporaryFile(prefix=mod, dir=os.getcwd(), suffix='.py') as tf:
-    #     tf.write(txt.encode())
-    #     tf.flush()
-    #     os.fsync(tf.fileno())
-    #     module_name = tf.name.replace('.py', '').split(os.sep)[-1]
-    module_name = mod
+    local_mod = bool(module_name)
 
-    spec = importlib.util.spec_from_file_location(module_name, path)
-    # spec = importlib.util.spec_from_file_location(module_name, tf.name)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    spec.loader.exec_module(module)
+    if local_mod:
+        try:
+            module = importlib.import_module(module_name)
+        except:
+            with temp_mod(txt) as m:
+                yield m
+            return
+    else:
+        mod = f'temp_bue_{pipe_util.get_id()}'
+        path = os.path.join(os.getcwd(), f'{mod}.py')
+        with open(path, 'w') as f:
+            f.write(txt)
+            f.flush()
+        # with tempfile.NamedTemporaryFile(prefix=mod, dir=os.getcwd(), suffix='.py') as tf:
+        #     tf.write(txt.encode())
+        #     tf.flush()
+        #     os.fsync(tf.fileno())
+        #     module_name = tf.name.replace('.py', '').split(os.sep)[-1]
+        module_name = mod
+
+        spec = importlib.util.spec_from_file_location(module_name, path)
+        # spec = importlib.util.spec_from_file_location(module_name, tf.name)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+        spec.loader.exec_module(module)
 
     try:
         yield module
     finally:
-        if module_name in sys.modules:
-            del sys.modules[module_name]
-        os.unlink(path)
+        if not local_mod:
+            if module_name in sys.modules:
+                del sys.modules[module_name]
+            if 'path' in locals():
+                if os.path.exists(path):
+                    try:
+                        os.unlink(path)
+                    except: pass
 
     # try:
     #     yield tf.name.replace('.py', '').split(os.sep)[-1]
@@ -236,7 +251,47 @@ def check_py_output(data: Any) -> Any:
 
 
 @pipe_debug.timeit
-def run_py(txt: str, func: str, *args, __pure__=False, **kwargs) -> Any:
+def run_py(txt: str, module_name: str | None, func: str, *args, __pure__=False, mut=None, **kwargs) -> Any:
+    """
+    Run Python code from a string.
+
+    Args:
+        txt (str): The Python code to run.
+        module_name: Name of python module
+        func (str): The name of the function to call in the code.
+        *args: Positional arguments to pass to the function.
+        __pure__ (bool): If True, return the raw output of the function.
+        **kwargs: Keyword arguments to apply to the code.
+
+    Returns:
+        The result of the function execution, processed based on the __pure__ flag.
+
+    Raises:
+        PipeLineException: If the specified function is not found in the code.
+    """
+    # txt = apply_kwargs_to_txt(txt, kwargs)
+    # txt, uuids = check_for_uuid_kwargs(txt, kwargs)
+    # txt = place_null_values(txt)
+
+    with temp_mod(txt, module_name) as module:  # mod:
+        # module = importlib.import_module(mod)
+        if hasattr(module, func):
+            f = getattr(module, func)
+
+            kws = {'mut': mut} if has_mut(f) else {}
+
+            if not inspect.iscoroutinefunction(f):
+                r = f(*args, **kws)
+            else:
+                r = unsync.unsync(f)(*args, **kws).result(timeout=60 * 60 * 24)
+            del module
+            return r
+        else:
+            raise PipeLineException(f'function {func} not found.')
+    return True, []
+
+
+async def arun_py(txt: str, module_name: str | None, func: str, *args, __pure__=False, mut=None, **kwargs) -> Any:
     """
     Run Python code from a string.
 
@@ -253,23 +308,33 @@ def run_py(txt: str, func: str, *args, __pure__=False, **kwargs) -> Any:
     Raises:
         PipeLineException: If the specified function is not found in the code.
     """
-    # txt = apply_kwargs_to_txt(txt, kwargs)
-    # txt, uuids = check_for_uuid_kwargs(txt, kwargs)
-    # txt = place_null_values(txt)
 
-    with temp_mod(txt) as module:  # mod:
+    with temp_mod(txt, module_name) as module:  # mod:
         # module = importlib.import_module(mod)
         if hasattr(module, func):
             f = getattr(module, func)
+
+            kws = {'mut': mut} if has_mut(f) else {}
+
             if not inspect.iscoroutinefunction(f):
-                r = f(*args)
+                # r = f(*args)
+                r = await asyncio.to_thread(f, *args, **kws)
             else:
-                r = unsync.unsync(f)(*args).result(timeout=60 * 60 * 24)
+                # r = unsync.unsync(f)(*args).result(timeout=60 * 60 * 24)
+                r = await f(*args, **kws)
             del module
             return r
         else:
             raise PipeLineException(f'function {func} not found.')
     return True, []
+
+
+def check_if_kwargs(func, ks):
+    sig = inspect.signature(func)
+    return all(k in sig.parameters for k in ks)
+
+def has_mut(func):
+    return check_if_kwargs(func, ['mut'])
 
 
 async def run_py_async(txt: str, func: str, *args, mut=None, __pure__=False, **kwargs) -> Any:
@@ -293,12 +358,12 @@ async def run_py_async(txt: str, func: str, *args, mut=None, __pure__=False, **k
     # txt, uuids = check_for_uuid_kwargs(txt, kwargs)
     # txt = place_null_values(txt)
 
-    def check_if_kwargs(func, ks):
-        sig = inspect.signature(func)
-        return all(k in sig.parameters for k in ks)
-
-    def has_mut(func):
-        return check_if_kwargs(func, ['mut'])
+    # def check_if_kwargs(func, ks):
+    #     sig = inspect.signature(func)
+    #     return all(k in sig.parameters for k in ks)
+    #
+    # def has_mut(func):
+    #     return check_if_kwargs(func, ['mut'])
 
     with temp_mod(txt) as module:  # mod:
         # module = importlib.import_module(mod)
@@ -380,6 +445,47 @@ def run_postgres(txt: str, func: str, *args, **kwargs) -> Any:
         for table in tables:
             try:
                 db.download_table(f'DROP TABLE {table};')
+            except: pass
+
+
+# @pipe_debug.timeit
+async def arun_postgres(txt: str, func: str, *args, **kwargs) -> Any:
+    """
+    Run a PostgreSQL query.
+
+    Args:
+        txt (str): The SQL query to run.
+        func (str): The name of the function (used for table naming).
+        *args: Data to be uploaded to temporary tables.
+        **kwargs: Additional keyword arguments.
+
+    Returns:
+        The result of the SQL query execution.
+
+    Raises:
+        PipeLineException: If there's an error in query execution.
+    """
+    db: buelon.helpers.postgres.Postgres = buelon.helpers.postgres.get_postgres_from_env()
+    tables = [pipe_util.get_id() for v in args]
+    txt, uuids = check_for_uuid_kwargs(txt, kwargs)
+    try:
+        for i, data in enumerate(args):
+            if data:
+                n = func if i == 0 else f'pipe{i}'
+                if n in txt:
+                    try:
+                        await db.async_query(f'DROP TABLE {tables[i]};')
+                    except:
+                        pass
+                    await db.async_upload_table(tables[i], data)
+                    txt = txt.replace(n, tables[i])
+        txt = apply_kwargs_to_txt(txt, {**kwargs})
+        v = db.async_download_table(sql=txt)
+        return v
+    finally:
+        for table in tables:
+            try:
+                await db.async_query(f'DROP TABLE {table};')
             except: pass
 
 

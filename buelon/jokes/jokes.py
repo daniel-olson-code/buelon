@@ -8,146 +8,146 @@ jokes = [
     # #   "setup": "Knock knock!",
     # #   "punchline": "Who's there? Boo! Boo who? Don't cry, it's just a joke!"
     # # },
-    # # {
-    # #   "id": 2,
-    # #   "setup": "What do ghosts serve for dessert?",
-    # #   "punchline": "I scream!"
-    # # },
-    # # {
-    # #   "id": 3,
-    # #   "setup": "Why didn't the skeleton go to the dance?",
-    # #   "punchline": "He had no-body to go with!"
-    # # },
-    # {
-    # "id": 4,
-    # "setup": "What's a ghost's favorite fruit?",
-    # "punchline": "Boo-berries!"
-    # },
-    # {
-    # "id": 5,
-    # "setup": "What do you call a ghost's mistake?",
-    # "punchline": "A boo-boo!"
-    # },
-    # # {
-    # #   "id": 6,
-    # #   "setup": "What kind of streets do ghosts haunt?",
-    # #   "punchline": "Dead ends!"
-    # # },
-    # # {
-    # #   "id": 7,
-    # #   "setup": "Why do ghosts like to ride elevators?",
-    # #   "punchline": "It lifts their spirits!"
-    # # },
-    # # {
-    # #   "id": 8,
-    # #   "setup": "What's a ghost's favorite dessert?",
-    # #   "punchline": "Boo-berry pie!"
-    # # },
-    # # {
-    # #   "id": 9,
-    # #   "setup": "Why did the ghost go to the bar?",
-    # #   "punchline": "For the boos!"
-    # # },
+    {
+      "id": 2,
+      "setup": "What do ghosts serve for dessert?",
+      "punchline": "I scream!"
+    },
+    {
+      "id": 3,
+      "setup": "Why didn't the skeleton go to the dance?",
+      "punchline": "He had no-body to go with!"
+    },
+    {
+    "id": 4,
+    "setup": "What's a ghost's favorite fruit?",
+    "punchline": "Boo-berries!"
+    },
+    {
+    "id": 5,
+    "setup": "What do you call a ghost's mistake?",
+    "punchline": "A boo-boo!"
+    },
+    {
+    "id": 6,
+    "setup": "What kind of streets do ghosts haunt?",
+    "punchline": "Dead ends!"
+    },
+    {
+      "id": 7,
+      "setup": "Why do ghosts like to ride elevators?",
+      "punchline": "It lifts their spirits!"
+    },
+    {
+    "id": 8,
+    "setup": "What's a ghost's favorite dessert?",
+    "punchline": "Boo-berry pie!"
+    },
+    {
+    "id": 9,
+    "setup": "Why did the ghost go to the bar?",
+    "punchline": "For the boos!"
+    },
     # # {
     # #   "id": 10,
     # #   "setup": "How do ghosts search the web?",
     # #   "punchline": "They use Boo-gle!"
     # # },
-    # # {
-    # #   "id": 11,
-    # #   "setup": "What do you call a ghost's favorite candy?",
-    # #   "punchline": "Boo-ble gum!"
-    # # },
+    {
+      "id": 11,
+      "setup": "What do you call a ghost's favorite candy?",
+      "punchline": "Boo-ble gum!"
+    },
     # # {
     # #   "id": 12,
     # #   "setup": "Where do baby ghosts go during the day?",
     # #   "punchline": "Dayscare centers!"
     # # },
-    # # {
-    # #   "id": 13,
-    # #   "setup": "What's a ghost's favorite play?",
-    # #   "punchline": "Romeo and Boo-liet!"
-    # # },
-    # # {
-    # #   "id": 14,
-    # #   "setup": "What do you call a scary ghost?",
-    # #   "punchline": "Bam-boo!"
-    # # },
-    # # {
-    # #   "id": 15,
-    # #   "setup": "What kind of makeup do ghosts wear?",
-    # #   "punchline": "Mas-scare-a!"
-    # # },
+    {
+      "id": 13,
+      "setup": "What's a ghost's favorite play?",
+      "punchline": "Romeo and Boo-liet!"
+    },
+    {
+      "id": 14,
+      "setup": "What do panda ghosts like to eat?",
+      "punchline": "Bam-boo!"
+    },
+    {
+      "id": 15,
+      "setup": "What kind of makeup do ghosts wear?",
+      "punchline": "Mas-scare-a!"
+    },
     # # {
     # #   "id": 16,
     # #   "setup": "What's a ghost's favorite social media app?",
     # #   "punchline": "Snap-BOO!"
     # # },
-    # # {
-    # #   "id": 17,
-    # #   "setup": "What kind of exercise do ghosts enjoy?",
-    # #   "punchline": "Boo-camp!"
-    # # },
-    # # {
-    # #   "id": 18,
-    # #   "setup": "Why do ghosts make terrible liars?",
-    # #   "punchline": "You can see right through them!"
-    # # },
+    {
+      "id": 17,
+      "setup": "What kind of exercise do ghosts enjoy?",
+      "punchline": "Boo-camp!"
+    },
+    {
+      "id": 18,
+      "setup": "Why do ghosts make terrible liars?",
+      "punchline": "You can see right through them!"
+    },
     # # {
     # #   "id": 19,
     # #   "setup": "What's a ghost's favorite ice cream flavor?",
     # #   "punchline": "Boo-nilla!"
     # # },
-    # # {
-    # #   "id": 20,
-    # #   "setup": "Why didn't the ghost join the football team?",
-    # #   "punchline": "They were afraid he'd phantom the plays!"
-    # # },
+    {
+      "id": 20,
+      "setup": "Why didn't the ghost join the football team?",
+      "punchline": "They were afraid he'd phantom the plays!"
+    },
     # # {
     # #   "id": 21,
     # #   "setup": "How do ghosts cheer for their favorite teams?",
     # #   "punchline": "They stand up and BOO!"
     # # },
-    # # {
-    # #   "id": 22,
-    # #   "setup": "What's a ghost's favorite nursery rhyme?",
-    # #   "punchline": "Little Boo Peep!"
-    # # },
+    {
+      "id": 22,
+      "setup": "What's a ghost's favorite nursery rhyme?",
+      "punchline": "Little Boo Peep!"
+    },
     # # {
     # #   "id": 23,
     # #   "setup": "What do you call a ghost detective?",
     # #   "punchline": "A boo-sleuth!"
     # # },
-    # # {
-    # #   "id": 24,
-    # #   "setup": "What kind of roads do ghosts travel on?",
-    # #   "punchline": "Boo-levards!"
-    # # },
-    # # {
-    # #   "id": 25,
-    # #   "setup": "What do you call a ghost's favorite vacation spot?",
-    # #   "punchline": "The Boo-hamas!"
-    # # },
+    {
+      "id": 24,
+      "setup": "What kind of roads do ghosts travel on?",
+      "punchline": "Boo-levards!"
+    },
+    {
+      "id": 25,
+      "setup": "What do you call a ghost's favorite vacation spot?",
+      "punchline": "The Boo-hamas!"
+    },
     # # {
     # #   "id": 26,
     # #   "setup": "What's a ghost's favorite carnival ride?",
     # #   "punchline": "The roller-ghoster!"
     # # },
-    # # {
-    # #   "id": 27,
-    # #   "setup": "Why do ghosts hate the rain?",
-    # #   "punchline": "It dampens their spirits!"
-    # # },
-    # # {
-    # #   "id": 28,
-    # #   "setup": "What's a ghost's favorite board game?",
-    # #   "punchline": "Hide and Shriek!"
-    # # },
-    # # {
-    # #   "id": 29,
-    # #   "setup": "What's a ghost's favorite music?",
-    # #   "punchline": "Sheet music!"
-    # # },
+    {
+      "id": 27,
+      "setup": "Why do ghosts hate the rain?",
+      "punchline": "It dampens their spirits!"
+    },
+    {
+      "id": 28,
+      "setup": "What's a ghost's favorite game to play?",
+      "punchline": "Hide and Shriek!"
+    },
+    {
+      "id": 29,
+      "setup": "What's a ghost's favorite music?",
+      "punchline": "Sheet music!"
+    },
     # # {
     # #   "id": 30,
     # #   "setup": "What kind of ghost haunts gyms?",
@@ -177,11 +177,6 @@ jokes = [
     # #   "id": 35,
     # #   "setup": "What soap do ghosts use?",
     # #   "punchline": "BOO-ty wash!"
-    # # },
-    # # {
-    # #   "id": 36,
-    # #   "setup": "What's a ghost's favorite TV show?",
-    # #   "punchline": "American Horror-Story!"
     # # },
     # # {
     # #   "id": 37,
@@ -305,11 +300,11 @@ jokes = [
     # {"id": "50", "setup": "What’s a ghost’s favorite kind of dance?", "punchline": "The boo-gie! "}
 
     # claude cat coffee ghost
-    {"id": "001", "setup": "Why don't ghost cats drink espresso?", "punchline": "Because they prefer their coffee with a little more boo-st!"},
+    {"id": "001", "setup": "Why do ghost cats drink espresso?", "punchline": "Because they prefer their coffee with a little more boo-st!"},
     {"id": "002", "setup": "What do you call a phantom cat that works at Starbucks?", "punchline": "A boo-rista!"},
     {"id": "003", "setup": "Why did the ghost cat refuse decaf?", "punchline": "Because it needed something with more spirit!"},
     {"id": "004", "setup": "What's a ghost cat's favorite coffee drink?", "punchline": "A frapp\u00e9-phantom!"},
-    {"id": "005", "setup": "Why don't ghost cats use coffee filters?", "punchline": "Because they like their coffee supernatural!"},
+    {"id": "005", "setup": "Why don't ghost cats use coffee filters?", "punchline": "Because they like their coffee super-natural!"},
     {"id": "006", "setup": "What do you call a dead cat that still makes coffee?", "punchline": "A zombie barista!"},
     {"id": "007", "setup": "Why did the phantom cat open a coffee shop?", "punchline": "To serve supernatural lattes!"},
     {"id": "008", "setup": "What's a ghost cat's favorite part of coffee preparation?", "punchline": "The grinding - it reminds them of their haunting days!"},

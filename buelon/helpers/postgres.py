@@ -7,6 +7,7 @@ import asyncio
 import datetime
 import contextlib
 import uuid
+import enum
 from typing import Union, List, Dict, Any, Optional, Callable, Optional, Callable, Dict, List, Union, AsyncGenerator, Generator
 
 import asyncpg
@@ -23,6 +24,12 @@ try:
     dotenv.load_dotenv(os.environ.get('ENV_PATH', '.env'))
 except ModuleNotFoundError:
     pass
+
+
+class JsonifyChoice(enum.Enum):
+    NO = 0
+    YES = 1
+    YES_NO_PREFIX = 2
 
 
 def get_postgres_from_env() -> Postgres:
@@ -161,6 +168,25 @@ class Postgres:
         self.user = user or self.user
         self.password = password or self.password
         self.database = database or self.database
+    
+    def to_dict(self):
+        return {
+            'host': self.host,
+            'port': self.port,
+            'user': self.user,
+            'password': self.password,
+            'database': self.database
+        }
+
+    @classmethod
+    def from_dict(cls, d):
+        return cls(
+            host=d.get('host'),
+            port=d.get('port'),
+            user=d.get('user'),
+            password=d.get('password'),
+            database=d.get('database')
+        )
 
     @property
     def url(self):
@@ -178,6 +204,17 @@ class Postgres:
                 password=self.password,
                 database=self.database
         )
+
+    @contextlib.contextmanager
+    def psycopg2_pool_connection(self):
+        with psycopg2.connect(
+                host=self.host,
+                port=self.port,
+                user=self.user,
+                password=self.password,
+                database=self.database
+        ) as conn:
+            yield conn
 
     async def async_connect(self):
         return await asyncpg.connect(
@@ -216,7 +253,6 @@ class Postgres:
 
         yield await self.async_connect()
 
-
     def query(self, query: str, *args):
         """
         Executes a SQL query.
@@ -229,13 +265,14 @@ class Postgres:
         Returns:
             List[Tuple]: The result of the query.
         """
-        with psycopg2.connect(
-                host=self.host,
-                port=self.port,
-                user=self.user,
-                password=self.password,
-                database=self.database
-        ) as conn:
+        # with psycopg2.connect(
+        #         host=self.host,
+        #         port=self.port,
+        #         user=self.user,
+        #         password=self.password,
+        #         database=self.database
+        # ) as conn:
+        with self.psycopg2_pool_connection() as conn:
             cur = conn.cursor()
 
             cur.execute(query, args)
@@ -311,13 +348,14 @@ class Postgres:
         """
         query = (sql or f'select {columns} from {table_name} {suffix};')
 
-        with psycopg2.connect(
-            host=self.host,
-            port=self.port,
-            user=self.user,
-            password=self.password,
-            database=self.database
-        ) as conn:
+        # with psycopg2.connect(
+        #     host=self.host,
+        #     port=self.port,
+        #     user=self.user,
+        #     password=self.password,
+        #     database=self.database
+        # ) as conn:
+        with self.psycopg2_pool_connection() as conn:
             cur = conn.cursor()
 
             cur.execute(query)
@@ -335,8 +373,11 @@ class Postgres:
                 return [convert_row_to_dict(row) for row in cur.fetchall()]
             else:
                 def gen():
-                    for row in cur:
-                        yield convert_row_to_dict(row)
+                    try:
+                        for row in cur:
+                            yield convert_row_to_dict(row)
+                    finally:
+                        conn.close()
 
                 if queue:
                     q = buelon.helpers.persistqueue.JsonlPersistentQueue()
@@ -374,10 +415,13 @@ class Postgres:
         if s.startswith('bytes::'):
             s = s[7:]
             return bytes.fromhex(s)
+        if s.startswith('json::'):
+            s = s[6:]
+            return json.loads(s)
         return s
 
     @classmethod
-    def transform_row_to_json_friendly(cls, row):
+    def transform_row_to_json_friendly(cls, row, jsonify_object: JsonifyChoice = JsonifyChoice.NO):
         for k in row:
             if isinstance(row[k], datetime.datetime):
                 row[k] = cls.datetime_to_string(row[k])
@@ -387,6 +431,13 @@ class Postgres:
                 row[k] = bytes(row[k])
             if isinstance(row[k], bytes):
                 row[k] = 'bytes::' + row[k].hex()
+
+            jsonify_types = (dict, list)
+            if jsonify_object == JsonifyChoice.YES and isinstance(row[k], jsonify_types):
+                row[k] = 'json::' + json.dumps(row[k])
+            elif jsonify_object == JsonifyChoice.YES_NO_PREFIX and isinstance(row[k], jsonify_types):
+                row[k] = json.dumps(row[k])
+
         return row
 
     @classmethod
@@ -589,13 +640,14 @@ class Postgres:
         for i, row in enumerate(table):
             table[i] = {k: convert_value(row.get(k, None)) for k in keys}
 
-        with psycopg2.connect(
-                host=self.host,
-                port=self.port,
-                user=self.user,
-                password=self.password,
-                database=self.database
-        ) as conn:
+        # with psycopg2.connect(
+        #         host=self.host,
+        #         port=self.port,
+        #         user=self.user,
+        #         password=self.password,
+        #         database=self.database
+        # ) as conn:
+        with self.psycopg2_pool_connection() as conn:
             cur = conn.cursor()
             if check:
                 self.check_for_table(conn, cur, table_name, table, id_column, partition, partition_type)

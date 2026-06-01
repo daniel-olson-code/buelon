@@ -114,7 +114,11 @@ class JsonlPersistentQueue:
         except:
             pass
 
-    def itr(self):
+    def itr(self, limit: int | None = None):
+        if isinstance(limit, int):
+            yield from self.limit(limit)
+            return
+
         state = self._read_state()
 
         with open(self.path) as f:
@@ -131,12 +135,38 @@ class JsonlPersistentQueue:
             state["size"] = max(0, state["size"] - count)  # Adjust size based on consumed items
             self._write_state(state)
 
+    def limit(self, amount: int):
+        state = self._read_state()
+
+        with open(self.path) as f:
+            f.seek(state["position"])
+            count = 0
+            while True:
+                line = f.readline()
+                if not line:  # EOF
+                    break
+                if not line.strip():
+                    continue
+                if count >= amount:
+                    break
+                count += 1
+                yield json.loads(line.strip('\n'))
+                # Update position after each successful yield
+                state["position"] = f.tell()
+
+            # After iteration, save the final state
+            state["size"] = max(0, state["size"] - count)
+            self._write_state(state)
+
     def persistent_itr(self):
         with open(self.path) as f:
             for line in f:
                 if not line.strip():
                     continue
                 yield json.loads(line.strip('\n'))
+
+    def __len__(self):
+        return self.qsize()
 
 # class JsonlPersistentQueue:
 #     """

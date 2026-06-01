@@ -6,6 +6,7 @@ import time
 import uuid
 import asyncio
 import logging
+import datetime
 
 from buelon.settings import settings, init, SETTINGS_PATH
 
@@ -19,8 +20,25 @@ def delete_last_line():
     sys.stdout.write("\033[K")
 
 
+def delete_last_lines(n: int = 1, text: str | None = None):
+    if n > 0:
+        sys.stdout.write(f"\033[{n}F")  # Move up n lines
+        sys.stdout.write("\033[J")      # Clear from cursor to end of screen
+        if text:
+            sys.stdout.write(text + '\n')
+        sys.stdout.flush()
+
+    # sys.stdout.write("\033[?25l")  # Hide cursor
+    # for _ in range(n):
+    #     sys.stdout.write("\033[F")  # Move up
+    #     sys.stdout.write("\033[K")  # Clear line
+    # sys.stdout.write("\033[?25h")  # Show cursor again
+    # sys.stdout.flush()
+
+
 def run_hub(args):
-    pete.hub.run_server()
+    # pete.hub.run_server()
+    pete.hub.bi_test_server()
 
 
 def run_worker(args):
@@ -56,25 +74,103 @@ def submit_pipe_code(file_path, binding, bucket_binding, scope):
 
 
 def display_status(args):
+    async def func():
+        async with pete.hub.BiWorkerClient(settings.worker.host, settings.worker.port, settings.worker.scopes.split(',')) as client:
+            async def display(prefix: str = '', suffix: str = ''):
+                r = await client.display()
+                return prefix + r + suffix
+
+            refuse_count = 0
+
+            log_every_once_and_a_while = args.log
+            last_log = time.time()
+            time_each_log = 15 * 60
+
+            async def display_status_worker(should_delete=False):
+                nonlocal refuse_count
+                lines = 1
+                try:
+                    s = await display(datetime.datetime.now().strftime('%b %d, %Y | %H:%M %Ss') + '\n')
+                    if not should_delete:
+                        print(s)
+                    else:
+                        # sys.stdout.write("\033[F")
+                        # sys.stdout.write("\033[K")
+                        sys.stdout.write(f"\033[{2}F")  # Move up n lines
+                        sys.stdout.write("\033[J")
+                        sys.stdout.write(s + '\n')
+                        sys.stdout.flush()
+                        # print(datetime.datetime.now().strftime('%b %d, %Y %H:%M'))
+                        # prefix = '' # datetime.datetime.now().strftime('%b %d, %Y %H:%M') + '\n'
+                        # pete.hub.display_from_server(prefix=prefix)
+                    lines += 1
+                except ConnectionRefusedError:
+                    print('Connection refused' + '.' * (refuse_count % 3))
+                    refuse_count += 1
+                except OSError as e:  # socket error
+                    print(f'{e}')
+
+                return lines
+            if not args.subscribe:
+                await display_status_worker()
+            else:
+                last_length = 0
+
+                if log_every_once_and_a_while:
+                    await display_status_worker()
+                    print(f'>')
+                    await display_status_worker()
+
+                while True:
+                    try:
+                        if log_every_once_and_a_while and (time.time() - last_log) > time_each_log:
+                            last_log = time.time()
+                            print(f'>')
+                            last_length = await display_status_worker()
+                        else:
+                            # delete_last_lines(last_length)
+                            last_length = await display_status_worker(True)
+                        # last_length = await display_status_worker()
+                        time.sleep(3)
+                    except KeyboardInterrupt:
+                        print('\n - Have a great day! :)\n')
+                        break
+
+    return asyncio.run(func())
+
+
+def display_status_v1(args):
     refuse_count = 0
 
     log_every_once_and_a_while = args.log
     last_log = time.time()
     time_each_log = 15 * 60
 
-    def display_status_worker():
+    def display_status_worker(should_delete=False):
         nonlocal refuse_count
+        lines = 1
         try:
-            pete.hub.display_from_server()
+            s = pete.hub.display_from_server(datetime.datetime.now().strftime('%b %d, %Y | %H:%M %Ss') + '\n', return_value=True)
+            if not should_delete:
+                print(s)
+            else:
+                # sys.stdout.write("\033[F")
+                # sys.stdout.write("\033[K")
+                sys.stdout.write(f"\033[{2}F")  # Move up n lines
+                sys.stdout.write("\033[J")  
+                sys.stdout.write(s + '\n')
+                sys.stdout.flush()
+                # print(datetime.datetime.now().strftime('%b %d, %Y %H:%M'))
+                # prefix = '' # datetime.datetime.now().strftime('%b %d, %Y %H:%M') + '\n'
+                # pete.hub.display_from_server(prefix=prefix)
+            lines += 1
         except ConnectionRefusedError:
             print('Connection refused' + '.' * (refuse_count % 3))
             refuse_count += 1
-            return 1
         except OSError as e:  # socket error
             print(f'{e}')
-            return 1
 
-        return 1
+        return lines
     if not args.subscribe:
         display_status_worker()
     else:
@@ -83,16 +179,18 @@ def display_status(args):
         if log_every_once_and_a_while:
             display_status_worker()
             print(f'>')
+            display_status_worker()
 
         while True:
             try:
                 if log_every_once_and_a_while and (time.time() - last_log) > time_each_log:
                     last_log = time.time()
                     print(f'>')
+                    last_length = display_status_worker()
                 else:
-                    for _ in range(last_length):
-                        delete_last_line()
-                last_length = display_status_worker()
+                    # delete_last_lines(last_length)
+                    last_length = display_status_worker(True)
+                # last_length = display_status_worker()
                 time.sleep(3)
             except KeyboardInterrupt:
                 print('\n - Have a great day! :)\n')
@@ -133,7 +231,7 @@ def has_postgres_env_vars() -> bool:
 
 def cli():
     parser = argparse.ArgumentParser(description='Buelon command-line interface')
-    parser.add_argument('-v', '--version', action='version', version='Buelon 1.0.68-alpha8')
+    parser.add_argument('-v', '--version', action='version', version='Buelon 1.0.77-alpha3')
     parser.add_argument('-b', '--binding', help='Binding for uploading pipe code (host:port)')
     parser.add_argument('file_path', nargs='?', default='nothing', help='File path for uploading pipe code')
 
@@ -217,8 +315,8 @@ def cli():
     error_fetch_parser.add_argument('-e', '--exclude', default=None, help='Exclude a specific strings from error message. Commas exclude multiple messages')
 
     # Fetch Errors
-    run_step_parser = subparsers.add_parser('run-step', help='View Error Logs')
-    run_step_parser.add_argument('-s', '--step', required=True, help='The step id')
+    run_step_parser = subparsers.add_parser('run-job', help='View Error Logs')
+    run_step_parser.add_argument('-j', '--job', required=True, help='The step id')
 
     # Fetch Errors
     submit_parser = subparsers.add_parser('submit', help='View Error Logs')
@@ -242,6 +340,10 @@ def cli():
     # Example command
     example_parser = subparsers.add_parser('example', help='Run the example')
     # example_parser.set_defaults(func=run_example)
+
+    # Web command
+    web_parser = subparsers.add_parser('web', help='Run utility web server')
+    web_parser.add_argument('-o', '--open-browser', default=False, action=argparse.BooleanOptionalAction, help='Open Browser')
 
     joke_parser = subparsers.add_parser('joke', help='Tell me a boo joke')
 
@@ -267,6 +369,9 @@ def cli():
         run_bucket(args)
     elif args.command == 'demo':
         run_demo()
+    elif args.command == 'web':
+        from buelon.web import run
+        run(args.open_browser)
     elif args.command == 'example':
         run_example()
     elif args.command == 'upload':
@@ -283,9 +388,9 @@ def cli():
         fetch_errors(args)
     elif args.command == 'repair':
         print('This has been deprecated and does nothing')
-    elif args.command == 'run-step':
+    elif args.command == 'run-job':
         # print('This currently does nothing')
-        pete.worker.work(args.step)
+        pete.worker.work(args.job)
     elif args.command == 'run':
         if args.file:
             with open(args.file) as f:

@@ -7,6 +7,7 @@ their results, and associated utilities in a pipeline structure.
 from __future__ import annotations
 import enum
 import os
+import asyncio
 import inspect
 from typing import Any, List
 
@@ -103,6 +104,7 @@ class StepStatus(enum.Enum):
     reset = 5
     working = 6
     error = 7
+    unknown = 8
 
 
 class LanguageTypes(enum.Enum):
@@ -193,7 +195,7 @@ class Step(pipe_util.PipeObject):
                 code = f.read()
         return code
 
-    def run(self, *args: Any) -> Result:
+    def run(self, *args: Any, mut=None) -> Result:
         """Execute the step.
 
         Args:
@@ -205,7 +207,14 @@ class Step(pipe_util.PipeObject):
         Raises:
             ValueError: If the step type is not recognized.
         """
-        code = self.get_code()
+        # code = self.get_code()
+        code = self.code
+        module_name = None
+
+        if self.local:
+            module_name = os.path.basename(self.code).rstrip('.py')
+            with open(self.code) as f:
+                code = f.read()
 
         postgres = LanguageTypes.postgres.value
         python = LanguageTypes.python.value
@@ -215,12 +224,65 @@ class Step(pipe_util.PipeObject):
             return create_return_value(execution.run_postgres(code, self.func, *args, **self.kwargs))
 
         if self.type == python:
-            return create_return_value(execution.run_py(code, self.func, *args, **self.kwargs))
+            return create_return_value(execution.run_py(code, module_name, self.func, *args, mut=mut, **self.kwargs))
 
         if self.type == sqlite3:
             return create_return_value(execution.run_sqlite3(code, self.func, *args, **self.kwargs))
 
         raise ValueError(f"Unrecognized step language type: {self.type}")
+
+    async def arun(self, *args: Any, mut=None) -> Result:
+        """Execute the step.
+
+        Args:
+            *args: Variable length argument list to be passed to the execution function.
+
+        Returns:
+            Result: The result of the step execution.
+
+        Raises:
+            ValueError: If the step type is not recognized.
+        """
+        # code = self.get_code()
+        code = self.code
+        module_name = None
+
+        if self.local:
+            module_name = os.path.basename(self.code).rstrip('.py')
+            with open(self.code) as f:
+                code = f.read()
+
+        postgres = LanguageTypes.postgres.value
+        python = LanguageTypes.python.value
+        sqlite3 = LanguageTypes.sqlite3.value
+
+        if self.type == postgres:
+            return create_return_value(await execution.arun_postgres(code, self.func, *args, **self.kwargs))
+
+        if self.type == python:
+            return create_return_value(await execution.arun_py(code, module_name, self.func, *args, mut=mut, **self.kwargs))
+
+        if self.type == sqlite3:
+            # return create_return_value(execution.run_sqlite3(code, self.func, *args, **self.kwargs))
+            return create_return_value(await asyncio.to_thread(execution.run_sqlite3, code, self.func, *args, **self.kwargs))
+
+        raise ValueError(f"Unrecognized step language type: {self.type}")
+
+    def is_async(self):
+        postgres = LanguageTypes.postgres.value
+        python = LanguageTypes.python.value
+        sqlite3 = LanguageTypes.sqlite3.value
+
+        if self.type == postgres:
+            return True
+
+        if self.type == python:
+            return True  # create_return_value(execution.run_py(code, self.func, *args, **self.kwargs))
+
+        if self.type == sqlite3:
+            return False
+
+        return False
 
     async def run_async(self, *args: Any, mut = None) -> Result:
         """Execute the step.
@@ -272,6 +334,9 @@ class Step(pipe_util.PipeObject):
         except FileNotFoundError:
             pass
 
+
+class Job(Step):
+    pass
 
 
 

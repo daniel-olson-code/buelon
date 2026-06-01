@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Buelon Dashboard</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body data-theme="light">
+    <header>
+        <div class="container">
+            <div class="header-content">
+                <!--<div class="logo">Boo! 👻 Aaah!</div>-->
+                <div class="logo">Buelon</div>
+                <div class="nav-controls">
+                    <div class="breadcrumb" id="breadcrumb">
+                        <span>Dashboard</span>
+                    </div>
+                    <div class="theme-toggle" id="themeToggle"></div>
+                    <button id="reset-errors" class="btn btn-primary" onclick="resetErrors().then(refreshDashboard).catch(e=>{alert('Could not reset errors. Look at your web server logs');})">
+                        Reset Errors
+                    </button>
+                    <button id="dash-refresh" class="btn btn-primary" onclick="refreshDashboard()">
+                        Refresh
+                    </button>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <main>
+        <div class="container">
+            <div class="page active" id="page1">
+                <div class="stats-grid" id="statsGrid">
+                    <div class="loading">
+                        <div class="spinner"></div>
+                        Loading dashboard...
+                    </div>
+                </div>
+
+                <div class="workers-grid" id="workersGrid"></div>
+            </div>
+
+            <div class="page" id="page2">
+                <button class="btn btn-secondary btn-back" onclick="showPage(1)">
+                    ← Back to Dashboard
+                </button>
+
+                <div class="card">
+                    <h2 id="workerTitle">Worker Details</h2>
+                    <div class="jobs-list" id="jobsList"></div>
+                </div>
+            </div>
+
+            <div class="page" id="page3">
+                <button class="btn btn-secondary btn-back" onclick="showPage(2)">
+                    ← Back to Worker
+                </button>
+
+                <div class="job-detail" id="jobDetail"></div>
+            </div>
+        </div>
+    </main>
+
+    <div class="modal" id="parentTreeModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 class="modal-title">Job Parent Tree & Results</h3>
+                <button class="close-btn" onclick="closeModal()">&times;</button>
+            </div>
+            <div id="parentTreeContent"></div>
+        </div>
+    </div>
+
+    <script src="/static/script.js"></script>
+</body>
+</html>

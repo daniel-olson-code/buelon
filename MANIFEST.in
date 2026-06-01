@@ -3,3 +3,4 @@ include buelon/examples/example.bue
 include README.md
 include LICENSE
 include .env
+recursive-include buelon/static *

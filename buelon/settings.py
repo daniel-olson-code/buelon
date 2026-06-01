@@ -57,6 +57,9 @@ DEFAULT_SETTINGS = {
         # 'restart_interval': 60 * 60 * 2,
         'reverse': False,
         # 'one_shot': False,
+        'info': {
+            'name': 'Worker',
+        }
     },
     'bucket': {
         'server': {
@@ -137,6 +140,9 @@ class WorkerSettings(YamlObj):
         # self.job_timeout = settings.get('job_timeout', DEFAULT_SETTINGS['worker']['job_timeout'])
         # self.restart_interval = settings.get('restart_interval', DEFAULT_SETTINGS['worker']['restart_interval'])
         self.reverse = settings.get('reverse', DEFAULT_SETTINGS['worker']['reverse'])
+
+        _info = settings.get('info', DEFAULT_SETTINGS['worker']['info'])
+        self.info = {} if not isinstance(_info, dict) else _info
 
 
 class BucketServerSettings(YamlObj):

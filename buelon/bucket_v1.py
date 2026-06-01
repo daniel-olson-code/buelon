@@ -119,7 +119,7 @@ def retry_connection(func: callable):
                 kwargs['timeout'] *= 2
             except psycopg2.OperationalError:
                 time.sleep((i + 1) * 5.)
-                self.db = buelon.helpers.postgres.get_postgres_from_env()
+                # self.db = buelon.helpers.postgres.get_postgres_from_env()
         raise
     return wrapper
 
@@ -146,7 +146,7 @@ class Client:
 
     db: buelon.helpers.postgres.Postgres
 
-    def __init__(self):
+    def __init__(self, override_db: buelon.helpers.postgres.Postgres | None = None):
         """Initialize the client with host and port from environment variables."""
         self.PORT = BUCKET_CLIENT_PORT
         self.HOST = BUCKET_CLIENT_HOST
@@ -156,7 +156,7 @@ class Client:
             self.zk.start(timeout=60 * 15)
             self.zk.ensure_path(ZOOKEEPER_PATH)
         elif USING_POSTGRES:
-            self.db = buelon.helpers.postgres.get_postgres_from_env()
+            self.db = (override_db if override_db else buelon.helpers.postgres.get_postgres_from_env())
             try:
                 with buelon.helpers.created_cache.AlreadyCreated(f'bucket_{POSTGRES_TABLE}') as obj:
                     if not obj.created:

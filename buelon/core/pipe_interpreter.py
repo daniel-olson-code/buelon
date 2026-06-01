@@ -338,13 +338,13 @@ class PipelineParser:
             while chunk:
                 for starter, job_json in chunk:
                     i += 1
-                    yield step.Step().from_json(json.loads(job_json))
+                    yield step.Job().from_json(json.loads(job_json))
                 offset += limit
                 chunk = self.conn.execute(q.format(limit=limit, offset=offset)).fetchall()
 
             # print(f'{i:,} jobs')
             # for _id, s, j in self.conn.execute('SELECT * FROM jobs where starter').fetchall():
-            #     print(step.Step().from_json(json.loads(j)).name)
+            #     print(step.Job().from_json(json.loads(j)).name)
             # print(f"Saved {self.conn.execute('SELECT count(*) FROM jobs').fetchall()[0][0]:,} jobs")
             # print(self.conn.execute('SELECT starter, count(*) FROM jobs group by starter').fetchall())
             # t = time.time()
@@ -354,8 +354,8 @@ class PipelineParser:
             # chunk = self.conn.execute(q.format(limit=limit, offset=offset)).fetchall()
             # while chunk:
             #     for starter, job_json in chunk:
-            #         # yield starter, step.Step().from_json(json.loads(job_json))
-            #         _ = step.Step().from_json(json.loads(job_json))
+            #         # yield starter, step.Job().from_json(json.loads(job_json))
+            #         _ = step.Job().from_json(json.loads(job_json))
             #         del _
             #     offset += limit
             #     chunk = self.conn.execute(q.format(limit=limit, offset=offset)).fetchall()
@@ -367,7 +367,7 @@ class PipelineParser:
             q = buelon.helpers.persistqueue.JsonPersistentQueue(temp_file.name)
             data = {}  # buelon.helpers.lazy_load_class.LazyMap()
 
-            def run(job: buelon.core.step.Step):
+            def run(job: buelon.core.step.Job):
                 # job = self._get_job(job_id)
                 job_id = job.id
                 r: buelon.core.step.Result = job.run(*(data[parent] for parent in job.parents))
@@ -397,11 +397,11 @@ class PipelineParser:
                 job = self._get_job(job_id)
                 run(job)
 
-    def _get_job(self, job_id: str) -> step.Step:
+    def _get_job(self, job_id: str) -> step.Job:
         job_json = self.conn.execute("SELECT value FROM jobs WHERE id = ?", (job_id,)).fetchone()[0]
-        return step.Step().from_json(json.loads(job_json))
+        return step.Job().from_json(json.loads(job_json))
 
-    def _run_job(self, job: step.Step | str) -> None:
+    def _run_job(self, job: step.Job | str) -> None:
         if isinstance(job, str):
             job = self._get_job(job)
 
@@ -599,7 +599,7 @@ class PipelineParser:
             job_json = self.conn.execute(
                 'select value from jobs where id = ?', (job_id,)
             ).fetchall()[0][0]
-            job = step.Step().from_json(json.loads(job_json))
+            job = step.Job().from_json(json.loads(job_json))
             job.children.append(first_job_id)
             self.conn.execute("UPDATE jobs SET value = ? WHERE id = ?", (json.dumps(job.to_json()), job.id))
             self.conn.commit()
@@ -651,7 +651,7 @@ class PipelineParser:
         raise BuelonBuildError(f'Job `{name}` not found.')
 
     def job_from_definition(self, definition: dict, env=None, provide_id: str | None = None):
-        job = step.Step()
+        job = step.Job()
         job.id = provide_id if provide_id else buelon.helpers.pipe_util.get_id()
         job.name = definition['name']
         job.type = definition['language']
@@ -1398,7 +1398,7 @@ class PipelineParser:
         return loops
 
 
-def generate_steps_from_code(code: str) -> Generator[step.Step, None, None]:
+def generate_steps_from_code(code: str) -> Generator[step.Job, None, None]:
     """Extract steps and starters from the given pipeline code.
 
     Args:
