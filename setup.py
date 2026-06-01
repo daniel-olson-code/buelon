@@ -36,7 +36,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="buelon",
-    version="1.0.77-alpha4",
+    version="1.0.77-alpha5",
     author="Daniel Olson",
     author_email="daniel@orphos.cloud",
     description="A scripting language to simply manage a very large amount of i/o heavy workloads. Such as API calls "
