@@ -595,6 +595,7 @@ class Postgres:
             id_column=None,
             check: bool = True,
             sql_prefix: str | None = None,
+            verbose: bool = False,
     ) -> None:
         """
         Uploads data to a PostgreSQL table.
@@ -690,6 +691,8 @@ class Postgres:
                 table = (tuple(row.values()) for row in table)
             # table = (tuple(row.values()) for row in table)
             try:
+                if verbose:
+                    print(f'[upload_table] Query: {q}')
                 psycopg2.extras.execute_batch(cur, q, table)
             except psycopg2.errors.InFailedSqlTransaction:
                 conn.rollback()
