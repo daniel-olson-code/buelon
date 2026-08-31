@@ -15,6 +15,6 @@ websockets
 flask
 fastapi
 uvicorn
-bisocket==0.0.6
+bisocket==0.0.9
 
 

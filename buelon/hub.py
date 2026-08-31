@@ -83,6 +83,25 @@ LENGTH_OF_END_TOKEN = len(END_TOKEN)
 
 preset_priorities = list(range(100, -1, -1)) # 100 - 0
 
+# Back-off for an idle worker -- BUGS.md #6.
+#
+# `hold` is a plain request/response, not a long poll: an empty queue answers instantly.
+# Without a back-off `see_if_more` re-asks the moment the reply lands, so a worker with
+# nothing to do hammers the hub in a tight network loop for the whole of `max_time`
+# (20 minutes by default). Each empty hold doubles the wait, up to the ceiling; the
+# first hold after any job arrives resets it. The ceiling is also the worst-case delay
+# before a newly uploaded job is picked up by an already-idle worker, which is why it is
+# seconds rather than minutes.
+WORKER_IDLE_BACKOFF_START = 0.1
+WORKER_IDLE_BACKOFF_MAX = 2.0
+
+# Floor for `BiWorkerClient.get_response`'s poll interval -- BUGS.md #6.
+#
+# `handle_finished_jobs` asks for `wait_time=0.0`, which made the wait an
+# `await asyncio.sleep(0)` loop: the event loop spins flat out for the whole round trip
+# and starves the job coroutines it shares a thread with.
+MIN_RESPONSE_POLL_INTERVAL = 0.01
+
 # endregion
 
 # region handling steps
@@ -235,32 +254,57 @@ def step_from_id(step_id: str) -> buelon.step.Job | None:
 
 
 def pop_step_from_id(step_id: str):
+    """Hand out a single job by id (the `bue run-job` / web "run job" path).
+
+    "Pop" means: take it out of everywhere it could be dispatched from, and out of the
+    terminal buckets it is sitting in -- but *not* out of `ALL_STEPS`. `ALL_STEPS` is the
+    id index every DAG walk resolves through (`step_from_id` -> `get_all_ids` /
+    `get_all_steps`, which silently truncate on a `None`), so dropping the entry would
+    report the running job as `'unknown'` and cut the walk for all of its relatives.
+    Normal dispatch (`get_steps_v2`) has the same rule. See BUGS.md #5.
+    """
     with lock:
+        # Already checked out by a worker -- do not hand it out a second time.
+        # `bi_on_hold` registers into `holds_v2` under this same lock immediately after
+        # `get_steps_v2` returns, so a repeated single-job hold sees it here and gets
+        # nothing back. That is what stops `run-job` re-executing the job in a loop.
+        if any(step_id in client_holds for client_holds in holds_v2.values()):
+            return None
+
+        s = None
+
         if step_id in queued:
-            # return queued[step_id]
             s = queued[step_id]
             del queued[step_id]
-            return s
         elif step_id in errors:
-            # return errors[step_id]
             s = errors[step_id]
             del errors[step_id]
-            return s
         elif step_id in done:
-            # return done[step_id]
             s = done[step_id]
             del done[step_id]
-            return s
-        for hold in holds.values():
-            for s in hold:
-                if s.id == step_id:
-                    # # removing s would cause errors
-                    # hold.remove(s)
-                    return s
-        if step_id in ALL_STEPS:
-            s = ALL_STEPS[step_id][1]
-            # del ALL_STEPS[step_id]
-            return s
+        else:
+            for hold in holds.values():
+                for held in hold:
+                    if held.id == step_id:
+                        # # removing s would cause errors
+                        # hold.remove(s)
+                        s = held
+                        break
+                if s is not None:
+                    break
+
+            if s is None and step_id in ALL_STEPS:
+                s = ALL_STEPS[step_id][1]
+
+        if s is not None:
+            # It may also be sitting in a dispatch queue (a pending job reaches us
+            # through the ALL_STEPS fallback above, which does not touch STEPS). Drop it
+            # so a normal worker cannot pick up the same job in parallel. The scan is
+            # linear in the queue size, which is fine here: the single-job path is an
+            # operator action, not the hot path.
+            remove_ids_from_steps({step_id})
+
+        return s
 
 
 def remove_id(step_id: str, skip_all_ids: bool = False):
@@ -1695,6 +1739,11 @@ class BiWorkerClient:
         # commands opt in, because hanging forever is worse than reporting a failure.
         deadline = None if timeout is None else time.time() + timeout
 
+        # `wait_time=0.0` (handle_finished_jobs' follow-up hold) polled with
+        # `asyncio.sleep(0)`, which busy-spins the event loop for the whole round trip
+        # -- BUGS.md #6.
+        wait_time = max(wait_time, MIN_RESPONSE_POLL_INTERVAL)
+
         while request_id not in self.messages:
             if deadline is not None and time.time() > deadline:
                 return None
@@ -2294,40 +2343,99 @@ class BiWorkerJobQueue:
         return max([job.runtime for job in self.jobs]) if self.jobs else 0
 
 
-async def bi_test_worker(jobs_at_a_time: int = 25, single_step: str | None = None, iterations: int = 10_000, max_time: float = 60 * 20, stop_on_no_jobs: bool = False):
+async def bi_test_worker(jobs_at_a_time: int = 25, single_step: str | None = None, max_time: float = 60 * 20, stop_on_no_jobs: bool = False):
+    """Run jobs off the hub until `max_time` (or, with `single_step`, until that one job is done).
+
+    `single_step` is the `bue run-job -j <id>` / web "run job" path and is **single shot**:
+    exactly one `hold` is attempted, and the worker exits as soon as that job has been
+    released. Without that it re-held the same id forever -- see BUGS.md #5.
+    """
     mut = {}
     t = time.time()
     available = jobs_at_a_time
     available_lock = asyncio.Lock()
     job_queue = BiWorkerJobQueue()
     should_stop_n = 0
+    single_job_mode = single_step is not None
+    stop_now = False
     def should_stop():
-        return should_stop_n > 5
+        return stop_now or should_stop_n > 5
+
+    def out_of_time():
+        return (time.time() - t) >= max_time
+
+    async def idle_sleep(seconds: float):
+        """Sleep `seconds` in 0.1s slices so a stop is noticed promptly."""
+        end = time.time() + seconds
+        while time.time() < end and not should_stop() and not out_of_time():
+            await asyncio.sleep(max(0.0, min(0.1, end - time.time())))
+
+    # `available` is the number of free job slots. It used to be read outside
+    # `available_lock` and only decremented inside it, so the lock protected nothing:
+    # the read-hold-decrement was not atomic and a hold could be issued against a
+    # figure that had already moved. Reserve up front instead, and hand back whatever
+    # the hold did not fill -- BUGS.md #6.
+    async def take_capacity(most: int) -> int:
+        """Reserve up to `most` slots; returns how many were actually reserved."""
+        nonlocal available
+        async with available_lock:
+            n = max(0, min(available, most))
+            available -= n
+            return n
+
+    async def give_capacity(n: int) -> None:
+        """Hand `n` slots back, clamped into [0, jobs_at_a_time]."""
+        nonlocal available
+        async with available_lock:
+            available = max(0, min(jobs_at_a_time, available + n))
 
     async def see_if_more():
-        nonlocal available, should_stop_n
-        while (time.time() - t) < max_time and not should_stop():
-            if not available:
+        nonlocal should_stop_n, stop_now
+        idle_backoff = 0.0
+        while not out_of_time() and not should_stop():
+            limit = await take_capacity(jobs_at_a_time)
+            if not limit:
+                # Every slot is busy, so this is not an idle spin -- the queue coroutine
+                # will free slots as jobs finish.
+                idle_backoff = 0.0
                 await asyncio.sleep(0.1)
+                continue
+
+            uid, jobs, args = await client.hold(limit=limit, reverse=settings.worker.reverse, single_job=single_step)
+            print(f'pulled {len(jobs):,} jobs')
+            if stop_on_no_jobs:
+                if not jobs:
+                    should_stop_n += 1
+                else:
+                    should_stop_n = 0
+
+            for job, arg in zip(jobs, args):
+                await job_queue.aput(BiWorkerJob(mut, uid, job, arg))
+                # job_queue.put(BiWorkerJob(mut, uid, job, arg))
+
+            # Slots we reserved but the hub could not fill go straight back.
+            await give_capacity(limit - len(jobs))
+
+            if single_job_mode:
+                # One attempt, then stop pulling. If we got the job,
+                # handle_finished_jobs stops the run once it is released; if we did
+                # not (unknown id, or already held by another worker) there is
+                # nothing to wait for.
+                if not jobs:
+                    stop_now = True
+                return
+
+            if jobs:
+                idle_backoff = 0.0
             else:
-                uid, jobs, args = await client.hold(limit=available, reverse=settings.worker.reverse, single_job=single_step)
-                print(f'pulled {len(jobs):,} jobs')
-                if stop_on_no_jobs:
-                    if not jobs and available:
-                        should_stop_n += 1
-                    else:
-                        should_stop_n = 0
-
-                for job, arg in zip(jobs, args):
-                    await job_queue.aput(BiWorkerJob(mut, uid, job, arg))
-                    # job_queue.put(BiWorkerJob(mut, uid, job, arg))
-
-                async with available_lock:
-                    available -= len(jobs)
+                # Nothing on the hub. Back off rather than re-asking immediately.
+                idle_backoff = min(WORKER_IDLE_BACKOFF_MAX,
+                                   idle_backoff * 2 or WORKER_IDLE_BACKOFF_START)
+                await idle_sleep(idle_backoff)
 
     async def handle_finished_jobs():
-        nonlocal available, should_stop_n
-        while (time.time() - t) < max_time and not should_stop():
+        nonlocal should_stop_n, stop_now
+        while not out_of_time() and not should_stop():
             finished_jobs = await job_queue.afinished_jobs()
             # finished_jobs = job_queue.finished_jobs()
 
@@ -2340,6 +2448,15 @@ async def bi_test_worker(jobs_at_a_time: int = 25, single_step: str | None = Non
 
                 await client.release(uid, steps, statuses, results)
                 n_released = len(jobs)
+
+                if single_job_mode:
+                    # The one job we were asked to run is done. Do not re-hold it.
+                    await give_capacity(n_released)
+                    stop_now = True
+                    continue
+
+                # The released jobs' slots are still counted as in use, so this hold
+                # spends already-reserved capacity -- no `take_capacity` here.
                 uid, jobs, args = await client.hold(limit=n_released, reverse=settings.worker.reverse, single_job=single_step, wait_time=0.0)
                 print(f'pulled {len(jobs):,} jobs')
                 if stop_on_no_jobs:
@@ -2352,8 +2469,7 @@ async def bi_test_worker(jobs_at_a_time: int = 25, single_step: str | None = Non
                     await job_queue.aput(BiWorkerJob(mut, uid, job, arg))
                     # job_queue.put(BiWorkerJob(mut, uid, job, arg))
 
-                async with available_lock:
-                    available += n_released - len(jobs)
+                await give_capacity(n_released - len(jobs))
 
             if not finished_jobs:
                 await asyncio.sleep(0.1)
@@ -2365,7 +2481,12 @@ async def bi_test_worker(jobs_at_a_time: int = 25, single_step: str | None = Non
         while (time.time() - t) < max_time and not should_stop():
             # await asyncio.sleep(5.0)
             print(f'left: {max_time - (time.time() - t):0.2f} seconds. Available: {available:,}, Job Queue: {job_queue.qsize():,}')
-            await asyncio.sleep(5.0)
+            # Sleep in slices rather than one 5s block so a finished single-job run --
+            # or any other stop -- is noticed straight away instead of up to 5s later.
+            for _ in range(50):
+                await asyncio.sleep(0.1)
+                if should_stop():
+                    break
             if stop_on_no_jobs:
                 if not job_queue.qsize():
                     should_stop_n += 1

@@ -11,7 +11,9 @@ def work(single_step: str | None = None):
     # # asyncio.run(_work(single_step))
     # # asyncio.run(test_worker(single_step=single_step, iterations=100))
     # asyncio.run(test_worker(single_step=single_step, iterations=100))
-    asyncio.run(bi_test_worker(single_step=single_step, iterations=2))
+    # `iterations` used to be passed here expecting two passes; `bi_test_worker`
+    # never read it. It is single-shot on `single_step` now -- see BUGS.md #5.
+    asyncio.run(bi_test_worker(single_step=single_step))
 
 
 def run_file_on_server_until_done(path: str, sleep_time: float | int = 5.0, verbose: bool = False):
