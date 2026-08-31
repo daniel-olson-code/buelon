@@ -31,6 +31,21 @@ import buelon
 
 # region global variables
 
+# Guards every mutation and every iteration of the hub state below.
+#
+# `bisocket.Server` spawns one thread per connected client and invokes the request
+# handler (`bi_handle_messages`) on that thread. Requests serialize *within* a client
+# but run in parallel *across* clients, so every connected worker touches these dicts
+# concurrently. Without this lock, two workers calling `hold` at the same time can be
+# handed the same job (`get_steps_v2` does a non-atomic read-slice-then-rebind), and
+# iteration in the reporting/save paths can raise `dictionary changed size`.
+#
+# Re-entrant because the state helpers call each other (`handle_step` -> `remove_id`,
+# `get_args` -> `handle_step`, ...) and each takes the lock in its own right.
+#
+# Hold it only for in-memory state work. bz2 (de)compression, json encoding and socket
+# I/O must stay outside it -- compressing a full job batch is slow enough to serialize
+# every other worker's hold if it happens under the lock.
 lock = threading.RLock()
 boo_db = buelon.helpers.postgres.get_postgres_from_env()
 
@@ -45,6 +60,18 @@ holds: dict[str, list[buelon.step.Job]] = {}
 holds_v2: dict[str, dict[str, buelon.step.Job]] = {}
 
 workers: dict[str, dict] = {}
+
+# Client ids whose *send* connection is currently open.
+#
+# A bisocket client opens two connections that share one client_id: `send` (requests
+# in) and `receive` (responses out). bisocket fires `on_open`/`on_close` for the send
+# connection only, but fires `on_finally` for BOTH. `OnFinallyInfo` carries no socket
+# discriminator, so without this set the hub cannot tell "the worker is gone" from
+# "the worker's response channel dropped while it is still running jobs" -- and would
+# requeue in-flight jobs out from under a live worker.
+#
+# Guarded by `lock`.
+send_open: set[str] = set()
 
 db: dict[str, Any] = {}  # : dict[str, bytes] = {}
 
@@ -94,35 +121,36 @@ def get_steps(scopes: list[str], limit: int = 100):
 
 
 def get_steps_v2(scopes: list[str], limit: int = 100, reverse: bool = False, single_step: str | None = None):
-    if single_step:
-        s = pop_step_from_id(single_step)
+    with lock:
+        if single_step:
+            s = pop_step_from_id(single_step)
 
-        if s:
-            return [s]
+            if s:
+                return [s]
 
-        return []
+            return []
 
-    result = []
-    _preset_priorities = preset_priorities[::-1] if reverse else preset_priorities
+        result = []
+        _preset_priorities = preset_priorities[::-1] if reverse else preset_priorities
 
-    if reverse:
-        scopes = scopes[::-1]
+        if reverse:
+            scopes = scopes[::-1]
 
-    def get_scope_and_priority():
-        for i in _preset_priorities:
-            for s in scopes:
-                if s in STEPS and i in STEPS[s] and STEPS[s][i]:
-                    yield s, i
+        def get_scope_and_priority():
+            for i in _preset_priorities:
+                for s in scopes:
+                    if s in STEPS and i in STEPS[s] and STEPS[s][i]:
+                        yield s, i
 
-    for scope, priority in get_scope_and_priority():
-        sl = max(0, limit - len(result))
-        result.extend(STEPS[scope][priority][:sl])
-        STEPS[scope][priority] = STEPS[scope][priority][sl:]
+        for scope, priority in get_scope_and_priority():
+            sl = max(0, limit - len(result))
+            result.extend(STEPS[scope][priority][:sl])
+            STEPS[scope][priority] = STEPS[scope][priority][sl:]
 
-        if len(result) >= limit:
-            break
+            if len(result) >= limit:
+                break
 
-    return result
+        return result
 
 
 def add_step_to_steps(step: buelon.core.step.Job, jobs: list[buelon.core.step.Job]):
@@ -130,153 +158,161 @@ def add_step_to_steps(step: buelon.core.step.Job, jobs: list[buelon.core.step.Jo
 
 
 def upload_step(job: buelon.core.step.Job):
-    if job.scope not in STEPS:
-        STEPS[job.scope] = {}
+    with lock:
+        if job.scope not in STEPS:
+            STEPS[job.scope] = {}
 
-    if job.priority not in STEPS[job.scope]:
-        STEPS[job.scope][job.priority] = []
+        if job.priority not in STEPS[job.scope]:
+            STEPS[job.scope][job.priority] = []
 
-    add_step_to_steps(job, STEPS[job.scope][job.priority])
+        add_step_to_steps(job, STEPS[job.scope][job.priority])
 
 
 def upload_steps(jobs: list[buelon.core.step.Job]):
-    for job in jobs:
-        upload_step(job)
+    with lock:
+        for job in jobs:
+            upload_step(job)
 
 
 def handle_step(step:  buelon.core.step.Job, status: buelon.core.step.StepStatus):
-    if status == buelon.core.step.StepStatus.pending:
-        ALL_STEPS[step.id] = [status.value, step]
-        upload_step(step)
-    elif status == buelon.core.step.StepStatus.cancel:
-        for step_id in get_all_ids(step):
-            remove_id(step_id)
-    elif status == buelon.core.step.StepStatus.error:
-        ALL_STEPS[step.id] = [status.value, step]
-        errors[step.id] = step
-    elif status == buelon.core.step.StepStatus.reset:
-        for step in get_all_steps(step).values():
-            remove_id(step.id, True)
-            if step.parents:
-                ALL_STEPS[step.id] = [status.queued.value, step]
-                queued[step.id] = step
+    with lock:
+        if status == buelon.core.step.StepStatus.pending:
+            ALL_STEPS[step.id] = [status.value, step]
+            upload_step(step)
+        elif status == buelon.core.step.StepStatus.cancel:
+            for step_id in get_all_ids(step):
+                remove_id(step_id)
+        elif status == buelon.core.step.StepStatus.error:
+            ALL_STEPS[step.id] = [status.value, step]
+            errors[step.id] = step
+        elif status == buelon.core.step.StepStatus.reset:
+            for step in get_all_steps(step).values():
+                remove_id(step.id, True)
+                if step.parents:
+                    ALL_STEPS[step.id] = [status.queued.value, step]
+                    queued[step.id] = step
+                else:
+                    ALL_STEPS[step.id] = [status.pending.value, step]
+                    upload_step(step)
+        elif status == buelon.core.step.StepStatus.success:
+            ALL_STEPS[step.id] = [status.value, step]
+            done[step.id] = step
+            if step.children:
+                for step_id in step.children:
+                    if step_id in queued:
+                        ALL_STEPS[step.id] = [status.pending.value, ALL_STEPS[step.id][1]]
+                        upload_step(queued[step_id])
+                        del queued[step_id]
             else:
-                ALL_STEPS[step.id] = [status.pending.value, step]
-                upload_step(step)
-    elif status == buelon.core.step.StepStatus.success:
-        ALL_STEPS[step.id] = [status.value, step]
-        done[step.id] = step
-        if step.children:
-            for step_id in step.children:
-                if step_id in queued:
-                    ALL_STEPS[step.id] = [status.pending.value, ALL_STEPS[step.id][1]]
-                    upload_step(queued[step_id])
-                    del queued[step_id]
-        else:
-            ids = get_all_ids(step)
-            if all([i in done for i in ids]):
-                for step_id in ids:
-                    remove_id(step_id)
+                ids = get_all_ids(step)
+                if all([i in done for i in ids]):
+                    for step_id in ids:
+                        remove_id(step_id)
 
 # endregion
 
 # region util
 
 def step_from_id(step_id: str) -> buelon.step.Job | None:
-    if step_id in ALL_STEPS:
-        return ALL_STEPS[step_id][1]
-    if step_id in queued:
-        return queued[step_id]
-    elif step_id in errors:
-        return errors[step_id]
-    elif step_id in done:
-        return done[step_id]
-    for hold in holds.values():
-        for s in hold:
-            if s.id == step_id:
-                return s
-    for scope in STEPS.values():
-        for steps in scope.values():
-            for step in steps:
-                if step.id == step_id:
-                    return step
+    with lock:
+        if step_id in ALL_STEPS:
+            return ALL_STEPS[step_id][1]
+        if step_id in queued:
+            return queued[step_id]
+        elif step_id in errors:
+            return errors[step_id]
+        elif step_id in done:
+            return done[step_id]
+        for hold in holds.values():
+            for s in hold:
+                if s.id == step_id:
+                    return s
+        for scope in STEPS.values():
+            for steps in scope.values():
+                for step in steps:
+                    if step.id == step_id:
+                        return step
 
 
 def pop_step_from_id(step_id: str):
-    if step_id in queued:
-        # return queued[step_id]
-        s = queued[step_id]
-        del queued[step_id]
-        return s
-    elif step_id in errors:
-        # return errors[step_id]
-        s = errors[step_id]
-        del errors[step_id]
-        return s
-    elif step_id in done:
-        # return done[step_id]
-        s = done[step_id]
-        del done[step_id]
-        return s
-    for hold in holds.values():
-        for s in hold:
-            if s.id == step_id:
-                # # removing s would cause errors
-                # hold.remove(s)
-                return s
-    if step_id in ALL_STEPS:
-        s = ALL_STEPS[step_id][1]
-        # del ALL_STEPS[step_id]
-        return s
+    with lock:
+        if step_id in queued:
+            # return queued[step_id]
+            s = queued[step_id]
+            del queued[step_id]
+            return s
+        elif step_id in errors:
+            # return errors[step_id]
+            s = errors[step_id]
+            del errors[step_id]
+            return s
+        elif step_id in done:
+            # return done[step_id]
+            s = done[step_id]
+            del done[step_id]
+            return s
+        for hold in holds.values():
+            for s in hold:
+                if s.id == step_id:
+                    # # removing s would cause errors
+                    # hold.remove(s)
+                    return s
+        if step_id in ALL_STEPS:
+            s = ALL_STEPS[step_id][1]
+            # del ALL_STEPS[step_id]
+            return s
 
 
 def remove_id(step_id: str, skip_all_ids: bool = False):
-    if step_id in queued:
-        del queued[step_id]
-    if step_id in errors:
-        del errors[step_id]
-    if step_id in done:
-        del done[step_id]
+    with lock:
+        if step_id in queued:
+            del queued[step_id]
+        if step_id in errors:
+            del errors[step_id]
+        if step_id in done:
+            del done[step_id]
 
-    if step_id in db:
-        del db[step_id]
+        if step_id in db:
+            del db[step_id]
 
-    if step_id in ALL_STEPS and not skip_all_ids:
-        del ALL_STEPS[step_id]
+        if step_id in ALL_STEPS and not skip_all_ids:
+            del ALL_STEPS[step_id]
 
 
 def get_all_ids(step: buelon.core.step.Job, already: set | None = None):
-    already = already or set()
+    with lock:
+        already = already or set()
 
-    if not step or step.id in already:
+        if not step or step.id in already:
+            return already
+
+        already.add(step.id)
+
+        for child in step.children:
+            get_all_ids(step_from_id(child), already)
+
+        for parent in step.parents:
+            get_all_ids(step_from_id(parent), already)
+
         return already
-
-    already.add(step.id)
-
-    for child in step.children:
-        get_all_ids(step_from_id(child), already)
-
-    for parent in step.parents:
-        get_all_ids(step_from_id(parent), already)
-
-    return already
 
 
 def get_all_steps(step: buelon.core.step.Job, already: dict | None = None):
-    already = already or {}
+    with lock:
+        already = already or {}
 
-    if not step or step.id in already:
+        if not step or step.id in already:
+            return already
+
+        already[step.id] = step
+
+        for child in step.children:
+            get_all_steps(step_from_id(child), already)
+
+        for parent in step.parents:
+            get_all_steps(step_from_id(parent), already)
+
         return already
-
-    already[step.id] = step
-
-    for child in step.children:
-        get_all_steps(step_from_id(child), already)
-
-    for parent in step.parents:
-        get_all_steps(step_from_id(parent), already)
-
-    return already
 
 
 def steps_to_bytes(steps:  list[buelon.core.step.Job]) -> bytes:
@@ -529,20 +565,21 @@ def get_all_info_from_server():
 
 def _job_status(job_id: str):
     step_id = job_id
-    if step_id not in ALL_STEPS:
-        status = 'unknown'
-    else:
+    with lock:
+        if step_id not in ALL_STEPS:
+            return 'unknown'
         status = ALL_STEPS[step_id][0]
-        if not isinstance(status, str):
-            if isinstance(status, int):
-                status = buelon.core.step.StepStatus(status).name
-            elif isinstance(status, buelon.core.step.StepStatus):
-                status = status.name
-            else:
-                status = f'{status}'
-                _map = {k: v.value for k, v in dict(buelon.core.step.StepStatus.__members__).items()}
-                if status in _map:
-                    status = 'unknown'
+
+    if not isinstance(status, str):
+        if isinstance(status, int):
+            status = buelon.core.step.StepStatus(status).name
+        elif isinstance(status, buelon.core.step.StepStatus):
+            status = status.name
+        else:
+            status = f'{status}'
+            _map = {k: v.value for k, v in dict(buelon.core.step.StepStatus.__members__).items()}
+            if status in _map:
+                status = 'unknown'
     return status
 
 
@@ -601,10 +638,12 @@ def save_from_server():
 
 
 def display_text():
-    steps_len = sum([len(lst) for val in STEPS.values() for lst in val.values()])
-    holds_len = sum([len(lst) for lst in holds.values()])
+    with lock:
+        steps_len = sum([len(lst) for val in STEPS.values() for lst in val.values()])
+        holds_len = sum([len(lst) for lst in holds.values()])
 
-    done_len, queue_len, error_len = len(done), len(queued), len(errors)
+        done_len, queue_len, error_len = len(done), len(queued), len(errors)
+
     total = steps_len + holds_len + done_len + queue_len + error_len
     remaining = total - done_len
 
@@ -657,19 +696,20 @@ def temp_get_all_ids(step:  buelon.core.step.Job, already: set | None = None, ha
 
 
 def temp_handle_step_args(step: buelon.core.step.Job):
-    args = []
-    for parent in step.parents:
-        if parent not in db:
-            handle_step(step, buelon.core.step.StepStatus.reset)
-            # has_none, tmp_ids = temp_get_all_ids(step)
-            # if has_none.get('has_none', False):
-            #     for step_id in tmp_ids:
-            #         remove_id(step_id)
-            # else:
-            #     handle_step(step, buelon.core.step.StepStatus.reset)
-            return False, None
-        args.append(db[parent])
-    return True, args
+    with lock:
+        args = []
+        for parent in step.parents:
+            if parent not in db:
+                handle_step(step, buelon.core.step.StepStatus.reset)
+                # has_none, tmp_ids = temp_get_all_ids(step)
+                # if has_none.get('has_none', False):
+                #     for step_id in tmp_ids:
+                #         remove_id(step_id)
+                # else:
+                #     handle_step(step, buelon.core.step.StepStatus.reset)
+                return False, None
+            args.append(db[parent])
+        return True, args
 
 
 def get_args(steps):
@@ -677,16 +717,17 @@ def get_args(steps):
     # args = [[db[parent] for parent in step.parents] for step in steps]
 
     # new
-    args = []
-    new_steps = []
-    for step in steps:
-        res, arg = temp_handle_step_args(step)
+    with lock:
+        args = []
+        new_steps = []
+        for step in steps:
+            res, arg = temp_handle_step_args(step)
 
-        if res:
-            args.append(arg)
-            new_steps.append(step)
+            if res:
+                args.append(arg)
+                new_steps.append(step)
 
-    return new_steps, args
+        return new_steps, args
 
 
 def hold_promise(s):
@@ -911,27 +952,26 @@ def auto_save():
     os.makedirs(dir, exist_ok=True)
     if not auto_saving:
         return
+
+    # Snapshot under the lock, serialize and write outside it.
+    with lock:
+        snapshot = {
+            'all_steps': [[status, step] for status, step in ALL_STEPS.values()],
+            'steps': [step for scope in STEPS.values() for steps in scope.values() for step in steps],
+            'done': list(done.values()),
+            'queued': list(queued.values()),
+            'errors': list(errors.values()),
+            'holds': [step for steps in holds.values() for step in steps],
+            'db': dict(db),
+        }
+
     with open(os.path.join(dir, 'all_steps'), 'wb') as f:
-        b = all_steps_to_bytes()
-        f.write(b)
-    with open(os.path.join(dir, 'steps'), 'wb') as f:
-        b = steps_to_bytes([step for scope in STEPS.values() for steps in scope.values() for step in steps])
-        f.write(b)
-    with open(os.path.join(dir, 'done'), 'wb') as f:
-        b = steps_to_bytes(list(done.values()))
-        f.write(b)
-    with open(os.path.join(dir, 'queued'), 'wb') as f:
-        b = steps_to_bytes(list(queued.values()))
-        f.write(b)
-    with open(os.path.join(dir, 'errors'), 'wb') as f:
-        b = steps_to_bytes(list(errors.values()))
-        f.write(b)
-    with open(os.path.join(dir, 'holds'), 'wb') as f:
-        b = steps_to_bytes([step for steps in holds.values() for step in steps])
-        f.write(b)
+        f.write(orjson.dumps([[status, step.to_json()] for status, step in snapshot['all_steps']]))
+    for name in ('steps', 'done', 'queued', 'errors', 'holds'):
+        with open(os.path.join(dir, name), 'wb') as f:
+            f.write(steps_to_bytes(snapshot[name]))
     with open(os.path.join(dir, 'db'), 'wb') as f:
-        b = orjson.dumps(db)
-        f.write(b)
+        f.write(orjson.dumps(snapshot['db']))
 
 
 def auto_load():
@@ -1266,23 +1306,24 @@ def get_all_worker_info(bi: bool = True):
 
 
 def get_job_parents_and_results(job_id: str, already: set | None = None):
-    already = already or set()  # <-- prevent infinite dependencies, should never happend though
+    with lock:
+        already = already or set()  # <-- prevent infinite dependencies, should never happend though
 
-    if job_id in already:
-        return None
+        if job_id in already:
+            return None
 
-    already.add(job_id)
-    job: buelon.core.step.Job = step_from_id(job_id)
+        already.add(job_id)
+        job: buelon.core.step.Job = step_from_id(job_id)
 
-    if job:
-        return {
-            'job': job.to_json(),
-            'result': db.get(job_id),
-            'parents': {
-                parent_id: get_job_parents_and_results(parent_id, already=already)
-                for parent_id in job.parents
+        if job:
+            return {
+                'job': job.to_json(),
+                'result': db.get(job_id),
+                'parents': {
+                    parent_id: get_job_parents_and_results(parent_id, already=already)
+                    for parent_id in job.parents
+                }
             }
-        }
 
 
 async def handle_messages(websocket: Connection):
@@ -1744,24 +1785,38 @@ class BiWorkerClient:
 
 def bi_on_hold(request: ServerRequest, data):
     uid = f'{uuid.uuid1()}'
-    jobs = get_steps_v2(**data)
 
-    if jobs:
-        for job in jobs:
-            holds_v2[request.client_id][job.id] = job
+    def release_back(_jobs):
+        """Return jobs to the queue and drop them from this client's holds."""
+        with lock:
+            upload_steps(_jobs)
+            client_holds = holds_v2.get(request.client_id)
+            if client_holds is not None:
+                for job in _jobs:
+                    client_holds.pop(job.id, None)
+
+    with lock:
+        jobs = get_steps_v2(**data)
+
+        if jobs:
+            client_holds = holds_v2.setdefault(request.client_id, {})
+            for job in jobs:
+                client_holds[job.id] = job
+
+        try:
+            jobs, args = get_args(jobs)
+        except:
+            release_back(jobs)
+            return
 
     try:
-        jobs, args = get_args(jobs)
         request.send_data(json.dumps([
             uid,
             steps_to_compressed_message(jobs),
             args
         ]).encode())
     except:
-        upload_steps(jobs)
-        for job in jobs:
-            if job.id in holds_v2[request.client_id]:
-                del holds_v2[request.client_id][job.id]
+        release_back(jobs)
 
 
 def bi_on_release(request: ServerRequest, data):
@@ -1770,12 +1825,15 @@ def bi_on_release(request: ServerRequest, data):
     steps = compressed_message_to_steps(steps)
     statuses = [buelon.core.step.StepStatus(status) for status in statuses]
 
-    for step, status, result in zip(steps, statuses, results):
-        db[step.id] = result
-        handle_step(step, status)
+    with lock:
+        for step, status, result in zip(steps, statuses, results):
+            db[step.id] = result
+            handle_step(step, status)
 
-    for job in steps:
-        holds_v2[request.client_id].pop(job.id, None)
+        client_holds = holds_v2.get(request.client_id)
+        if client_holds is not None:
+            for job in steps:
+                client_holds.pop(job.id, None)
 
 
 def bi_on_upload(request: ServerRequest, data):
@@ -1783,27 +1841,32 @@ def bi_on_upload(request: ServerRequest, data):
 
     print(f'uploading {len(steps):,} jobs')
 
-    for step in steps:
-        if step.parents:
-            ALL_STEPS[step.id] = [buelon.core.step.StepStatus.queued.value, step]
-            queued[step.id] = step
-        else:
-            ALL_STEPS[step.id] = [buelon.core.step.StepStatus.pending.value, step]
-            upload_step(step)
+    with lock:
+        for step in steps:
+            if step.parents:
+                ALL_STEPS[step.id] = [buelon.core.step.StepStatus.queued.value, step]
+                queued[step.id] = step
+            else:
+                ALL_STEPS[step.id] = [buelon.core.step.StepStatus.pending.value, step]
+                upload_step(step)
 
     request.send_data(b'ok')
 
 
 def bi_on_errors(request: ServerRequest, data):
     res = []
-    for step_id in errors:
-        if isinstance(db.get(step_id), dict) and 'error' in db[step_id] and 'trace' in db[step_id]:
-            res.append(db[step_id])
-        else:
-            res.append({'error': 'Unknown error', 'trace': ''})
+
+    with lock:
+        for step_id in errors:
+            if isinstance(db.get(step_id), dict) and 'error' in db[step_id] and 'trace' in db[step_id]:
+                res.append(db[step_id])
+            else:
+                res.append({'error': 'Unknown error', 'trace': ''})
+
+        errored_steps = list(errors.values())
 
     request.send_data(json.dumps([
-        steps_to_compressed_message(list(errors.values())),
+        steps_to_compressed_message(errored_steps),
         res
     ]).encode())
 
@@ -1811,47 +1874,51 @@ def bi_on_errors(request: ServerRequest, data):
 def bi_get_web_info(request: ServerRequest, workers_info: bool = False):
     info = {}
 
-    steps_len = sum([len(lst) for val in STEPS.values() for lst in val.values()])
-    holds_len = sum([len(lst) for lst in holds.values()])
+    with lock:
+        steps_len = sum([len(lst) for val in STEPS.values() for lst in val.values()])
+        holds_len = sum([len(lst) for lst in holds.values()])
 
-    done_len, queue_len, error_len = len(done), len(queued), len(errors)
-    total = steps_len + holds_len + done_len + queue_len + error_len
-    remaining = total - done_len
+        done_len, queue_len, error_len = len(done), len(queued), len(errors)
 
-    info['counts'] = {
-        'done': done_len, 'queued': queue_len, 'errors': error_len, 'jobs': steps_len, 'holds': holds_len,
-        'remaining': remaining, 'total': total
-    }
+        total = steps_len + holds_len + done_len + queue_len + error_len
+        remaining = total - done_len
 
-    if workers_info:
-        info['workers'] = bi_get_all_worker_info(request)
+        info['counts'] = {
+            'done': done_len, 'queued': queue_len, 'errors': error_len, 'jobs': steps_len, 'holds': holds_len,
+            'remaining': remaining, 'total': total
+        }
+
+        if workers_info:
+            info['workers'] = bi_get_all_worker_info(request)
 
     return info
 
 
 def bi_get_all_worker_info(request: ServerRequest):
-    _workers = json.loads(json.dumps(workers))
-    # _holds_v2: dict[str, dict[str, buelon.core.step.Job]] = json.loads(json.dumps(holds_v2))
+    with lock:
+        _workers = json.loads(json.dumps(workers))
+        # _holds_v2: dict[str, dict[str, buelon.core.step.Job]] = json.loads(json.dumps(holds_v2))
 
-    for client_id, worker_info in _workers.items():
-        client_holds = holds_v2.get(client_id, {})
-        if client_holds:
-            _holds: list[buelon.core.step.Job] = list(client_holds.values())
-            _holds[:] = [s.to_json() for s in _holds]
-            _holds: list[dict]
-            worker_info['jobs'] = _holds
-            worker_info['holds'] = len(_holds)
+        for client_id, worker_info in _workers.items():
+            client_holds = holds_v2.get(client_id, {})
+            if client_holds:
+                _holds: list[buelon.core.step.Job] = list(client_holds.values())
+                _holds[:] = [s.to_json() for s in _holds]
+                _holds: list[dict]
+                worker_info['jobs'] = _holds
+                worker_info['holds'] = len(_holds)
 
-    try:
-        return _workers
-    except:
-        return {}
+        try:
+            return _workers
+        except:
+            return {}
 
 
 def bi_handle_messages(request: ServerRequest):
     global errors, holds
     client_id = request.client_id
-    worker_info = workers[client_id]
+    with lock:
+        worker_info = workers.setdefault(client_id, {})
 
     method = request.method
     data = json.loads(request.data.decode())
@@ -1862,7 +1929,8 @@ def bi_handle_messages(request: ServerRequest):
         bi_on_release(request, data)
     elif method == 'worker-info':
         if isinstance(data, dict):
-            worker_info.update(data)
+            with lock:
+                worker_info.update(data)
     elif method == 'web-info':
         info = bi_get_web_info(request, bool(data))
         request.send_data(json.dumps(info).encode())
@@ -1878,69 +1946,120 @@ def bi_handle_messages(request: ServerRequest):
         status = _job_status(data)
         request.send_data(status.encode())
     elif method == 'job-status-bulk':
-        statuses = {job_id: _job_status(job_id) for job_id in data}
+        with lock:
+            statuses = {job_id: _job_status(job_id) for job_id in data}
         request.send_data(json.dumps(statuses).encode())
     elif method == 'errors':
         bi_on_errors(request, data)
     elif method == 'reset-errors':
-        _steps = list(errors.values())
-        errors = {}
-        upload_steps(_steps)
+        with lock:
+            _steps = list(errors.values())
+            errors = {}
+            upload_steps(_steps)
         request.send_data(b'ok')
     elif method == 'cancel-errors':
         # for step in list(errors.values()):
         #     for step_id in get_all_ids(step):
         #         remove_id(step_id)
         # # # Remove all steps
-        for _, lst in ALL_STEPS.items():
-            __, s = lst
-            remove_id(s.id)
+        with lock:
+            for _, lst in ALL_STEPS.items():
+                __, s = lst
+                remove_id(s.id)
         # # for sid in ALL_STEPS:
         # #     remove_id(sid)
         # send(s, b'ok')
         request.send_data(b'ok')
     elif method == 'get-all-info':
+        # Snapshot under the lock; compress outside it.
+        with lock:
+            _steps = [step for scope in STEPS.values() for steps in scope.values() for step in steps]
+            _done = list(done.values())
+            _queued = list(queued.values())
+            _errors = list(errors.values())
+            _db = dict(db)
         request.send_data(json.dumps([
-            steps_to_compressed_message([step for scope in STEPS.values() for steps in scope.values() for step in steps]),
-            steps_to_compressed_message(list(done.values())),
-            steps_to_compressed_message(list(queued.values())),
-            steps_to_compressed_message(list(errors.values())),
-            db
+            steps_to_compressed_message(_steps),
+            steps_to_compressed_message(_done),
+            steps_to_compressed_message(_queued),
+            steps_to_compressed_message(_errors),
+            _db
         ]).encode())
     elif method == 'save':
         auto_save()
         request.send_data(b'ok')
 
 
+def bi_release_client(client_id: str) -> int:
+    """Requeue everything `client_id` still holds and drop its registration.
+
+    Idempotent: calling it for an unknown or already-released client is a no-op, so it
+    is safe from both `bi_on_close` and the `bi_on_finally` safety net.
+
+    Returns the number of jobs put back on the queue.
+    """
+    with lock:
+        # Deregister first. If upload_steps somehow raised afterwards we would still
+        # rather leak the jobs than leave `send_open` holding a dead id, which would
+        # make every later on_finally skip its cleanup for good.
+        send_open.discard(client_id)
+
+        held = holds_v2.pop(client_id, None)
+        jobs = list(held.values()) if isinstance(held, dict) else []
+
+        if isinstance(held, dict):
+            held.clear()
+
+        d = workers.pop(client_id, None)
+        if isinstance(d, dict):
+            d.clear()
+
+        if jobs:
+            # At-least-once: the worker may still be running these. The hub has no way
+            # to know, and losing them is worse than running them twice.
+            upload_steps(jobs)
+
+    return len(jobs)
+
+
 def bi_on_open(open_info: OnOpenInfo):
-    holds_v2[open_info.client_id] = {}
-    workers[open_info.client_id] = {}
+    # Send connection only -- bisocket does not call this for the receive socket.
+    with lock:
+        holds_v2[open_info.client_id] = {}
+        workers[open_info.client_id] = {}
+        send_open.add(open_info.client_id)
 
 
 def bi_on_close(close_info: OnCloseInfo):
-    upload_steps(list(holds_v2[close_info.client_id].values()))
-    d = holds_v2.pop(close_info.client_id, None)
-    if isinstance(d, dict):
-        d.clear()
-    
-    d = workers.pop(close_info.client_id, None)
-    if isinstance(d, dict):
-        d.clear()
+    # Send connection only, and bisocket calls it from a `finally`, so it always runs.
+    # This is the authoritative teardown: no more requests can arrive for this client.
+    n = bi_release_client(close_info.client_id)
+
+    if n:
+        print(f'client {close_info.client_id} closed, requeued {n:,} held job(s)')
 
 
 def bi_on_finally(finally_info: OnFinallyInfo):
-    if finally_info.client_id:
-        try:
-            upload_steps(list(holds_v2[finally_info.client_id].values()))
-        except: pass
+    # Fires for BOTH of a client's connections. If the send side is still open, this
+    # is the receive socket going away on its own -- the worker is still connected and
+    # running jobs, so releasing its holds here would hand them to a second worker
+    # while the first is mid-flight. Leave it alone; `bi_on_close` will clean up when
+    # the send side actually ends.
+    client_id = finally_info.client_id
 
-        d = holds_v2.pop(finally_info.client_id, None)
-        if isinstance(d, dict):
-            d.clear()
-        
-        d = workers.pop(finally_info.client_id, None)
-        if isinstance(d, dict):
-            d.clear()
+    if not client_id:
+        return
+
+    with lock:
+        still_live = client_id in send_open
+
+    if still_live:
+        print(f'client {client_id} lost its receive socket; send socket still open, '
+              f'keeping its held jobs')
+        return
+
+    # Send side already closed, or never opened: safety net only.
+    bi_release_client(client_id)
 
 
 def bi_test_server():
