@@ -527,11 +527,19 @@ def reset_errors_from_server():
 
 
 def cancel_errors_from_server():
+    """Cancel every pipeline containing an error. Returns {'jobs', 'pipelines'} or None."""
     async def cor():
-        # async with WorkerClient(settings.worker.host, settings.worker.port, settings.worker.scopes.split(',')) as client:
-        #     await client.cancel_errors()
         async with BiWorkerClient(settings.worker.host, settings.worker.port, settings.worker.scopes.split(',')) as client:
             return await client.cancel_errors()
+
+    return asyncio.run(cor())
+
+
+def delete_all_from_server():
+    """Wipe ALL job state on the hub. Returns {'jobs'} or None."""
+    async def cor():
+        async with BiWorkerClient(settings.worker.host, settings.worker.port, settings.worker.scopes.split(',')) as client:
+            return await client.delete_all()
 
     return asyncio.run(cor())
     WORKER_HOST = settings.worker.host  # = os.environ.get('PIPE_WORKER_HOST', 'localhost')
@@ -1680,10 +1688,18 @@ class BiWorkerClient:
     def on_receive(self, msg: BiMessage):
         self.messages[msg.request_id] = msg
 
-    async def get_response(self, request_id: str, wait_time: float | int = 0.1) -> BiMessage | None:
+    async def get_response(self, request_id: str, wait_time: float | int = 0.1,
+                           timeout: float | int | None = None) -> BiMessage | None:
+        # timeout=None preserves the original unbounded wait for existing callers.
+        # Generalising that to every call is #7; for now only the destructive admin
+        # commands opt in, because hanging forever is worse than reporting a failure.
+        deadline = None if timeout is None else time.time() + timeout
+
         while request_id not in self.messages:
+            if deadline is not None and time.time() > deadline:
+                return None
             await asyncio.sleep(wait_time)
-        
+
         return self.messages.pop(request_id, None)
 
     async def hold(self, limit: int = 100, reverse: bool = False, single_job: str | None = None, wait_time: float | int = 0.1) -> list[str, list[buelon.step.Job], list[any]]:
@@ -1760,11 +1776,17 @@ class BiWorkerClient:
         # await self.websocket.recv()
         asyncio.create_task(self.get_response(request_id))
 
-    async def cancel_errors(self):
-        # await self.websocket.send(compress_method('cancel-errors', ''))
+    async def cancel_errors(self, timeout: float | int = 120):
+        """Cancel every pipeline containing an error. Returns {'jobs', 'pipelines'}."""
         request_id = await self.client.asend_obj('cancel-errors', '')
-        # await self.websocket.recv()
-        asyncio.create_task(self.get_response(request_id))
+        msg = await self.get_response(request_id, timeout=timeout)
+        return msg.get_obj() if msg is not None else None
+
+    async def delete_all(self, timeout: float | int = 120):
+        """Wipe ALL job state on the hub. Returns {'jobs'}."""
+        request_id = await self.client.asend_obj('delete-all', '')
+        msg = await self.get_response(request_id, timeout=timeout)
+        return msg.get_obj() if msg is not None else None
 
     async def get_all_info(self):
         # await self.websocket.send(compress_method('get-all-info', ''))
@@ -1914,6 +1936,88 @@ def bi_get_all_worker_info(request: ServerRequest):
             return {}
 
 
+def remove_ids_from_steps(step_ids: set[str]) -> int:
+    """Drop `step_ids` from the pending-dispatch queues. Returns how many were removed.
+
+    `remove_id` deliberately does not do this -- there is no `job_id -> (scope, priority)`
+    index yet, so it cannot find a job in `STEPS` cheaply (BUGS.md #4). The operator
+    commands below have to actually stop a job from being handed out, so they scan the
+    queues instead. That is linear in the queue size, which is fine for a rare admin
+    command and would not be fine on the per-job path.
+    """
+    with lock:
+        removed = 0
+
+        for scope, priorities in list(STEPS.items()):
+            for priority, jobs in list(priorities.items()):
+                keep = [job for job in jobs if job.id not in step_ids]
+                removed += len(jobs) - len(keep)
+                priorities[priority] = keep
+
+        return removed
+
+
+def remove_ids_from_holds(step_ids: set[str]) -> int:
+    """Drop `step_ids` from every client's hold set.
+
+    Without this a worker disconnecting after a cancel would requeue the very jobs the
+    operator just removed.
+    """
+    with lock:
+        removed = 0
+
+        for client_holds in holds_v2.values():
+            for step_id in step_ids & set(client_holds):
+                del client_holds[step_id]
+                removed += 1
+
+        return removed
+
+
+def cancel_errored_jobs() -> tuple[int, int]:
+    """Remove every job belonging to a pipeline that contains an error.
+
+    Returns (jobs_removed, pipelines_cancelled).
+    """
+    with lock:
+        pipelines = len(errors)
+
+        # Collect the full id set BEFORE removing anything: get_all_ids walks the DAG
+        # through ALL_STEPS, so removing as we go would truncate later walks.
+        ids: set[str] = set()
+        for step in list(errors.values()):
+            ids |= get_all_ids(step)
+
+        for step_id in ids:
+            remove_id(step_id)
+
+        remove_ids_from_steps(ids)
+        remove_ids_from_holds(ids)
+
+        return len(ids), pipelines
+
+
+def delete_all_jobs() -> int:
+    """Wipe all job state on the hub. Returns the number of jobs removed."""
+    with lock:
+        count = len(ALL_STEPS)
+
+        ALL_STEPS.clear()
+        STEPS.clear()
+        queued.clear()
+        done.clear()
+        errors.clear()
+        db.clear()
+
+        # Leave the client registrations themselves alone -- those track live
+        # connections -- but empty their hold sets so a later disconnect cannot
+        # requeue jobs that no longer exist.
+        for client_holds in holds_v2.values():
+            client_holds.clear()
+
+        return count
+
+
 def bi_handle_messages(request: ServerRequest):
     global errors, holds
     client_id = request.client_id
@@ -1958,18 +2062,13 @@ def bi_handle_messages(request: ServerRequest):
             upload_steps(_steps)
         request.send_data(b'ok')
     elif method == 'cancel-errors':
-        # for step in list(errors.values()):
-        #     for step_id in get_all_ids(step):
-        #         remove_id(step_id)
-        # # # Remove all steps
-        with lock:
-            for _, lst in ALL_STEPS.items():
-                __, s = lst
-                remove_id(s.id)
-        # # for sid in ALL_STEPS:
-        # #     remove_id(sid)
-        # send(s, b'ok')
-        request.send_data(b'ok')
+        n_jobs, n_pipelines = cancel_errored_jobs()
+        print(f'cancel-errors: removed {n_jobs:,} job(s) across {n_pipelines:,} errored pipeline(s)')
+        request.send_data(json.dumps({'jobs': n_jobs, 'pipelines': n_pipelines}).encode())
+    elif method == 'delete-all':
+        n_jobs = delete_all_jobs()
+        print(f'delete-all: removed {n_jobs:,} job(s)')
+        request.send_data(json.dumps({'jobs': n_jobs}).encode())
     elif method == 'get-all-info':
         # Snapshot under the lock; compress outside it.
         with lock:

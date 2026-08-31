@@ -224,6 +224,40 @@ def fetch_errors(args):
     #     print(f'Trace: \n  {_trace}\n\n--**--\n')
 
 
+def delete_jobs(args):
+    """`bue delete` -- cancel errored pipelines, or wipe everything with --all."""
+    if not args.all:
+        result = pete.hub.cancel_errors_from_server()
+
+        if result is None:
+            print('No response from the hub. Nothing was confirmed deleted.')
+            return
+
+        print(f'Cancelled {result.get("jobs", 0):,} job(s) '
+              f'across {result.get("pipelines", 0):,} errored pipeline(s).')
+        return
+
+    if not args.yes:
+        print('This deletes ALL jobs on the hub, including healthy pipelines that are')
+        print('still queued or running. It cannot be undone.')
+        try:
+            answer = input('Type "delete all" to confirm: ').strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print('\nAborted.')
+            return
+        if answer != 'delete all':
+            print('Aborted.')
+            return
+
+    result = pete.hub.delete_all_from_server()
+
+    if result is None:
+        print('No response from the hub. Nothing was confirmed deleted.')
+        return
+
+    print(f'Deleted {result.get("jobs", 0):,} job(s).')
+
+
 def has_postgres_env_vars() -> bool:
     return all([var in os.environ for var in [
         'POSTGRES_HOST', 'POSTGRES_PORT', 'POSTGRES_USER', 'POSTGRES_PASSWORD', 'POSTGRES_DATABASE']])
@@ -304,7 +338,14 @@ def cli():
     # reset_parser.add_argument('-w', '--include_working', default='false', choices=['true', 'false'], help='Whether to reset status \'working\'')
 
     # Delete steps
-    delete_parser = subparsers.add_parser('delete', help='Delete steps')
+    delete_parser = subparsers.add_parser(
+        'delete', help='Delete jobs (errored pipelines by default)')
+    delete_parser.add_argument(
+        '-a', '--all', default=False, action=argparse.BooleanOptionalAction,
+        help='Delete ALL jobs, including healthy queued/running pipelines')
+    delete_parser.add_argument(
+        '-y', '--yes', default=False, action=argparse.BooleanOptionalAction,
+        help='Skip the confirmation prompt for --all')
     # delete_parser.add_argument('-b', '--binding', required=worker_binding_required, help='Main binding for hub (host:port)')
     # delete_parser.add_argument('-s', '--step_id', help='Step ID to delete')
 
@@ -383,7 +424,7 @@ def cli():
     elif args.command == 'status':
         display_status(args)
     elif args.command == 'delete':
-        pete.hub.cancel_errors_from_server()
+        delete_jobs(args)
     elif args.command == 'errors':
         fetch_errors(args)
     elif args.command == 'repair':
