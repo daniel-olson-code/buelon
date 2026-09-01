@@ -219,8 +219,25 @@ def handle_step(step:  buelon.core.step.Job, status: buelon.core.step.StepStatus
             for step_id in get_all_ids(step):
                 remove_id(step_id)
         elif status == buelon.core.step.StepStatus.error:
-            ALL_STEPS[step.id] = [status.value, step]
-            errors[step.id] = step
+            # `!retries` used to be parsed and then never read by anything -- BUGS.md
+            # #14. A failed job goes back on the dispatch queue until it has burned
+            # through its budget; only then does it land in `errors`.
+            #
+            # The counter lives on the job itself (`Job.attempts`) rather than in a
+            # hub-side dict, so it survives being requeued into STEPS, dispatched, and
+            # released back by a worker -- the object handed to us here is the worker's
+            # deserialized copy, and `attempts` rides along in its `__dict__`.
+            step.attempts = (getattr(step, 'attempts', 0) or 0) + 1
+            retries = getattr(step, 'retries', 0) or 0
+
+            if step.attempts <= retries:
+                print(f'job {step.id} ({step.name}) failed, retrying '
+                      f'(attempt {step.attempts} of {retries + 1})')
+                ALL_STEPS[step.id] = [buelon.core.step.StepStatus.pending.value, step]
+                upload_step(step)
+            else:
+                ALL_STEPS[step.id] = [status.value, step]
+                errors[step.id] = step
         elif status == buelon.core.step.StepStatus.reset:
             for step in get_all_steps(step).values():
                 remove_id(step.id, True)
@@ -248,6 +265,25 @@ def handle_step(step:  buelon.core.step.Job, status: buelon.core.step.StepStatus
                 if all([i in done for i in ids]):
                     for step_id in ids:
                         remove_id(step_id)
+        else:
+            # `working`, `queued` and `unknown` have no branch of their own. Reaching the
+            # end of the chain with nothing written used to destroy the job: `get_steps_v2`
+            # has already taken it out of `STEPS` and `bi_on_release` pops it out of
+            # `holds_v2`, so no dict referenced it any more and `_job_status` reported
+            # `'unknown'`. `create_return_value` lets user code return an arbitrary
+            # `StepStatus` in a tuple, so this is reachable from a `.bue` script. Record it
+            # as an error instead -- visible in `bue errors`, and cancellable. BUGS.md #13.
+            print(f'unhandled job status {status.name!r} for job {step.id} '
+                  f'({step.name}) -- recording as an error')
+            ALL_STEPS[step.id] = [buelon.core.step.StepStatus.error.value, step]
+            errors[step.id] = step
+            existing = db.get(step.id)
+            if not (isinstance(existing, dict) and 'error' in existing and 'trace' in existing):
+                db[step.id] = {
+                    'error': f'Unhandled job status {status.name!r} returned by job '
+                             f'{step.name!r} ({step.id})',
+                    'trace': '',
+                }
 
 # endregion
 
@@ -2427,6 +2463,9 @@ class BiWorkerJob:
         self.start = time.time()
 
     def _run(self):
+        # NOTE: `!timeout` is NOT enforced on this path. It runs the job on a bare
+        # thread, and a Python thread cannot be interrupted from outside, so there is
+        # nothing to cancel. The live worker uses `aput`/`_arun`, which can. BUGS.md #14.
         print('handling', self.step.name)
         try:
             r: buelon.core.step.Result = self.step.run(*self.arg, mut=self.mut)
@@ -2439,9 +2478,33 @@ class BiWorkerJob:
 
     async def _arun(self):
         print('handling', self.step.name)
+        # `!timeout` was parsed and then read by nothing -- BUGS.md #14. A hung job held
+        # its worker slot for the whole 20-minute `max_time`. `<= 0` (the `Job` class
+        # default) still means "no timeout".
+        #
+        # Best-effort by construction: `wait_for` cancels the *await*, which really does
+        # stop a coroutine job, but a plain `def` job runs under `asyncio.to_thread` and
+        # that thread keeps going after we stop waiting for it. Either way the slot is
+        # freed and the job is reported as an error rather than occupying the worker.
+        timeout = getattr(self.step, 'timeout', 0.0) or 0.0
         try:
-            r: buelon.core.step.Result = await self.step.arun(*self.arg, mut=self.mut)
+            coro = self.step.arun(*self.arg, mut=self.mut)
+            if timeout > 0:
+                r: buelon.core.step.Result = await asyncio.wait_for(coro, timeout)
+            else:
+                r: buelon.core.step.Result = await coro
             self.status, self.result = r.status, r.data
+        except asyncio.TimeoutError:
+            # Must precede the generic handler: from 3.11 on `asyncio.TimeoutError` is
+            # the builtin `TimeoutError`, an ordinary `Exception` subclass.
+            msg = (f'job {self.step.name!r} ({self.step.id}) exceeded its '
+                   f'!timeout of {timeout:g} seconds')
+            print(msg)
+            self.status, self.result = buelon.core.step.StepStatus.error, {
+                'error': msg,
+                'trace': '',
+                'worker_name': f'{settings.worker.info.get("name", "Unknown")}',
+            }
         except Exception as e:
             print(e)
             traceback.print_exc()

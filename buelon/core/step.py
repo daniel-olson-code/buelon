@@ -179,6 +179,11 @@ class Step(pipe_util.PipeObject):
     velocity: float = None
     retries: int = 0
     timeout: float = 0.0
+    # How many times this job has already come back as an error. Counted hub-side in
+    # `handle_step` and compared against `retries` -- BUGS.md #14. It rides along in
+    # `__dict__` (so it survives the requeue -> dispatch -> release round trip) and
+    # defaults to 0 for every job built before the field existed.
+    attempts: int = 0
 
     parents: list[str] = None
     children: List[str] = None
