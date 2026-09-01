@@ -44,7 +44,6 @@ import buelon
 # I/O must stay outside it -- compressing a full job batch is slow enough to serialize
 # every other worker's hold if it happens under the lock.
 lock = threading.RLock()
-boo_db = buelon.helpers.postgres.get_postgres_from_env()
 
 
 ALL_STEPS: dict[str, list[str, buelon.step.Job]] = {}
