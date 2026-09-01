@@ -236,9 +236,13 @@ def handle_step(step:  buelon.core.step.Job, status: buelon.core.step.StepStatus
             if step.children:
                 for step_id in step.children:
                     if step_id in queued:
-                        ALL_STEPS[step.id] = [status.pending.value, ALL_STEPS[step.id][1]]
-                        upload_step(queued[step_id])
-                        del queued[step_id]
+                        # Promote the *child* out of `queued` and into the dispatch
+                        # queue. The status write is the child's, not the parent's --
+                        # the parent's `success` entry set above must survive. See
+                        # BUGS.md #9.
+                        child = queued.pop(step_id)
+                        ALL_STEPS[step_id] = [status.pending.value, child]
+                        upload_step(child)
             else:
                 ids = get_all_ids(step)
                 if all([i in done for i in ids]):
@@ -709,7 +713,9 @@ def save_from_server():
 def display_text():
     with lock:
         steps_len = sum([len(lst) for val in STEPS.values() for lst in val.values()])
-        holds_len = sum([len(lst) for lst in holds.values()])
+        # `holds` is the dead websocket path's dict; the live bi path checks jobs out into
+        # `holds_v2[client_id][job_id]` (BUGS.md #10).
+        holds_len = sum([len(client_holds) for client_holds in holds_v2.values()])
 
         done_len, queue_len, error_len = len(done), len(queued), len(errors)
 
@@ -2106,7 +2112,9 @@ def bi_get_web_info(request: ServerRequest, workers_info: bool = False):
 
     with lock:
         steps_len = sum([len(lst) for val in STEPS.values() for lst in val.values()])
-        holds_len = sum([len(lst) for lst in holds.values()])
+        # `holds` is the dead websocket path's dict; the live bi path checks jobs out into
+        # `holds_v2[client_id][job_id]` (BUGS.md #10).
+        holds_len = sum([len(client_holds) for client_holds in holds_v2.values()])
 
         done_len, queue_len, error_len = len(done), len(queued), len(errors)
 
