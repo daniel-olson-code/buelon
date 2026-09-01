@@ -39,6 +39,7 @@ def run_code_on_server_until_done(code: str, sleep_time: float | int = 5.0, verb
             if job.id in dones:
                 verbose_text += f'{job.id} done\n'
                 yield True
+                continue
 
             status = job_statuses.get(job.id, 'unknown')
             is_done = status in {'error', 'success', 'cancel', 'unknown'}
