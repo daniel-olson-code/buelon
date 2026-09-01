@@ -142,7 +142,12 @@ class WorkerSettings(YamlObj):
         self.reverse = settings.get('reverse', DEFAULT_SETTINGS['worker']['reverse'])
 
         _info = settings.get('info', DEFAULT_SETTINGS['worker']['info'])
-        self.info = {} if not isinstance(_info, dict) else _info
+        # Copy, so a consumer renaming the worker (web.py) cannot mutate either
+        # the parsed yaml or DEFAULT_SETTINGS itself.
+        self.info = {} if not isinstance(_info, dict) else dict(_info)
+        # `info` accepts any dict, so `info: {}` in settings.yaml would otherwise
+        # leave consumers with a missing 'name'.
+        self.info.setdefault('name', DEFAULT_SETTINGS['worker']['info']['name'])
 
 
 class BucketServerSettings(YamlObj):

@@ -17,7 +17,7 @@ from buelon.hub import BiWorkerClient, settings, compressed_message_to_steps
 
 app = FastAPI()
 worker_client: BiWorkerClient | None = None
-settings.worker.info['name'] = f"Web App ({settings.worker.info['name']})"
+settings.worker.info['name'] = f"Web App ({settings.worker.info.get('name', 'Unknown')})"
 
 
 def get_static_file(filename: str) -> str:
@@ -159,7 +159,7 @@ async def api_run_job(job: Job):
     # execution_txt = f'buelon.worker.work({repr(job.id)})'
     # command = f'{sys.executable} -u -c "{import_txt};{rename_worker_txt};{execution_txt}"'
     import_txt = 'import buelon'
-    new_name = f"Web App Subprocess ({settings.worker.info['name']})"
+    new_name = f"Web App Subprocess ({settings.worker.info.get('name', 'Unknown')})"
     rename_worker_txt = f"buelon.settings.settings.worker.info['name'] = {repr(new_name)}"
     execution_txt = f'buelon.worker.work({repr(job.id)})'
 
