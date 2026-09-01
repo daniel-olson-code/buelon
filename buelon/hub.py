@@ -2034,16 +2034,23 @@ def bi_on_hold(request: ServerRequest, data):
     with lock:
         jobs = get_steps_v2(**data)
 
+        try:
+            # Register in holds_v2 only AFTER get_args has filtered the batch. get_args
+            # drops jobs whose parent results are missing from `db` and resets them
+            # (which re-queues them into STEPS); registering first left those dropped
+            # jobs in holds_v2 forever, and every disconnect requeued them again.
+            jobs, args = get_args(jobs)
+        except:
+            traceback.print_exc()
+            # Nothing is registered yet, so this only puts the popped jobs back on the
+            # queue. release_back's holds_v2 pop is a no-op here.
+            release_back(jobs)
+            return
+
         if jobs:
             client_holds = holds_v2.setdefault(request.client_id, {})
             for job in jobs:
                 client_holds[job.id] = job
-
-        try:
-            jobs, args = get_args(jobs)
-        except:
-            release_back(jobs)
-            return
 
     try:
         request.send_data(json.dumps([
@@ -2052,6 +2059,7 @@ def bi_on_hold(request: ServerRequest, data):
             args
         ]).encode())
     except:
+        traceback.print_exc()
         release_back(jobs)
 
 
