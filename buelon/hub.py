@@ -987,20 +987,6 @@ def chunks(lst, n):
         yield lst[i:i + n]
 
 
-def worker():
-    asyncio.run(_worker())
-
-
-async def _worker():
-    cleaner_task = asyncio.create_task(buelon.worker_v1.cleaner())
-
-    for i in range(100):
-        print('work', i)
-        await work()
-
-    cleaner_task.cancel()
-
-
 async def work(single_step: str | None = None):
     async def run(step, arg):
         step: buelon.core.step.Job
