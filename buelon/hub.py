@@ -3,9 +3,7 @@ import os
 import uuid
 import time
 import json
-import socket
 import asyncio
-import datetime
 import traceback
 import threading
 import contextlib
@@ -13,7 +11,6 @@ from dataclasses import dataclass
 from typing import Any
 
 import orjson
-import asyncio_pool
 
 from buelon.settings import settings
 import buelon
@@ -75,11 +72,6 @@ send_open: set[str] = set()
 
 db: dict[str, Any] = {}  # : dict[str, bytes] = {}
 
-step_count = 10
-END_TOKEN = b'[-_-]'
-SPLIT_TOKEN = b'|(--)|'
-SPLIT_TOKEN2 = b'|{**}|'
-LENGTH_OF_END_TOKEN = len(END_TOKEN)
 
 preset_priorities = list(range(100, -1, -1)) # 100 - 0
 
@@ -122,39 +114,6 @@ UPLOAD_RESPONSE_TIMEOUT = 300.0
 # endregion
 
 # region handling steps
-
-def get_steps(scopes: list[str], limit: int = 100):
-    result = []
-    skip = set()
-
-    while len(result) < limit:
-        got_data = False
-
-        for s in scopes:
-            r = []
-
-            if s not in skip and s in STEPS:
-                for i in preset_priorities:
-                    if i in STEPS[s] and STEPS[s][i]:
-                        r.extend(STEPS[s][i][:step_count])
-                        STEPS[s][i] = STEPS[s][i][step_count:]
-                        break
-
-            if not r:
-                skip.add(s)
-            else:
-                got_data = True
-
-            result.extend(r)
-
-            if len(result) >= limit:
-                break
-
-        if not got_data:
-            break
-
-    return result
-
 
 def get_steps_v2(scopes: list[str], limit: int = 100, reverse: bool = False, single_step: str | None = None):
     with lock:
@@ -449,62 +408,7 @@ def bytes_to_all_steps(data: bytes) -> None:
 
 # endregion
 
-# region socket communication
-
-def receive(conn: socket.socket) -> bytes:
-    data = b''
-    while not data.endswith(END_TOKEN):
-        v = conn.recv(1024)
-        if not v:
-            # If the connection is closed, we'll break out of the loop
-            break
-        data += v
-
-    if not data.endswith(END_TOKEN):
-        # If we broke out of the loop and don't have the end token,
-        # it means the connection was closed prematurely.
-        try:
-            decoded_data = data.decode()
-        except UnicodeDecodeError:
-            decoded_data = repr(data)
-        raise ValueError(f'Invalid value received: `{decoded_data}`')
-
-    return data[:-LENGTH_OF_END_TOKEN]
-
-
-def send(conn: socket.socket, data: bytes) -> None:
-    conn.sendall(data+END_TOKEN)
-
-# endregion
-
 # region client
-
-@contextlib.contextmanager
-def make_promise(scopes: list[str], reverse: bool = False, single_step: str | None = None):
-    WORKER_HOST = settings.worker.host  # = os.environ.get('PIPE_WORKER_HOST', 'localhost')
-    WORKER_PORT = settings.worker.port  # = int(os.environ.get('PIPE_WORKER_PORT', 65432))
-    # with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    try:
-        # s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        s.connect((WORKER_HOST, WORKER_PORT))
-        send(s, SPLIT_TOKEN.join([b'get', orjson.dumps({'scopes': scopes, 'reverse': reverse, 'single_step': single_step})]))
-        data = receive(s)
-        steps, args = data.split(SPLIT_TOKEN)
-        # print(args)
-
-        def commit(steps: list[buelon.core.step.Job], statuses: list[buelon.core.step.StepStatus], results: list[Any]):
-            send(s, SPLIT_TOKEN.join([
-                steps_to_bytes(steps),
-                orjson.dumps([status.value for status in statuses]),
-                orjson.dumps(results)
-            ]))
-            receive(s)
-
-        yield bytes_to_steps(steps), orjson.loads(args), commit
-    finally:
-        s.close()
-
 
 def upload_file_to_server(file_path: str, return_jobs: bool = False) -> None | list[buelon.core.step.Job]:
     with open(file_path) as f:
@@ -515,85 +419,23 @@ def upload_file_to_server(file_path: str, return_jobs: bool = False) -> None | l
 
 def upload_code_to_server(code: str, return_jobs: bool = False) -> None | list[buelon.core.step.Job]:
     return bi_test_upload('code', code, return_jobs)
-    chunk = []
-    all_jobs = []
-
-    for step in buelon.core.pipe_interpreter.generate_steps_from_code(code):
-        chunk.append(step)
-        if len(chunk) >= 500:
-            upload_steps_to_server(chunk)
-            chunk = []
-
-        if return_jobs:
-            all_jobs.append(step)
-
-    if chunk:
-        upload_steps_to_server(chunk)
-
-    if return_jobs:
-        return all_jobs
-
-
-def upload_steps_to_server(steps: list[buelon.core.step.Job]):
-    WORKER_HOST = settings.worker.host  # = os.environ.get('PIPE_WORKER_HOST', 'localhost')
-    WORKER_PORT = settings.worker.port  # = int(os.environ.get('PIPE_WORKER_PORT', 65432))
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        s.connect((WORKER_HOST, WORKER_PORT))
-        send(s, SPLIT_TOKEN.join([b'upload', steps_to_bytes(steps)]))
-        receive(s)
 
 
 def display_from_server(prefix: str = '', suffix: str = '', return_value: bool = False):
     async def d():
-        # async with WorkerClient(settings.worker.host, settings.worker.port, settings.worker.scopes.split(',')) as client:
-        #     r = await client.display()
-        #     return (prefix + r + suffix) if return_value else print(r)
         async with BiWorkerClient(settings.worker.host, settings.worker.port, settings.worker.scopes.split(',')) as client:
             r = await client.display()
             return (prefix + r + suffix) if return_value else print(r)
     return asyncio.run(d())
 
-    WORKER_HOST = settings.worker.host  # = os.environ.get('PIPE_WORKER_HOST', 'localhost')
-    WORKER_PORT = settings.worker.port  # = int(os.environ.get('PIPE_WORKER_PORT', 65432))
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        s.connect((WORKER_HOST, WORKER_PORT))
-        send(s, SPLIT_TOKEN.join([b'display', b'nothing']))
-        data = receive(s)
-    
-    r = prefix + data.decode('utf-8') + suffix
-    
-    if return_value:
-        return r
-    
-    print(r)
-
 
 def display_errors_from_server():
-    # WORKER_HOST = settings.worker.host  # = os.environ.get('PIPE_WORKER_HOST', 'localhost')
-    # WORKER_PORT = settings.worker.port  # = int(os.environ.get('PIPE_WORKER_PORT', 65432))
-    # with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-    #     s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-    #     s.connect((WORKER_HOST, WORKER_PORT))
-    #     send(s, SPLIT_TOKEN.join([b'errors', b'nothing']))
-    #     data = receive(s)
-    # # print(data.decode('utf-8'))
-    # steps, _errors = data.split(SPLIT_TOKEN)
-    # steps = bytes_to_steps(steps)
-    # _errors = orjson.loads(_errors)
-
     async def cor():
-        # async with WorkerClient(settings.worker.host, settings.worker.port, settings.worker.scopes.split(',')) as client:
-        #     steps, errors = await client.errors()
-        #     return compressed_message_to_steps(steps), errors
         async with BiWorkerClient(settings.worker.host, settings.worker.port, settings.worker.scopes.split(',')) as client:
             steps, errors = await client.errors()
             return compressed_message_to_steps(steps), errors
 
     steps, _errors = asyncio.run(cor())
-
-    #
 
     output = []
 
@@ -613,17 +455,8 @@ def reset_errors_from_server():
     async def cor():
         async with BiWorkerClient(settings.worker.host, settings.worker.port, settings.worker.scopes.split(',')) as client:
             await client.reset_errors()
-        # async with WorkerClient(settings.worker.host, settings.worker.port, settings.worker.scopes.split(',')) as client:
-        #     await client.reset_errors()
 
     return asyncio.run(cor())
-    WORKER_HOST = settings.worker.host  # = os.environ.get('PIPE_WORKER_HOST', 'localhost')
-    WORKER_PORT = settings.worker.port  # = int(os.environ.get('PIPE_WORKER_PORT', 65432))
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        s.connect((WORKER_HOST, WORKER_PORT))
-        send(s, SPLIT_TOKEN.join([b'reset-errors', b'nothing']))
-        receive(s)
 
 
 def cancel_errors_from_server():
@@ -642,33 +475,14 @@ def delete_all_from_server():
             return await client.delete_all()
 
     return asyncio.run(cor())
-    WORKER_HOST = settings.worker.host  # = os.environ.get('PIPE_WORKER_HOST', 'localhost')
-    WORKER_PORT = settings.worker.port  # = int(os.environ.get('PIPE_WORKER_PORT', 65432))
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        s.connect((WORKER_HOST, WORKER_PORT))
-        send(s, SPLIT_TOKEN.join([b'cancel-errors', b'nothing']))
-        receive(s)
 
 
 def get_all_info_from_server():
     async def cor():
-        # async with WorkerClient(settings.worker.host, settings.worker.port, settings.worker.scopes.split(',')) as client:
-        #     return await client.get_all_info()
         async with BiWorkerClient(settings.worker.host, settings.worker.port, settings.worker.scopes.split(',')) as client:
             return await client.get_all_info()
 
     return asyncio.run(cor())
-    WORKER_HOST = settings.worker.host  # = os.environ.get('PIPE_WORKER_HOST', 'localhost')
-    WORKER_PORT = settings.worker.port  # = int(os.environ.get('PIPE_WORKER_PORT', 65432))
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        s.connect((WORKER_HOST, WORKER_PORT))
-        send(s, SPLIT_TOKEN.join([b'get-all-info', b'nothing']))
-        data = receive(s)
-
-    the_steps, all_done, all_queued, all_errors, all_db = data.split(SPLIT_TOKEN)
-    return [the_steps, all_done, all_errors, all_queued, all_db]
 
 
 def _job_status(job_id: str):
@@ -697,33 +511,14 @@ def check_job_status(job_id: str) -> str:
             return await client.get_job_status(job_id)
 
     return asyncio.run(cor())
-    WORKER_HOST = settings.worker.host  # = os.environ.get('PIPE_WORKER_HOST', 'localhost')
-    WORKER_PORT = settings.worker.port  # = int(os.environ.get('PIPE_WORKER_PORT', 65432))
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        s.connect((WORKER_HOST, WORKER_PORT))
-        send(s, SPLIT_TOKEN.join([b'job-status', job_id.encode()]))
-        data = receive(s)
-    return data.decode('utf-8')
 
 
 def check_job_status_bulk(job_ids: list[str]) -> dict[str, str]:
     async def cor():
-        # async with WorkerClient(settings.worker.host, settings.worker.port, settings.worker.scopes.split(',')) as client:
-        #     return await client.get_job_status_bulk(job_ids)
         async with BiWorkerClient(settings.worker.host, settings.worker.port, settings.worker.scopes.split(',')) as client:
             return await client.get_job_status_bulk(job_ids)
 
     return asyncio.run(cor())
-    WORKER_HOST = settings.worker.host  # = os.environ.get('PIPE_WORKER_HOST', 'localhost')
-    WORKER_PORT = settings.worker.port  # = int(os.environ.get('PIPE_WORKER_PORT', 65432))
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        s.connect((WORKER_HOST, WORKER_PORT))
-        send(s, SPLIT_TOKEN.join([b'job-status-bulk', orjson.dumps(job_ids)]))
-        data = orjson.loads(receive(s))
-        r = dict(zip(job_ids, data))
-    return r
 
 
 def save_from_server():
@@ -732,13 +527,6 @@ def save_from_server():
             return await client.save()
 
     return asyncio.run(cor())
-    WORKER_HOST = settings.worker.host  # = os.environ.get('PIPE_WORKER_HOST', 'localhost')
-    WORKER_PORT = settings.worker.port  # = int(os.environ.get('PIPE_WORKER_PORT', 65432))
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        s.connect((WORKER_HOST, WORKER_PORT))
-        send(s, SPLIT_TOKEN.join([b'save', b'nothing']))
-        receive(s)
 
 # endregion
 
@@ -839,195 +627,6 @@ def get_args(steps):
 
         return new_steps, args
 
-
-def hold_promise(s):
-    global errors
-    # WORKER_HOST = os.environ.get('PIPE_WORKER_HOST', 'localhost')
-    # WORKER_PORT = int(os.environ.get('PIPE_WORKER_PORT', 65432))
-    # with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-    #     s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-    #     s.connect((WORKER_HOST, WORKER_PORT))
-    with s:
-        method, data = receive(s).split(SPLIT_TOKEN)
-        print(f'method: {method}')
-        if method == b'get':
-            uid = f'{uuid.uuid1()}'
-            try:
-                holds[uid] = get_steps_v2(**orjson.loads(data))
-                steps = holds[uid]
-                try:
-                    # args = [[db[parent] for parent in step.parents] for step in steps]
-                    steps, args = get_args(steps)
-                    send(s, SPLIT_TOKEN.join([steps_to_bytes(steps), orjson.dumps(args)]))
-                    steps, statuses, results = receive(s).split(SPLIT_TOKEN)
-                    steps = bytes_to_steps(steps)
-                    statuses = [buelon.core.step.StepStatus(status) for status in orjson.loads(statuses)]
-                    results = orjson.loads(results)
-                    # print('uploading', len(steps), 'steps')
-                    for step, status, result in zip(steps, statuses, results):
-                        db[step.id] = result
-                        handle_step(step, status)
-                        # if s == buelon.core.step.StepStatus.success:
-                    display()
-                    send(s, b'ok')
-                except Exception as e:
-                    upload_steps(steps)
-                    raise
-                finally:
-                    if uid in holds:
-                        del holds[uid]
-            except Exception as e:
-                s.close()
-                traceback.print_exc()
-                row = {'uid': uid, 'error': str(e), 'trace': traceback.format_exc(), 'utc': datetime.datetime.fromtimestamp(time.time(), tz=datetime.timezone.utc)}
-                boo_db.upload_table('boo_errors', [row], id_column='uid')
-        elif method == b'upload':
-            steps = bytes_to_steps(data)
-            for step in steps:
-                if step.parents:
-                    ALL_STEPS[step.id] = [buelon.core.step.StepStatus.queued.value, step]
-                    queued[step.id] = step
-                else:
-                    ALL_STEPS[step.id] = [buelon.core.step.StepStatus.pending.value, step]
-                    upload_step(step)
-            send(s, b'ok')
-        elif method == b'display':
-            text = display_text()
-            send(s, text.encode('utf-8'))
-        elif method == b'job-status':
-            status = _job_status(data.decode('utf-8'))
-            send(s, status.encode('utf-8'))
-        elif method == b'job-status-bulk':
-            job_id_ids = orjson.loads(data)  # .decode('utf-8').split(',')
-            statuses = [_job_status(job_id) for job_id in job_id_ids]
-            r = orjson.dumps(statuses)
-            send(s, r)
-        elif method == b'errors':
-            # print('errors:', orjson.loads(data))
-            res = []
-            for step_id in errors:
-                if isinstance(db.get(step_id), dict) and 'error' in db[step_id] and 'trace' in db[step_id]:
-                    res.append(db[step_id])
-                else:
-                    res.append({'error': 'Unknown error', 'trace': ''})
-            send(s, SPLIT_TOKEN.join([
-                steps_to_bytes(list(errors.values())),
-                orjson.dumps(res)
-            ]))
-        elif method == b'reset-errors':
-            _steps = list(errors.values())
-            errors = {}
-            upload_steps(_steps)
-            send(s, b'ok')
-        elif method == b'cancel-errors':
-            # for step in list(errors.values()):
-            #     for step_id in get_all_ids(step):
-            #         remove_id(step_id)
-            # # # Remove all steps
-            for _, lst in ALL_STEPS.items():
-                __, s = lst
-                remove_id(s.id)
-            # for sid in ALL_STEPS:
-            #     remove_id(sid)
-            send(s, b'ok')
-        elif method == b'get-all-info':
-            b = SPLIT_TOKEN.join([
-                steps_to_bytes([step for scope in STEPS.values() for steps in scope.values() for step in steps]),
-                steps_to_bytes(list(done.values())),
-                steps_to_bytes(list(queued.values())),
-                steps_to_bytes(list(errors.values())),
-                orjson.dumps(db)
-            ])
-            send(s, b)
-        elif method == b'save':
-            auto_save()
-            send(s, b'ok')
-
-
-class Server:
-    def __init__(self, host: str, port: int):
-        self.host = host
-        self.port = port
-
-    def start(self):
-        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        try:
-            attempts = 5
-            for attempt in range(1, attempts + 1):
-                try:
-                    server.bind((self.host, self.port))
-                    break
-                except OSError:
-                    print(f"Port {self.port} is already in use. Retrying...")
-                    time.sleep(5 * attempt)
-                    if attempt == attempts:
-                        raise
-            server.listen()
-            print(f"Server listening on {self.host}:{self.port}")
-
-            while True:
-                client_socket, addr = server.accept()
-                print(f"Connection from {addr}")
-                client_thread = threading.Thread(target=hold_promise, args=(client_socket,), daemon=True)
-                client_thread.start()
-        finally:
-            server.shutdown(socket.SHUT_RDWR)
-            server.close()
-            exit()
-
-# endregion
-
-# region worker
-
-def chunks(lst, n):
-    """Yield successive n-sized chunks from lst."""
-    for i in range(0, len(lst), n):
-        yield lst[i:i + n]
-
-
-async def work(single_step: str | None = None):
-    async def run(step, arg):
-        step: buelon.core.step.Job
-        print('handling', step.name)
-        try:
-            r: buelon.core.step.Result = step.run(*arg)
-        except Exception as e:
-            print(e)
-            traceback.print_exc()
-            return step, buelon.core.step.StepStatus.error, {'error': str(e), 'trace': traceback.format_exc()}
-        return step, r.status, r.data
-
-    with make_promise(settings.worker.scopes.split(','), settings.worker.reverse, single_step) as (steps, args, commit):
-        if not steps:
-            await asyncio.sleep(5)
-            return commit([], [], [])
-        steps: list[buelon.core.step.Job]
-        statuses: list[buelon.core.step.StepStatus] = []
-        results: list[Any] = []
-        # for step, arg in zip(steps, args):
-        #     step: buelon.core.step.Job
-        #     # print(step, arg)
-        #     r: buelon.core.step.Result = step.run(*arg)
-        #     statuses.append(r.status)
-        #     results.append(r.data)
-        lst = list(zip(steps, args))
-        # for chunk in chunks(lst, 10):
-        #     for step, status, result in await asyncio.gather(*[run(step, arg) for step, arg in chunk]):
-        #         statuses.append(status)
-        #         results.append(result)
-
-        async def _run(data):
-            step, arg = data
-            return await run(step, arg)
-
-        pool = asyncio_pool.AioPool(size=10)
-
-        for step, status, result in (await pool.map(_run, lst)):  # await asyncio.gather(*[run(step, arg) for step, arg in zip(steps, args)]):
-            statuses.append(status)
-            results.append(result)
-
-        commit(steps, statuses, results)
 
 # endregion
 
@@ -1354,18 +953,6 @@ def auto_load():
 def run_server():
     return bi_test_server()
 
-    global auto_saving
-
-    auto_load()
-    auto_save_worker = threading.Thread(target=auto_save_task, daemon=True)
-    auto_save_worker.start()
-    try:
-        server = Server(settings.hub.host, settings.hub.port)  # ('0.0.0.0', 65432)
-        server.start()
-    finally:
-        auto_saving = False
-        # auto_save_worker.join()
-
 
 def run_worker(stop_on_no_jobs: bool = False):
     return asyncio.run(bi_test_worker(stop_on_no_jobs=stop_on_no_jobs))
@@ -1572,17 +1159,13 @@ class BiWorkerClient:
     async def release(self, uid: str, jobs: list[buelon.step.Job], statuses: list[buelon.step.StepStatus], results: list[any]):
         data = [uid, steps_to_compressed_message(jobs), [status.value for status in statuses], results]
         request_id = await self.client.asend_obj('release', data)
-        # msg = await self.get_response(request_id)
-        # await self.websocket.recv()
         self._read_ack_in_background(request_id)
 
     async def update_worker_info(self):
         await self.client.asend_obj('worker-info', settings.worker.info)
 
     async def get_web_info(self, workers_info: bool = False):
-        # await self.websocket.send(compress_method('web-info', workers_info))
         request_id = await self.client.asend_obj('web-info', workers_info)
-        # data = json.loads(await self.websocket.recv())
         data = (await self.get_response(request_id)).get_obj()
 
         for worker_id, worker in data['workers'].items():
@@ -1592,9 +1175,7 @@ class BiWorkerClient:
         return data
 
     async def get_job_parents_and_results(self, job_id: str):
-        # await self.websocket.send(compress_method('job-parents-and-results', job_id))
         request_id = await self.client.asend_obj('job-parents-and-results', job_id)
-        # return json.loads(await self.websocket.recv())
         return (await self.get_response(request_id)).get_obj()
 
     async def upload(self, jobs: list[buelon.step.Job],
@@ -1609,9 +1190,7 @@ class BiWorkerClient:
         Raises `HubTimeout` if the hub never answers, `UploadRejected` if it answers
         that the upload failed.
         """
-        # await self.websocket.send(compress_method('upload', steps_to_compressed_message(jobs)))
         request_id = await self.client.asend_obj('upload', steps_to_compressed_message(jobs))
-        # await self.websocket.recv()
         msg = await self.get_response(request_id, timeout=timeout)
 
         if msg is None:
@@ -1625,33 +1204,25 @@ class BiWorkerClient:
                 f'{err.type}: {err.message}')
 
     async def display(self) -> str:
-        # await self.websocket.send(compress_method('display', ''))
         request_id = await self.client.asend_obj('display', '')
         # return await self.websocket.recv()
         return (await self.get_response(request_id)).get_str()
 
     async def get_job_status(self, job_id: str) -> str:
-        # await self.websocket.send(compress_method('job-status', job_id))
         request_id = await self.client.asend_obj('job-status', job_id)
         # return await self.websocket.recv()
         return (await self.get_response(request_id)).get_str()
 
     async def get_job_status_bulk(self, job_ids: list[str]) -> list[str]:
-        # await self.websocket.send(compress_method('job-status-bulk', job_ids))
         request_id = await self.client.asend_obj('job-status-bulk', job_ids)
-        # return json.loads(await self.websocket.recv())
         return (await self.get_response(request_id)).get_obj()
 
     async def errors(self):
-        # await self.websocket.send(compress_method('errors', ''))
         request_id = await self.client.asend_obj('errors', '')
-        # return json.loads(await self.websocket.recv())
         return (await self.get_response(request_id)).get_obj()
 
     async def reset_errors(self):
-        # await self.websocket.send(compress_method('reset-errors', ''))
         request_id = await self.client.asend_obj('reset-errors', '')
-        # await self.websocket.recv()
         self._read_ack_in_background(request_id)
 
     async def cancel_errors(self, timeout: float | int = 120):
@@ -1675,19 +1246,15 @@ class BiWorkerClient:
         return msg.get_obj() if msg is not None else None
 
     async def get_all_info(self):
-        # await self.websocket.send(compress_method('get-all-info', ''))
         request_id = await self.client.asend_obj('get-all-info', '')
 
-        # _steps, _done, _queued, _errors, _db = json.loads(await self.websocket.recv())
         _steps, _done, _queued, _errors, _db = (await self.get_response(request_id)).get_obj()
         _steps, _done, _queued, _errors = [compressed_message_to_steps(lst) for lst in (_steps, _done, _queued, _errors)]
 
         return _steps, _done, _queued, _errors, _db
 
     async def save(self):
-        # await self.websocket.send(compress_method('save', ''))
         request_id = await self.client.asend_obj('save', '')
-        # await self.websocket.recv()
         self._read_ack_in_background(request_id)
 
 

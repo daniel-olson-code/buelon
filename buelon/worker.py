@@ -1,5 +1,5 @@
 import asyncio
-from buelon.hub import run_worker, work as _work, bi_test_worker
+from buelon.hub import run_worker, bi_test_worker
 
 
 def run():
@@ -8,7 +8,6 @@ def run():
 
 
 def work(single_step: str | None = None):
-    # # asyncio.run(_work(single_step))
     # `iterations` used to be passed here expecting two passes; `bi_test_worker`
     # never read it. It is single-shot on `single_step` now -- see BUGS.md #5.
     asyncio.run(bi_test_worker(single_step=single_step))
