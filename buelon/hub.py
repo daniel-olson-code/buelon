@@ -95,12 +95,24 @@ preset_priorities = list(range(100, -1, -1)) # 100 - 0
 WORKER_IDLE_BACKOFF_START = 0.1
 WORKER_IDLE_BACKOFF_MAX = 2.0
 
-# Floor for `BiWorkerClient.get_response`'s poll interval -- BUGS.md #6.
+# `BiWorkerClient.get_response` used to poll `self.messages` in a sleep loop, and #6
+# had to give that loop a floor: `handle_finished_jobs` asks for `wait_time=0.0`, which
+# made the wait an `await asyncio.sleep(0)` loop that spun the event loop flat out for a
+# whole round trip and starved the job coroutines sharing its thread. #7 replaced the
+# loop with a per-request `asyncio.Event`, so there is no poll interval left to floor --
+# the waiter is woken by the reply itself.
+
+# Default bound on a hub round trip -- BUGS.md #7.
 #
-# `handle_finished_jobs` asks for `wait_time=0.0`, which made the wait an
-# `await asyncio.sleep(0)` loop: the event loop spins flat out for the whole round trip
-# and starves the job coroutines it shares a thread with.
-MIN_RESPONSE_POLL_INTERVAL = 0.01
+# Every request used to wait forever. A dead hub or a lost socket hung `bue status`,
+# `bue errors` and every `web.py` endpoint for good, and web.py's `try/except ->
+# reconnect` blocks could never fire because nothing was ever raised. Exceeding the
+# bound now raises `HubTimeout`.
+#
+# `hold` gets its own, larger bound: it is the one request whose reply carries a whole
+# job batch (compressed hub-side), so it is legitimately the slowest.
+RESPONSE_TIMEOUT = 60.0
+HOLD_RESPONSE_TIMEOUT = 300.0
 
 # endregion
 
@@ -1707,6 +1719,24 @@ async def _test_upload(code: str, return_jobs: bool = False) -> None | list[buel
 from bisocket.main import Server as BiServer, Client as BiClient, BiMessage, ServerRequest, OnCloseInfo, OnOpenInfo, OnFinallyInfo
 
 
+class HubTimeout(TimeoutError):
+    """The hub did not answer a request within the allowed time -- BUGS.md #7.
+
+    Subclasses `TimeoutError` so a caller that already handles connection trouble
+    (`web.py`'s `try/except -> reconnect`) treats a silent hub the same way.
+    """
+
+    def __init__(self, request_id: str, timeout: float | int):
+        self.request_id = request_id
+        self.timeout = timeout
+        super().__init__(f'no response from the hub for request {request_id} within {timeout}s')
+
+
+# Sentinel for "caller did not choose a timeout", so `timeout=None` can keep its own
+# meaning of "wait forever".
+_DEFAULT_TIMEOUT = object()
+
+
 class BiWorkerClient:
     def __init__(self, *args, **kwargs):  # (self, host: str, port: int, scopes: list[str]):
         self.host = settings.worker.host  # host
@@ -1714,6 +1744,22 @@ class BiWorkerClient:
         self.scopes = settings.worker.scopes.split(',') + ['test']  # scopes
         self.client: BiClient = None
         self.messages: dict[str, BiMessage] = {}
+        # request_id -> Event, set when that request's reply lands. Replaces the old
+        # `while request_id not in self.messages: await asyncio.sleep(...)` poll, which
+        # added up to `wait_time` of latency to every round trip and burned CPU while
+        # waiting -- BUGS.md #7.
+        self._waiters: dict[str, asyncio.Event] = {}
+        # request_ids whose caller has given up. A reply that turns up afterwards is
+        # dropped instead of sitting in `self.messages` for the life of the client.
+        self._abandoned: set[str] = set()
+        # Strong references to the fire-and-forget response readers started by
+        # `release`/`upload`/`reset_errors`/`save`, so CPython cannot collect one
+        # mid-flight -- BUGS.md #7.
+        self._background: set[asyncio.Task] = set()
+        # The loop `__aenter__` ran on. `on_receive` is handed to bisocket as a plain
+        # function, and bisocket calls a non-coroutine callback via `asyncio.to_thread`,
+        # i.e. off the loop -- so waking a waiter has to go through the loop.
+        self._loop: asyncio.AbstractEventLoop | None = None
 
     async def __aenter__(self):
         # self.websocket = await connect(
@@ -1722,41 +1768,112 @@ class BiWorkerClient:
         #     ping_timeout=60 * 5,  # Wait 20 seconds for pong (default: 20)
         #     close_timeout=60 * 5  # Wait 10 seconds for close (default: 10)
         # ).__aenter__()
+        self._loop = asyncio.get_running_loop()
+        # web.py reconnects by re-entering an existing client. Request ids from the old
+        # connection can never be answered on the new one, so stop tracking them.
+        self._abandoned.clear()
         self.client = await BiClient(self.host, self.port, self.on_receive).__aenter__()
         await self.update_worker_info()
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
+        for task in list(self._background):
+            task.cancel()
+        self._background.clear()
         await self.client.__aexit__(exc_type, exc_val, exc_tb)
-    
+
     def on_receive(self, msg: BiMessage):
+        if msg.request_id in self._abandoned:
+            # Nobody is waiting for this any more -- see `get_response`.
+            self._abandoned.discard(msg.request_id)
+            return
+
         self.messages[msg.request_id] = msg
+        self._wake(msg.request_id)
+
+    def _wake(self, request_id: str) -> None:
+        """Release whoever is waiting on `request_id`, from whichever thread we are on."""
+        event = self._waiters.get(request_id)
+
+        if event is None:
+            return
+
+        loop = self._loop
+
+        if loop is None:
+            event.set()
+            return
+
+        try:
+            # Safe from the loop thread as well as from bisocket's worker thread.
+            loop.call_soon_threadsafe(event.set)
+        except RuntimeError:
+            pass  # loop already closed; the waiter is gone with it
 
     async def get_response(self, request_id: str, wait_time: float | int = 0.1,
-                           timeout: float | int | None = None) -> BiMessage | None:
-        # timeout=None preserves the original unbounded wait for existing callers.
-        # Generalising that to every call is #7; for now only the destructive admin
-        # commands opt in, because hanging forever is worse than reporting a failure.
-        deadline = None if timeout is None else time.time() + timeout
+                           timeout: float | int | None = _DEFAULT_TIMEOUT) -> BiMessage | None:
+        """Wait for the hub's reply to `request_id`.
 
-        # `wait_time=0.0` (handle_finished_jobs' follow-up hold) polled with
-        # `asyncio.sleep(0)`, which busy-spins the event loop for the whole round trip
-        # -- BUGS.md #6.
-        wait_time = max(wait_time, MIN_RESPONSE_POLL_INTERVAL)
+        Raises `HubTimeout` if it does not arrive within `timeout`. `timeout=None` still
+        means "wait forever", but it now has to be asked for explicitly -- BUGS.md #7.
 
-        while request_id not in self.messages:
-            if deadline is not None and time.time() > deadline:
-                return None
-            await asyncio.sleep(wait_time)
+        `wait_time` is accepted and ignored: the wait is event-driven now, so there is no
+        poll interval. It is kept because `hold` forwards a caller-supplied value.
+        """
+        if timeout is _DEFAULT_TIMEOUT:
+            timeout = RESPONSE_TIMEOUT
+
+        msg = self.messages.pop(request_id, None)
+
+        if msg is not None:
+            return msg
+
+        event = self._waiters.setdefault(request_id, asyncio.Event())
+
+        try:
+            # The reply can land between the pop above and the register on the line
+            # before this one; `on_receive` would then have found no waiter to wake.
+            if request_id not in self.messages:
+                if timeout is None:
+                    await event.wait()
+                else:
+                    try:
+                        await asyncio.wait_for(event.wait(), timeout)
+                    except (asyncio.TimeoutError, TimeoutError):
+                        if request_id not in self.messages:
+                            # A late reply will have nobody left to claim it.
+                            self._abandoned.add(request_id)
+                            raise HubTimeout(request_id, timeout) from None
+                        # The reply landed in the same breath as we gave up. Take it.
+        finally:
+            self._waiters.pop(request_id, None)
 
         return self.messages.pop(request_id, None)
 
-    async def hold(self, limit: int = 100, reverse: bool = False, single_job: str | None = None, wait_time: float | int = 0.1) -> list[str, list[buelon.step.Job], list[any]]:
+    def _read_ack_in_background(self, request_id: str) -> asyncio.Task:
+        """Consume a reply nobody is waiting for, without leaking it or the task.
+
+        The task reference is held until it finishes -- an `asyncio.create_task` result
+        that is dropped on the floor can be garbage collected mid-flight, which is how
+        `self.messages` used to accumulate unclaimed replies.
+        """
+        async def read():
+            try:
+                await self.get_response(request_id)
+            except HubTimeout:
+                pass  # nothing to report it to; `get_response` has dropped the entry
+
+        task = asyncio.ensure_future(read())
+        self._background.add(task)
+        task.add_done_callback(self._background.discard)
+        return task
+
+    async def hold(self, limit: int = 100, reverse: bool = False, single_job: str | None = None, wait_time: float | int = 0.1, timeout: float | int | None = HOLD_RESPONSE_TIMEOUT) -> list[str, list[buelon.step.Job], list[any]]:
         data = {'scopes': self.scopes, 'limit': limit, 'reverse': settings.worker.reverse, 'single_step': single_job}
         request_id = await self.client.asend_obj('hold', data)
-        
-        msg = await self.get_response(request_id, wait_time=wait_time)
-        
+
+        msg = await self.get_response(request_id, wait_time=wait_time, timeout=timeout)
+
         uid, jobs, args = msg.get_obj()  # json.loads(await self.websocket.recv())
 
         return [uid, compressed_message_to_steps(jobs), args]
@@ -1766,7 +1883,7 @@ class BiWorkerClient:
         request_id = await self.client.asend_obj('release', data)
         # msg = await self.get_response(request_id)
         # await self.websocket.recv()
-        asyncio.create_task(self.get_response(request_id))
+        self._read_ack_in_background(request_id)
 
     async def update_worker_info(self):
         await self.client.asend_obj('worker-info', settings.worker.info)
@@ -1793,7 +1910,7 @@ class BiWorkerClient:
         # await self.websocket.send(compress_method('upload', steps_to_compressed_message(jobs)))
         request_id = await self.client.asend_obj('upload', steps_to_compressed_message(jobs))
         # await self.websocket.recv()
-        asyncio.create_task(self.get_response(request_id))
+        self._read_ack_in_background(request_id)
 
     async def display(self) -> str:
         # await self.websocket.send(compress_method('display', ''))
@@ -1823,18 +1940,26 @@ class BiWorkerClient:
         # await self.websocket.send(compress_method('reset-errors', ''))
         request_id = await self.client.asend_obj('reset-errors', '')
         # await self.websocket.recv()
-        asyncio.create_task(self.get_response(request_id))
+        self._read_ack_in_background(request_id)
 
     async def cancel_errors(self, timeout: float | int = 120):
         """Cancel every pipeline containing an error. Returns {'jobs', 'pipelines'}."""
         request_id = await self.client.asend_obj('cancel-errors', '')
-        msg = await self.get_response(request_id, timeout=timeout)
+        # `bue delete` reports "no response from the hub" rather than raising -- keeping
+        # that means swallowing the timeout here.
+        try:
+            msg = await self.get_response(request_id, timeout=timeout)
+        except HubTimeout:
+            return None
         return msg.get_obj() if msg is not None else None
 
     async def delete_all(self, timeout: float | int = 120):
         """Wipe ALL job state on the hub. Returns {'jobs'}."""
         request_id = await self.client.asend_obj('delete-all', '')
-        msg = await self.get_response(request_id, timeout=timeout)
+        try:
+            msg = await self.get_response(request_id, timeout=timeout)
+        except HubTimeout:
+            return None
         return msg.get_obj() if msg is not None else None
 
     async def get_all_info(self):
@@ -1851,7 +1976,7 @@ class BiWorkerClient:
         # await self.websocket.send(compress_method('save', ''))
         request_id = await self.client.asend_obj('save', '')
         # await self.websocket.recv()
-        asyncio.create_task(self.get_response(request_id))
+        self._read_ack_in_background(request_id)
 
 
 def bi_on_hold(request: ServerRequest, data):
