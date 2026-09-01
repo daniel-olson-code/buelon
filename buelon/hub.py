@@ -114,6 +114,11 @@ WORKER_IDLE_BACKOFF_MAX = 2.0
 RESPONSE_TIMEOUT = 60.0
 HOLD_RESPONSE_TIMEOUT = 300.0
 
+# `upload` gets its own, larger bound too -- BUGS.md #8. Its reply is a bare `b'ok'`, but
+# the hub has to decompress and register up to 500 jobs under `lock` before sending it,
+# behind however many other workers are queued ahead of it.
+UPLOAD_RESPONSE_TIMEOUT = 300.0
+
 # endregion
 
 # region handling steps
@@ -1732,6 +1737,14 @@ class HubTimeout(TimeoutError):
         super().__init__(f'no response from the hub for request {request_id} within {timeout}s')
 
 
+class UploadRejected(RuntimeError):
+    """The hub did not accept an uploaded chunk of jobs -- BUGS.md #8.
+
+    Raised instead of returning normally, because the alternative is `bue upload`
+    reporting success for a pipeline the hub never stored.
+    """
+
+
 # Sentinel for "caller did not choose a timeout", so `timeout=None` can keep its own
 # meaning of "wait forever".
 _DEFAULT_TIMEOUT = object()
@@ -1906,11 +1919,32 @@ class BiWorkerClient:
         # return json.loads(await self.websocket.recv())
         return (await self.get_response(request_id)).get_obj()
 
-    async def upload(self, jobs: list[buelon.step.Job]):
+    async def upload(self, jobs: list[buelon.step.Job],
+                     timeout: float | int | None = UPLOAD_RESPONSE_TIMEOUT):
+        """Send a chunk of jobs and wait for the hub to confirm it stored them.
+
+        The ack used to be handed to `_read_ack_in_background`, which `__aexit__`
+        cancels -- so `bue upload` returned before the hub had processed anything, and a
+        hub-side failure on any chunk was invisible. Waiting here also gives the chunk
+        loop in `_bi_test_upload` its only backpressure. BUGS.md #8.
+
+        Raises `HubTimeout` if the hub never answers, `UploadRejected` if it answers
+        that the upload failed.
+        """
         # await self.websocket.send(compress_method('upload', steps_to_compressed_message(jobs)))
         request_id = await self.client.asend_obj('upload', steps_to_compressed_message(jobs))
         # await self.websocket.recv()
-        self._read_ack_in_background(request_id)
+        msg = await self.get_response(request_id, timeout=timeout)
+
+        if msg is None:
+            raise UploadRejected(
+                f'no confirmation from the hub for an upload of {len(jobs):,} job(s)')
+
+        if msg.is_error:
+            err = msg.error
+            raise UploadRejected(
+                f'the hub failed to store {len(jobs):,} job(s): '
+                f'{err.type}: {err.message}')
 
     async def display(self) -> str:
         # await self.websocket.send(compress_method('display', ''))
