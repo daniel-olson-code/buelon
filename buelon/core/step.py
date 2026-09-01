@@ -146,6 +146,15 @@ def create_return_value(value) -> Result:
     return Result.from_result(result)
 
 
+def _local_module_name(path: str) -> str:
+    """Module name for a local code file -- strips the `.py` suffix, nothing else.
+
+    `rstrip('.py')` used to be used here; it strips *characters*, so `apply.py`
+    became `appl` and `happy.py` became `ha` (BUGS.md #17).
+    """
+    return os.path.basename(path).removesuffix('.py')
+
+
 class Step(pipe_util.PipeObject):
     """Represents a step in the execution pipeline.
 
@@ -217,7 +226,7 @@ class Step(pipe_util.PipeObject):
         module_name = None
 
         if self.local:
-            module_name = os.path.basename(self.code).rstrip('.py')
+            module_name = _local_module_name(self.code)
             with open(self.code) as f:
                 code = f.read()
 
@@ -253,7 +262,7 @@ class Step(pipe_util.PipeObject):
         module_name = None
 
         if self.local:
-            module_name = os.path.basename(self.code).rstrip('.py')
+            module_name = _local_module_name(self.code)
             with open(self.code) as f:
                 code = f.read()
 

@@ -68,11 +68,6 @@ def upload_pipe_code(file_path):  # , binding, lazy_steps):
     pete.hub.upload_file_to_server(file_path)  # , lazy_steps)
 
 
-def submit_pipe_code(file_path, binding, bucket_binding, scope):
-    pass
-    # pete.hub.submit_pipe_code_from_file(file_path, scope)
-
-
 def display_status(args):
     async def func():
         async with pete.hub.BiWorkerClient(settings.worker.host, settings.worker.port, settings.worker.scopes.split(',')) as client:
@@ -359,13 +354,6 @@ def cli():
     run_step_parser = subparsers.add_parser('run-job', help='View Error Logs')
     run_step_parser.add_argument('-j', '--job', required=True, help='The step id')
 
-    # Fetch Errors
-    submit_parser = subparsers.add_parser('submit', help='View Error Logs')
-    submit_parser.add_argument('-f', '--file', required=True, help='File path to buelon script')
-    # submit_parser.add_argument('-k', '--bucket-binding', required=worker_bucket_required, help='Bucket binding (host:port)')
-    # submit_parser.add_argument('-b', '--binding', required=worker_binding_required, help='Main binding for hub (host:port)')
-    # submit_parser.add_argument('-s', '--scope', default=pete.worker.DEFAULT_SCOPES.split(',')[-1])
-
     # Repair
     repair_parser = subparsers.add_parser('repair', help='Reset errors')
     # repair_parser.add_argument('-b', '--binding', required=worker_binding_required, help='Main binding for hub (host:port)')
@@ -417,8 +405,6 @@ def cli():
         run_example()
     elif args.command == 'upload':
         upload_pipe_code(args.file_path)  # , args.hub_binding, args.lazy)
-    elif args.command == 'submit':
-        submit_pipe_code(args.file, args.binding, args.bucket_binding, args.scope)
     elif args.command == 'reset':
         pete.hub.reset_errors_from_server()
     elif args.command == 'status':
