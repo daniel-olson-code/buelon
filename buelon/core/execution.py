@@ -52,9 +52,16 @@ def temp_mod(txt: str, module_name: str | None = None):
             with temp_mod(txt) as m:
                 yield m
             return
-    else:
-        mod = f'temp_bue_{pipe_util.get_id()}'
-        path = os.path.join(os.getcwd(), f'{mod}.py')
+        yield module
+        return
+
+    mod = f'temp_bue_{pipe_util.get_id()}'
+    path = os.path.join(os.getcwd(), f'{mod}.py')
+    module_name = mod
+
+    # everything below has to be inside the try: if the module raises at import
+    # time the file on disk and the sys.modules entry must still be cleaned up.
+    try:
         with open(path, 'w') as f:
             f.write(txt)
             f.flush()
@@ -63,7 +70,6 @@ def temp_mod(txt: str, module_name: str | None = None):
         #     tf.flush()
         #     os.fsync(tf.fileno())
         #     module_name = tf.name.replace('.py', '').split(os.sep)[-1]
-        module_name = mod
 
         spec = importlib.util.spec_from_file_location(module_name, path)
         # spec = importlib.util.spec_from_file_location(module_name, tf.name)
@@ -71,17 +77,14 @@ def temp_mod(txt: str, module_name: str | None = None):
         sys.modules[module_name] = module
         spec.loader.exec_module(module)
 
-    try:
         yield module
     finally:
-        if not local_mod:
-            if module_name in sys.modules:
-                del sys.modules[module_name]
-            if 'path' in locals():
-                if os.path.exists(path):
-                    try:
-                        os.unlink(path)
-                    except: pass
+        if module_name in sys.modules:
+            del sys.modules[module_name]
+        if os.path.exists(path):
+            try:
+                os.unlink(path)
+            except: pass
 
     # try:
     #     yield tf.name.replace('.py', '').split(os.sep)[-1]

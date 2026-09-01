@@ -1048,99 +1048,318 @@ async def work(single_step: str | None = None):
 
 # region auto save
 
+# --------------------------------------------------------------------------------
+# Hub persistence -- BUGS.md #15.
+#
+# All hub state is in-memory (see the dict table in BUGS.md). `bi_test_server` never
+# called `auto_load()` and never started `auto_save_task`, so the snapshot files were
+# written by nothing and read by nothing: a hub restart lost every pipeline.
+#
+# The shape chosen (see the write-up in BUGS.md #15) is the cheapest one that closes
+# the real risks: **one file, written atomically, restored literally.**
+#
+#   one file      seven separate files could tear against each other -- `steps` saved
+#                 while `db` did not, and the reloaded hub would dispatch jobs whose
+#                 parent results had vanished.
+#   atomic        temp file + `os.replace`, so a crash mid-write leaves the previous
+#                 snapshot intact instead of a truncated one.
+#   literal       the old `auto_load` replayed each entry through `handle_step`, which
+#                 is a *state machine*, not a loader. Replaying `error` burned a retry
+#                 on every restart; replaying `success` promoted children out of
+#                 `queued` that the loop had not put there yet (so they were stranded)
+#                 and ran the terminal DAG cleanup. Restoring the dicts directly has
+#                 none of those failure modes.
+#
+# The one deliberate departure from a literal restore is `holds_v2`: jobs checked out
+# by a worker go back on the dispatch queue, exactly as `bi_release_client` would have
+# done had the worker disconnected cleanly. Nothing survives a hub restart holding a
+# job, so the alternative is stranding them as `pending` in `ALL_STEPS` with no dict
+# pointing at them.
+# --------------------------------------------------------------------------------
+
+AUTO_SAVE_PATH: str = os.environ.get('BUELON_AUTO_SAVE_PATH', '.auto_save')
+AUTO_SAVE_INTERVAL: float = float(os.environ.get('BUELON_AUTO_SAVE_INTERVAL', 60 * 10))
+AUTO_SAVE_ENABLED: bool = os.environ.get('BUELON_AUTO_SAVE', 'true').strip().lower() not in (
+    'false', '0', 'no', 'off')
+
+SNAPSHOT_NAME = 'snapshot'
+SNAPSHOT_VERSION = 1
+
+# Names of the pre-#15 per-dict files. Still read by `auto_load` so an existing
+# `.auto_save/` directory is not silently ignored; never written any more.
+LEGACY_SNAPSHOT_FILES = ('all_steps', 'steps', 'done', 'queued', 'errors', 'holds', 'db')
+
 auto_saving = True
+
+# Set by `bi_test_server` so shutdown does not have to wait out a full interval.
+_auto_save_stop = threading.Event()
+
+
+def snapshot_path() -> str:
+    return os.path.join(AUTO_SAVE_PATH, SNAPSHOT_NAME)
 
 
 def auto_save_task():
-    global auto_saving
-    while auto_saving:
+    """Daemon loop: snapshot every `AUTO_SAVE_INTERVAL` seconds until told to stop."""
+    while auto_saving and AUTO_SAVE_ENABLED:
         auto_save()
-        time.sleep(60 * 10)
+        if _auto_save_stop.wait(AUTO_SAVE_INTERVAL):
+            return
 
 
-def auto_save():
-    dir = '.auto_save'
-    os.makedirs(dir, exist_ok=True)
-    if not auto_saving:
+def _atomic_write(path: str, data: bytes) -> None:
+    """Write `data` to `path` so a crash can never leave a half-written file there."""
+    directory = os.path.dirname(path) or '.'
+    os.makedirs(directory, exist_ok=True)
+    tmp = os.path.join(directory, f'.{os.path.basename(path)}.{os.getpid()}.{uuid.uuid4().hex}.tmp')
+    try:
+        with open(tmp, 'wb') as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.remove(tmp)
+        raise
+
+
+def _dumps_snapshot(payload: dict) -> bytes:
+    """`orjson.dumps` the snapshot, dropping `db` entries that will not serialize.
+
+    `db` holds whatever user code returned, so one job returning a `set` (or any other
+    type orjson does not know) would otherwise cost the entire snapshot -- job graph
+    included. Losing the offending result is bad; losing the whole pipeline is worse.
+    """
+    try:
+        return orjson.dumps(payload)
+    except TypeError:
+        pass
+
+    kept, dropped = {}, []
+    for job_id, value in payload['db'].items():
+        try:
+            orjson.dumps(value)
+        except TypeError:
+            dropped.append(job_id)
+        else:
+            kept[job_id] = value
+
+    print(f'auto_save: {len(dropped)} job result(s) are not JSON-serializable and were '
+          f'left out of the snapshot: {", ".join(sorted(dropped)[:10])}'
+          f'{" ..." if len(dropped) > 10 else ""}')
+    return orjson.dumps({**payload, 'db': kept})
+
+
+def auto_save(force: bool = False):
+    """Write a single atomic snapshot of all hub state.
+
+    `force` writes even after `auto_saving` has been cleared, so shutdown can take one
+    last snapshot without the loop racing it.
+    """
+    if not AUTO_SAVE_ENABLED:
+        return
+    if not auto_saving and not force:
         return
 
-    # Snapshot under the lock, serialize and write outside it.
+    # Snapshot under the lock, serialize and write outside it (invariant #2). Every
+    # `to_json()` is shallow-copied because it hands back the job's live `__dict__`.
     with lock:
-        snapshot = {
-            'all_steps': [[status, step] for status, step in ALL_STEPS.values()],
-            'steps': [step for scope in STEPS.values() for steps in scope.values() for step in steps],
-            'done': list(done.values()),
-            'queued': list(queued.values()),
-            'errors': list(errors.values()),
-            'holds': [step for steps in holds.values() for step in steps],
+        held_ids = {job_id for client in holds_v2.values() for job_id in client}
+        payload = {
+            'version': SNAPSHOT_VERSION,
+            'saved_at': time.time(),
+            'all_steps': [[status, dict(job.to_json())] for status, job in ALL_STEPS.values()],
+            # scope/priority/order are part of the dispatch queue's meaning, so they are
+            # saved rather than rebuilt from each job's own fields.
+            'steps': [
+                [scope, priority, [job.id for job in jobs]]
+                for scope, priorities in STEPS.items()
+                for priority, jobs in priorities.items()
+                if jobs
+            ],
+            'queued': list(queued),
+            'done': list(done),
+            'errors': list(errors),
+            # Checked-out jobs are requeued on load; see the note at the top of the region.
+            'holds': sorted(held_ids),
+            # Jobs reachable only from one of the id lists above (a job can be dropped
+            # from ALL_STEPS by `remove_id` while still sitting in STEPS -- BUGS.md #4).
+            'orphans': [
+                dict(job.to_json())
+                for job in _snapshot_orphans()
+            ],
             'db': dict(db),
         }
 
-    with open(os.path.join(dir, 'all_steps'), 'wb') as f:
-        f.write(orjson.dumps([[status, step.to_json()] for status, step in snapshot['all_steps']]))
-    for name in ('steps', 'done', 'queued', 'errors', 'holds'):
-        with open(os.path.join(dir, name), 'wb') as f:
-            f.write(steps_to_bytes(snapshot[name]))
-    with open(os.path.join(dir, 'db'), 'wb') as f:
-        f.write(orjson.dumps(snapshot['db']))
+    _atomic_write(snapshot_path(), _dumps_snapshot(payload))
+
+
+def _snapshot_orphans() -> list[buelon.core.step.Job]:
+    """Jobs referenced by a state dict but missing from `ALL_STEPS`.
+
+    `remove_id` deletes from `ALL_STEPS` without touching `STEPS` (BUGS.md #4), so the
+    id lists in the snapshot are not guaranteed to resolve. Saving the job bodies keeps
+    the reload faithful instead of quietly dropping them.
+    """
+    with lock:
+        out = []
+        for job in ([j for pr in STEPS.values() for jobs in pr.values() for j in jobs]
+                    + list(queued.values()) + list(done.values()) + list(errors.values())
+                    + [j for client in holds_v2.values() for j in client.values()]):
+            if job.id not in ALL_STEPS:
+                out.append(job)
+        return out
+
+
+def _restore_snapshot(payload: dict) -> None:
+    """Rebuild every state dict from `payload`. No `handle_step` replay -- see above."""
+    jobs: dict[str, buelon.core.step.Job] = {}
+
+    with lock:
+        for status, job_json in payload.get('all_steps', []):
+            job = buelon.core.step.Job().from_json(job_json)
+            jobs[job.id] = job
+            ALL_STEPS[job.id] = [status, job]
+
+        for job_json in payload.get('orphans', []):
+            job = buelon.core.step.Job().from_json(job_json)
+            jobs.setdefault(job.id, job)
+
+        for name, target in (('queued', queued), ('done', done), ('errors', errors)):
+            for job_id in payload.get(name, []):
+                if job_id in jobs:
+                    target[job_id] = jobs[job_id]
+
+        for scope, priority, job_ids in payload.get('steps', []):
+            bucket = STEPS.setdefault(scope, {}).setdefault(int(priority), [])
+            bucket.extend(jobs[job_id] for job_id in job_ids if job_id in jobs)
+
+        # Jobs a worker was holding when the hub went down. Put them back exactly where
+        # `bi_release_client` would have.
+        for job_id in payload.get('holds', []):
+            if job_id in jobs:
+                upload_step(jobs[job_id])
+
+        db.update(payload.get('db', {}))
+
+
+def _load_legacy_snapshot(directory: str) -> bool:
+    """Read a pre-#15 seven-file `.auto_save/` directory. Returns True if it found one.
+
+    Restores each file into its own dict directly. The original did this by feeding
+    every entry back through `handle_step`, which mutated the state it was meant to be
+    reproducing -- see the note at the top of the region.
+    """
+    def read(name):
+        path = os.path.join(directory, name)
+        if not os.path.exists(path):
+            return None
+        with open(path, 'rb') as f:
+            return f.read()
+
+    if not any(os.path.exists(os.path.join(directory, n)) for n in LEGACY_SNAPSHOT_FILES):
+        return False
+
+    with lock:
+        raw = read('db')
+        if raw:
+            db.update(orjson.loads(raw))
+
+        jobs: dict[str, buelon.core.step.Job] = {}
+        raw = read('all_steps')
+        if raw:
+            for status, job_json in orjson.loads(raw):
+                job = buelon.core.step.Job().from_json(job_json)
+                jobs[job.id] = job
+                ALL_STEPS[job.id] = [status, job]
+
+            for status, job in ALL_STEPS.values():
+                if status == buelon.core.step.StepStatus.queued.value:
+                    queued[job.id] = job
+                elif status == buelon.core.step.StepStatus.success.value:
+                    done[job.id] = job
+                elif status == buelon.core.step.StepStatus.error.value:
+                    errors[job.id] = job
+                else:
+                    upload_step(job)
+            return True
+
+        # No `all_steps` file: fall back to the per-dict files.
+        for name, status, target in (
+            ('steps', buelon.core.step.StepStatus.pending, None),
+            ('done', buelon.core.step.StepStatus.success, done),
+            ('queued', buelon.core.step.StepStatus.queued, queued),
+            ('errors', buelon.core.step.StepStatus.error, errors),
+            # v1 `holds` -- always empty under the bi hub, but an old file may have one.
+            # A held job was mid-dispatch, so it is restored as pending, not queued.
+            ('holds', buelon.core.step.StepStatus.pending, None),
+        ):
+            raw = read(name)
+            if not raw:
+                continue
+            for job in bytes_to_steps(raw):
+                job = jobs.setdefault(job.id, job)
+                ALL_STEPS[job.id] = [status.value, job]
+                if target is None:
+                    upload_step(job)
+                else:
+                    target[job.id] = job
+        return True
+
+
+def _install_sigterm_shutdown():
+    """Make SIGTERM unwind instead of killing the process. Returns an undo callable.
+
+    Returns None (and installs nothing) if the signal cannot be claimed: not the main
+    thread, no SIGTERM on this platform, or something has already handled it.
+    """
+    import signal
+
+    if threading.current_thread() is not threading.main_thread():
+        return None
+    if not hasattr(signal, 'SIGTERM'):
+        return None
+    try:
+        previous = signal.getsignal(signal.SIGTERM)
+        if previous is not signal.SIG_DFL:
+            return None
+
+        def on_sigterm(signum, frame):
+            raise SystemExit(0)
+
+        signal.signal(signal.SIGTERM, on_sigterm)
+    except (ValueError, OSError):
+        return None
+
+    def restore():
+        with contextlib.suppress(ValueError, OSError):
+            signal.signal(signal.SIGTERM, previous)
+
+    return restore
 
 
 def auto_load():
-    dir = '.auto_save'
-    if not os.path.exists(dir):
-        return
-    if os.path.exists(os.path.join(dir, 'db')):
-        with open(os.path.join(dir, 'db'), 'rb') as f:
-            b = f.read()
-            _db = orjson.loads(b)
-            db.update(_db)
-    if os.path.exists(os.path.join(dir, 'all_steps')):
-        with open(os.path.join(dir, 'all_steps'), 'rb') as f:
-            b = f.read()
-            bytes_to_all_steps(b)
-        for status, step in ALL_STEPS.values():
-            if status == buelon.core.step.StepStatus.queued.value:
-                queued[step.id] = step
-            else:
-                handle_step(step, buelon.core.step.StepStatus(status))
-        if ALL_STEPS:
+    """Restore hub state written by `auto_save`. A missing or unreadable snapshot is
+    not fatal -- the hub starts empty, which is what it did before #15."""
+    path = snapshot_path()
+    try:
+        if os.path.exists(path):
+            with open(path, 'rb') as f:
+                payload = orjson.loads(f.read())
+            _restore_snapshot(payload)
+        elif not _load_legacy_snapshot(AUTO_SAVE_PATH):
             return
-    if os.path.exists(os.path.join(dir, 'steps')):
-        with open(os.path.join(dir, 'steps'), 'rb') as f:
-            b = f.read()
-            _steps = bytes_to_steps(b)
-            upload_steps(_steps)
-            for step in _steps:
-                ALL_STEPS[step.id] = [buelon.core.step.StepStatus.pending.value, step]
-    if os.path.exists(os.path.join(dir, 'done')):
-        with open(os.path.join(dir, 'done'), 'rb') as f:
-            b = f.read()
-            _done = bytes_to_steps(b)
-            for step in _done:
-                ALL_STEPS[step.id] = [buelon.core.step.StepStatus.success.value, step]
-                handle_step(step, buelon.core.step.StepStatus.success)
-    if os.path.exists(os.path.join(dir, 'queued')):
-        with open(os.path.join(dir, 'queued'), 'rb') as f:
-            b = f.read()
-            _queued = bytes_to_steps(b)
-            for step in _queued:
-                ALL_STEPS[step.id] = [buelon.core.step.StepStatus.queued.value, step]
-                queued[step.id] = step
-    if os.path.exists(os.path.join(dir, 'errors')):
-        with open(os.path.join(dir, 'errors'), 'rb') as f:
-            b = f.read()
-            _errors = bytes_to_steps(b)
-            for step in _errors:
-                ALL_STEPS[step.id] = [buelon.core.step.StepStatus.error.value, step]
-                handle_step(step, buelon.core.step.StepStatus.error)
-    if os.path.exists(os.path.join(dir, 'holds')):
-        with open(os.path.join(dir, 'holds'), 'rb') as f:
-            b = f.read()
-            _holds = bytes_to_steps(b)
-            upload_steps(_holds)
-            for step in _holds:
-                ALL_STEPS[step.id] = [buelon.core.step.StepStatus.queued.value, step]
+    except Exception:
+        print(f'auto_load: could not restore {path!r}; starting with empty state')
+        traceback.print_exc()
+        return
 
+    with lock:
+        n_steps = sum(len(jobs) for pr in STEPS.values() for jobs in pr.values())
+        print(f'auto_load: restored {len(ALL_STEPS):,} job(s) -- {n_steps:,} queued for '
+              f'dispatch, {len(queued):,} waiting on a parent, {len(done):,} done, '
+              f'{len(errors):,} errored, {len(db):,} result(s)')
 
 
 # endregion
@@ -2422,8 +2641,42 @@ def bi_on_finally(finally_info: OnFinallyInfo):
 
 
 def bi_test_server():
+    global auto_saving
+
+    # Restore before the socket opens, so a worker cannot hold a job out of a
+    # half-populated queue. BUGS.md #15 -- nothing used to call either of these, which
+    # made a hub restart a total loss of every pipeline.
+    auto_load()
+
     server = BiServer(settings.hub.host, settings.hub.port, bi_handle_messages, on_open=bi_on_open, on_close=bi_on_close, on_finally=bi_on_finally)
-    server.start()
+
+    saver = None
+    if AUTO_SAVE_ENABLED:
+        saver = threading.Thread(target=auto_save_task, daemon=True, name='buelon-auto-save')
+        saver.start()
+
+    # `docker stop` and systemd both stop a service with SIGTERM, whose default action
+    # kills the process outright -- no `finally`, so no shutdown snapshot, and up to
+    # `AUTO_SAVE_INTERVAL` of work lost on every ordinary restart. Turning it into a
+    # `SystemExit` lets the block below run and exits just as quietly. Installed only
+    # if nobody else has claimed the signal.
+    _restore_sigterm = _install_sigterm_shutdown()
+
+    try:
+        server.start()
+    finally:
+        # Stop the loop first so it cannot race the shutdown snapshot, then take one
+        # last one -- a clean `bue hub` restart should lose nothing at all.
+        auto_saving = False
+        _auto_save_stop.set()
+        if _restore_sigterm is not None:
+            _restore_sigterm()
+        if saver is not None:
+            saver.join(timeout=5)
+        try:
+            auto_save(force=True)
+        except Exception:
+            traceback.print_exc()
 
 
 class BiWorkerJob:
