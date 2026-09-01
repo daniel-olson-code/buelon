@@ -31,14 +31,21 @@ def get_static_path(filename: str) -> str:
     return str(resources.files("buelon.static").joinpath(filename))
 
 
+def get_static_dir() -> str:
+    # The static directory itself, as a filesystem path. `buelon.static` is a
+    # namespace package, so `resources.files` hands back a MultiplexedPath whose
+    # str() is a repr, not a path -- take the parent of a known member instead.
+    return os.path.dirname(get_static_path("index.html"))
+
+
+# Served by StaticFiles rather than a hand-rolled route: it confines every
+# request to the static directory, so `..` segments cannot escape it.
+app.mount("/static", StaticFiles(directory=get_static_dir()), name="static")
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index():
     return get_static_file("index.html")
-
-
-@app.get("/static/{path:path}")
-async def static_file(path: str):
-    return FileResponse(get_static_path(path))
 
 
 @app.post("/data")
