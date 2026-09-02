@@ -32,9 +32,10 @@ def get_static_path(filename: str) -> str:
 
 
 def get_static_dir() -> str:
-    # The static directory itself, as a filesystem path. `buelon.static` is a
-    # namespace package, so `resources.files` hands back a MultiplexedPath whose
-    # str() is a repr, not a path -- take the parent of a known member instead.
+    # The static directory itself, as a filesystem path. Taken as the parent of a
+    # known member rather than str() of the package: `buelon.static` used to be a
+    # namespace package, whose MultiplexedPath str()s to a repr instead of a path
+    # (it has an `__init__.py` now -- BUGS.md #26 -- but this form works either way).
     return os.path.dirname(get_static_path("index.html"))
 
 
