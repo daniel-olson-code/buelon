@@ -172,15 +172,47 @@ def add_step_to_steps(step: buelon.core.step.Job, jobs: list[buelon.core.step.Jo
     jobs.append(step)
 
 
+def job_int_field(job: buelon.core.step.Job, field: str, default: int = 0) -> int:
+    """Read an integer job field, repairing the job in place if it is not one.
+
+    BUGS.md #42. The parser used to hand back the *string* `'0'` for a file-level
+    `!priority` / `!retries`, and a string priority is uniquely nasty: `upload_step`
+    happily keys `STEPS[scope]['0']`, `get_steps_v2` only walks the int priorities in
+    `preset_priorities`, and the job is counted by `bue status` forever while no
+    worker is ever offered it. Nothing errors, so there is nothing to notice.
+
+    That is fixed at the source, but the hub also accepts jobs from clients it does
+    not control -- an older `bue upload`, or a snapshot written before the fix -- so
+    normalise here too rather than trusting the wire. Repairing in place keeps the
+    job self-consistent for the snapshot and the web UI, not just for the dict key.
+    """
+    value = getattr(job, field, default)
+
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+
+    try:
+        coerced = int(value)
+    except (TypeError, ValueError):
+        print(f'job {getattr(job, "name", "?")!r} ({getattr(job, "id", "?")}) has a '
+              f'non-numeric {field} {value!r}; treating it as {default}')
+        coerced = default
+
+    setattr(job, field, coerced)
+    return coerced
+
+
 def upload_step(job: buelon.core.step.Job):
     with lock:
+        priority = job_int_field(job, 'priority', 0)
+
         if job.scope not in STEPS:
             STEPS[job.scope] = {}
 
-        if job.priority not in STEPS[job.scope]:
-            STEPS[job.scope][job.priority] = []
+        if priority not in STEPS[job.scope]:
+            STEPS[job.scope][priority] = []
 
-        add_step_to_steps(job, STEPS[job.scope][job.priority])
+        add_step_to_steps(job, STEPS[job.scope][priority])
 
 
 def upload_steps(jobs: list[buelon.core.step.Job]):
@@ -207,7 +239,9 @@ def handle_step(step:  buelon.core.step.Job, status: buelon.core.step.StepStatus
             # released back by a worker -- the object handed to us here is the worker's
             # deserialized copy, and `attempts` rides along in its `__dict__`.
             step.attempts = (getattr(step, 'attempts', 0) or 0) + 1
-            retries = getattr(step, 'retries', 0) or 0
+            # A string here used to raise `TypeError` on the comparison below -- `'0'`
+            # is truthy, so the old `or 0` did not catch it. BUGS.md #42.
+            retries = job_int_field(step, 'retries', 0)
 
             if step.attempts <= retries:
                 print(f'job {step.id} ({step.name}) failed, retrying '

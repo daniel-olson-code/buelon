@@ -743,8 +743,13 @@ class PipelineParser:
                             raise BuelonSyntaxError(f'Line: {i + 1} Invalid {token} name. `{line}`')
                         name_warning(self.args[token])
                     elif config['type'] == 'int':
+                        # Keep the converted value. This used to validate and throw the
+                        # result away, so a file-level `!priority 0` reached the hub as
+                        # the *string* `'0'` and keyed `STEPS` with something
+                        # `get_steps_v2` never walks -- the job was accepted, counted,
+                        # and then never dispatched to anyone. BUGS.md #42.
                         try:
-                            int(self.args[token])
+                            self.args[token] = int(self.args[token])
                         except ValueError:
                             raise BuelonSyntaxError(f'Line: {i + 1} Invalid {token} value. `{line}`')
                     elif config['type'] == 'calculate':

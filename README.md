@@ -337,8 +337,7 @@ def upload_to_db(table: list[dict]) -> None:
 - **Indentation is four spaces.** Change it with `TAB = '  '` on the first line.
 - `!scope`, `!priority`, `!timeout` and `!retries` set defaults for the whole file when they
   are at the left margin, and override them for one job when they are indented inside a job
-  definition or attached to an `import (...)` entry. See
-  [Known Defects](#known-defects) before using the file-level `!priority` / `!retries`.
+  definition or attached to an `import (...)` entry.
 - `!timeout` takes an arithmetic expression in seconds (`20 * 60`, `60**2 * 5`), but it must
   not contain parentheses inside an `import (...)` block — the parser counts brackets.
 - A single-job pipe needs a leading `|`: `p = | accounts`.
@@ -371,12 +370,6 @@ with an errored branch pins its results in hub memory until you run `bue reset` 
 
 ## Known Defects
 
-- **File-level `!priority` and `!retries` are broken.** Set at the left margin they are
-  left as strings instead of integers. A string priority makes the hub skip those jobs
-  forever — they sit in `bue status` as `jobs: N` and no worker ever pulls them — and a
-  string `retries` makes the hub's error path raise. Both work correctly when set on an
-  individual job (indented inside a job definition, or on an `import (...)` entry). Avoid
-  them at file level until this is fixed; `!scope` and `!timeout` are fine either way.
 - **The `postgres:` block in `settings.yaml` is not read by anything.** Postgres jobs use
   the `POSTGRES_*` environment variables instead.
 - **`bue example` writes a `.env` file describing a configuration that no longer exists**,
