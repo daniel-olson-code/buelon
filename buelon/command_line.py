@@ -69,6 +69,13 @@ def upload_pipe_code(file_path):  # , binding, lazy_steps):
     pete.hub.upload_file_to_server(file_path)  # , lazy_steps)
 
 
+def submit_pipe_code(file_path, scope):
+    """`bue submit` -- build the script on a worker instead of on this machine."""
+    pete.hub.submit_file_to_server(file_path, scope)
+    print(f'Submitted {file_path} to be built on a worker'
+          f'{f" in scope {scope}" if scope else ""}.')
+
+
 def display_status(args):
     async def func():
         async with pete.hub.BiWorkerClient(settings.worker.host, settings.worker.port, settings.worker.scopes.split(',')) as client:
@@ -292,6 +299,16 @@ def cli():
     file_parser.add_argument('-f', '--file-path', help='File path for uploading pipe code', dest='file_path')
     # file_parser.add_argument('-l', '--lazy', default=False, action=argparse.BooleanOptionalAction, dest='lazy')
 
+    # Submit: same input as `upload`, but the script is built on a worker rather than
+    # here. Removed in BUGS.md #18 as a broken stub, restored in #46.
+    submit_parser = subparsers.add_parser(
+        'submit', help='Upload pipe code, but build it on a worker instead of locally')
+    submit_parser.add_argument('-f', '--file-path', required=True,
+                               help='File path for submitting pipe code', dest='file_path')
+    submit_parser.add_argument('-s', '--scope', default=None,
+                               help='Scope the bootstrap job runs in '
+                                    '(default: the last of worker.scopes)')
+
     # Hub command
     hub_parser = subparsers.add_parser('hub', help='Run the hub')
     # hub_parser.add_argument('-b', '--binding', required=hub_binding_required, help='Main binding for hub (host:port)')
@@ -406,6 +423,8 @@ def cli():
         run_example()
     elif args.command == 'upload':
         upload_pipe_code(args.file_path)  # , args.hub_binding, args.lazy)
+    elif args.command == 'submit':
+        submit_pipe_code(args.file_path, args.scope)
     elif args.command == 'reset':
         pete.hub.reset_errors_from_server()
     elif args.command == 'status':

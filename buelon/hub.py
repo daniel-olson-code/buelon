@@ -3,6 +3,7 @@ import os
 import uuid
 import time
 import json
+import base64
 import asyncio
 import traceback
 import threading
@@ -521,6 +522,60 @@ def upload_file_to_server(file_path: str, return_jobs: bool = False) -> None | l
 
 def upload_code_to_server(code: str, return_jobs: bool = False) -> None | list[buelon.core.step.Job]:
     return bi_test_upload('code', code, return_jobs)
+
+
+def submit_bootstrap_code(code: str, scope: str) -> str:
+    """Wrap a `.bue` script in a one-job `.bue` that uploads it from a worker.
+
+    `bue upload` runs the script on the machine you type it on: a `.bue` is a program
+    that builds a job graph, and a `for` loop's source pipe genuinely executes to say
+    how many jobs to make. `bue submit` moves that work onto the cluster by uploading
+    a single bootstrap job whose body re-uploads the real script -- so the build, and
+    the loop source with it, run on a worker in `scope`.
+
+    The payload is base64 so it cannot break out of the enclosing block: inline code
+    in a `.bue` is delimited by backticks, and a submitted script may well contain
+    them (any inline `sqlite3` job does). Base64 has no backticks, no newlines and no
+    quotes, so it embeds verbatim.
+    """
+    payload = base64.b64encode(code.encode()).decode()
+
+    return (
+        f'!scope {scope}\n'
+        f'\n'
+        f'submit:\n'
+        f'    python\n'
+        f'    main\n'
+        f'    `\n'
+        f'import base64\n'
+        f'import buelon.hub\n'
+        f'\n'
+        f'def main(*args):\n'
+        f'    buelon.hub.upload_code_to_server(\n'
+        f'        base64.b64decode("{payload}").decode()\n'
+        f'    )\n'
+        f'`\n'
+        f'\n'
+        f'submit_pipe = | submit\n'
+        f'submit_pipe()\n'
+    )
+
+
+def submit_code_to_server(code: str, scope: str | None = None,
+                          return_jobs: bool = False) -> None | list[buelon.core.step.Job]:
+    """Build `code` on a worker instead of locally. See `submit_bootstrap_code`."""
+    if scope is None:
+        scope = settings.worker.scopes.split(',')[-1].strip()
+
+    return upload_code_to_server(submit_bootstrap_code(code, scope), return_jobs=return_jobs)
+
+
+def submit_file_to_server(file_path: str, scope: str | None = None,
+                          return_jobs: bool = False) -> None | list[buelon.core.step.Job]:
+    with open(file_path) as f:
+        code = f.read()
+
+    return submit_code_to_server(code, scope=scope, return_jobs=return_jobs)
 
 
 def display_from_server(prefix: str = '', suffix: str = '', return_value: bool = False):
@@ -1288,7 +1343,10 @@ class BiWorkerClient:
         request_id = await self.client.asend_obj('web-info', workers_info)
         data = (await self.get_response(request_id)).get_obj()
 
-        for worker_id, worker in data['workers'].items():
+        # The hub only includes 'workers' when `workers_info` is true, so this must not
+        # assume the key is there -- `get_web_info(False)` used to raise KeyError on any
+        # caller that just wanted the counts (BUGS.md #28).
+        for worker_id, worker in data.get('workers', {}).items():
             if 'jobs' not in worker:
                 worker['jobs'] = []
 

@@ -165,7 +165,9 @@ bue worker                  run a worker (foreground)
 bue work                    same as `bue worker`
 bue run-job -j <job_id>     run one job by id, once, then exit
 
-bue upload -f <file.bue>    parse a pipeline and send its jobs to the hub
+bue upload -f <file.bue>    build the pipeline here, send its jobs to the hub
+bue submit -f <file.bue>    send the script instead, and build it on a worker
+                            (-s SCOPE picks which; default: last of worker.scopes)
 bue run -f <file.bue>       run a pipeline locally, start to finish, with no hub
 
 bue status                  one-shot job counts
@@ -345,12 +347,27 @@ def upload_to_db(table: list[dict]) -> None:
 - A single-job pipe needs a leading `|`: `p = | accounts`.
 - A pipe can be wrapped across lines in parentheses.
 - Only two ways to run a pipe: `pipe()` on its own, or `for x in pipe1(): pipe2(x)`.
-- **A `for` loop's source pipe runs on the machine doing the upload**, not on a worker.
-  `bue upload` has to know how many jobs to create, so it executes that pipe's last job
-  locally, in the uploading process and working directory, before anything reaches the
-  hub. So `bue upload` needs the source job's code and its dependencies present, and
-  that job ignores `!scope`. Keep loop sources cheap and side-effect-free.
+- **`bue upload` runs the script locally and uploads the jobs it produces.** A `.bue` file
+  is a program, not a manifest: `bue upload` executes it on your machine to build the job
+  graph, then sends the resulting jobs to the hub. Mostly that is just parsing — but a `for`
+  loop has to know how many jobs to create, so the loop's source pipe genuinely runs
+  locally, in the uploading process and working directory, and outside any `!scope`. Use
+  **`bue submit`** instead to do that build on a worker (see below).
 - `#` starts a comment.
+
+### `bue upload` vs `bue submit`
+
+|  | `bue upload` | `bue submit` |
+|---|---|---|
+| where the script is built | your machine | a worker, in `-s SCOPE` |
+| what is sent to the hub | the finished jobs | one bootstrap job carrying the script |
+| a `for` loop's source pipe | runs locally, no `!scope` / `!timeout` / `!retries` | runs as a normal job, with all three |
+| needs the script's imports and referenced files | on your machine | on the worker |
+| you see build errors | immediately, in your terminal | in `bue errors` |
+
+`submit` is the one to reach for when the loop source is expensive, needs credentials or
+network access your laptop does not have, or belongs on a machine in a particular scope.
+`upload` is simpler and tells you about syntax errors on the spot, so it stays the default.
 
 ## Production Notes
 
