@@ -498,9 +498,6 @@ def _job_status(job_id: str):
             status = status.name
         else:
             status = f'{status}'
-            _map = {k: v.value for k, v in dict(buelon.core.step.StepStatus.__members__).items()}
-            if status in _map:
-                status = 'unknown'
     return status
 
 
