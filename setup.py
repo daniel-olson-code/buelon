@@ -25,7 +25,7 @@ requirements = [
     'websockets',
     'fastapi',
     'uvicorn',
-    'bisocket==0.0.8',
+    'bisocket>=0.0.9',
 ]
 
 # Read the long description from the README file

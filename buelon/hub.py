@@ -58,18 +58,6 @@ holds_v2: dict[str, dict[str, buelon.step.Job]] = {}
 
 workers: dict[str, dict] = {}
 
-# Client ids whose *send* connection is currently open.
-#
-# A bisocket client opens two connections that share one client_id: `send` (requests
-# in) and `receive` (responses out). bisocket fires `on_open`/`on_close` for the send
-# connection only, but fires `on_finally` for BOTH. `OnFinallyInfo` carries no socket
-# discriminator, so without this set the hub cannot tell "the worker is gone" from
-# "the worker's response channel dropped while it is still running jobs" -- and would
-# requeue in-flight jobs out from under a live worker.
-#
-# Guarded by `lock`.
-send_open: set[str] = set()
-
 db: dict[str, Any] = {}  # : dict[str, bytes] = {}
 
 
@@ -1140,7 +1128,7 @@ def get_job_parents_and_results(job_id: str, already: set | None = None):
 
 # region bi_test
 
-from bisocket.main import Server as BiServer, Client as BiClient, BiMessage, ServerRequest, OnCloseInfo, OnOpenInfo, OnFinallyInfo
+from bisocket.main import Server as BiServer, Client as BiClient, BiMessage, ServerRequest, OnCloseInfo, OnOpenInfo, OnFinallyInfo, CONNECTION_RECEIVE
 
 
 class HubTimeout(TimeoutError):
@@ -1742,11 +1730,6 @@ def bi_release_client(client_id: str) -> int:
     Returns the number of jobs put back on the queue.
     """
     with lock:
-        # Deregister first. If upload_steps somehow raised afterwards we would still
-        # rather leak the jobs than leave `send_open` holding a dead id, which would
-        # make every later on_finally skip its cleanup for good.
-        send_open.discard(client_id)
-
         held = holds_v2.pop(client_id, None)
         jobs = list(held.values()) if isinstance(held, dict) else []
 
@@ -1766,11 +1749,11 @@ def bi_release_client(client_id: str) -> int:
 
 
 def bi_on_open(open_info: OnOpenInfo):
-    # Send connection only -- bisocket does not call this for the receive socket.
+    # Send connection only -- bisocket calls `on_open_receive`, which the hub does not
+    # register, for the receive socket.
     with lock:
         holds_v2[open_info.client_id] = {}
         workers[open_info.client_id] = {}
-        send_open.add(open_info.client_id)
 
 
 def bi_on_close(close_info: OnCloseInfo):
@@ -1783,25 +1766,26 @@ def bi_on_close(close_info: OnCloseInfo):
 
 
 def bi_on_finally(finally_info: OnFinallyInfo):
-    # Fires for BOTH of a client's connections. If the send side is still open, this
-    # is the receive socket going away on its own -- the worker is still connected and
-    # running jobs, so releasing its holds here would hand them to a second worker
+    # Fires for BOTH of a client's connections (see BUGS.md #2). The receive socket
+    # going away on its own does not mean the worker is gone -- it is still connected
+    # and running jobs, so releasing its holds here would hand them to a second worker
     # while the first is mid-flight. Leave it alone; `bi_on_close` will clean up when
     # the send side actually ends.
+    #
+    # `connection_type` needs bisocket >= 0.0.9. `None` means the handshake failed
+    # before the socket said which one it was -- nothing was ever held on it, so the
+    # idempotent cleanup is the safe reading.
     client_id = finally_info.client_id
 
     if not client_id:
         return
 
-    with lock:
-        still_live = client_id in send_open
-
-    if still_live:
-        print(f'client {client_id} lost its receive socket; send socket still open, '
-              f'keeping its held jobs')
+    if getattr(finally_info, 'connection_type', None) == CONNECTION_RECEIVE:
+        print(f'client {client_id} lost its receive socket; keeping its held jobs '
+              f'until the send socket closes')
         return
 
-    # Send side already closed, or never opened: safety net only.
+    # Send connection, or an unidentified one: safety net behind `bi_on_close`.
     bi_release_client(client_id)
 
 
