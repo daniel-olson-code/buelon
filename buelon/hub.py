@@ -1131,6 +1131,17 @@ def get_job_parents_and_results(job_id: str, already: set | None = None):
 from bisocket.main import Server as BiServer, Client as BiClient, BiMessage, ServerRequest, OnCloseInfo, OnOpenInfo, OnFinallyInfo, CONNECTION_RECEIVE
 
 
+def encryption_mode() -> str | None:
+    """The wire encryption mode both ends of the transport must use -- BUGS.md #31.
+
+    Read fresh on every connection rather than captured at import, so a test (or a
+    caller that reloads settings) can change `settings.hub.encryption` and have it
+    take effect. `None` hands the decision to bisocket, i.e. to
+    $BISOCKET_ENCRYPTION and then its own 'secure' default.
+    """
+    return getattr(settings.hub, 'encryption', None)
+
+
 class HubTimeout(TimeoutError):
     """The hub did not answer a request within the allowed time -- BUGS.md #7.
 
@@ -1192,7 +1203,8 @@ class BiWorkerClient:
         # web.py reconnects by re-entering an existing client. Request ids from the old
         # connection can never be answered on the new one, so stop tracking them.
         self._abandoned.clear()
-        self.client = await BiClient(self.host, self.port, self.on_receive).__aenter__()
+        self.client = await BiClient(self.host, self.port, self.on_receive,
+                                     encryption=encryption_mode()).__aenter__()
         await self.update_worker_info()
         return self
 
@@ -1797,7 +1809,9 @@ def bi_test_server():
     # made a hub restart a total loss of every pipeline.
     auto_load()
 
-    server = BiServer(settings.hub.host, settings.hub.port, bi_handle_messages, on_open=bi_on_open, on_close=bi_on_close, on_finally=bi_on_finally)
+    # `encryption` must match every worker's; see `encryption_mode`.
+    server = BiServer(settings.hub.host, settings.hub.port, bi_handle_messages, on_open=bi_on_open, on_close=bi_on_close, on_finally=bi_on_finally,
+                      encryption=encryption_mode())
 
     saver = None
     if AUTO_SAVE_ENABLED:

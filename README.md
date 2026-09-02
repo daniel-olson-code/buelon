@@ -112,6 +112,7 @@ ignored. Edit the yaml.
 hub:
   host: 0.0.0.0        # interface the hub binds
   port: 65432
+  encryption: faster   # faster | secure | off -- MUST match on the hub and every worker
 
 worker:
   host: localhost      # the hub's address, as seen by this machine
@@ -137,10 +138,38 @@ postgres:              # NOT read by anything -- see Known Defects
 `hub.port` and `worker.port` must match, and every client command (`upload`, `status`, …)
 uses the **`worker`** block to find the hub.
 
+#### `hub.encryption`
+
+The wire format for every hub/worker connection. It lives under `hub:` but is read by
+**both** ends — the hub and every worker, CLI command and `bue web` process — so there is
+one value to keep in step rather than two that can disagree.
+
+| value | wire format |
+|---|---|
+| `faster` (default) | AES-GCM. |
+| `secure` | AES-GCM, then bz2 over the ciphertext. bisocket's own default. |
+| `off` | Plaintext. Only on a network you fully trust. |
+
+`secure` is *slower and bigger* than `faster` here, not safer: the bz2 pass runs after
+encryption, so it compresses ciphertext, which is incompressible — a 25-job batch measures
+~0.65 ms/frame of hub CPU and comes out ~26% larger on the wire. Buelon already bz2-
+compresses job batches itself before they reach the transport, which is why the second pass
+buys nothing. Both modes use the same AES-GCM encryption and the same `CRYPTO_KEY`.
+
+**The hub and every worker must agree.** A mismatch is refused with `EncryptionMismatch`
+naming both modes — it is not negotiated — so upgrading from a version that predates this
+setting (or changing the value) means restarting the hub and all its workers together, not
+a rolling restart. To upgrade without a coordinated restart, set `encryption: secure`
+everywhere first, then switch to `faster` when you can take the hub down.
+
+Leave the value empty (`encryption:`) to defer to `$BISOCKET_ENCRYPTION`, and to
+bisocket's `secure` default if that is unset too.
+
 ### Environment variables
 
 | variable | default | effect |
 |---|---|---|
+| `BISOCKET_ENCRYPTION` | — | Wire format, consulted only when `hub.encryption` in the yaml is left empty. Same values as that setting. |
 | `CRYPTO_KEY` | an insecure built-in default | Transport encryption key. **Set this in production.** Every hub, worker and CLI invocation must use the same value; a mismatch fails the connection with `EncryptionMismatch`. |
 | `BUELON_SETTINGS_PATH` | `.bue/settings.yaml` | Full path to the settings file. |
 | `BUELON_DIR_PATH` | `.bue` | Directory the default settings path is built from. |
@@ -376,7 +405,8 @@ that can reach the port can queue and run arbitrary code. Keep the hub and its w
 private network, and put anything user-facing (the `bue web` UI, an upload endpoint) in
 front of it rather than exposing the hub itself. Set `CRYPTO_KEY` to a real secret on every
 process — hub, workers and any machine running `bue upload` / `bue status` — or the built-in
-default key is used and the transport is effectively unencrypted.
+default key is used and the transport is effectively unencrypted. `hub.encryption` picks the
+wire format and must be identical on every process; `off` disables encryption entirely.
 
 **Sizing.** One hub, N workers. Each worker runs up to 25 jobs concurrently on an asyncio
 loop, so the useful number of worker processes is driven by how CPU-bound your jobs are;

@@ -38,10 +38,21 @@ ZOOKEEPER_PATH: str = f"{os.environ.get('ZOOKEEPER_PATH', '/buelon/bucket')}"
 
 PERSISTENT_PATH: str = f"{os.environ.get('PERSISTENT_PATH', '__PERSISTENT__')}"
 
+# bisocket's own default is 'secure', which runs bz2 *after* AES-GCM -- i.e. it
+# compresses ciphertext, which is incompressible. buelon already bz2-compresses job
+# batches at the application layer (`steps_to_compressed_message`), so that second pass
+# is pure CPU on the hub thread. 'faster' skips it. BUGS.md #31.
+DEFAULT_ENCRYPTION = 'faster'
+
 DEFAULT_SETTINGS = {
     'hub': {
         'host': '0.0.0.0',
         'port': 65432,
+        # Wire encryption for every hub/worker connection: 'secure' (AES-GCM then bz2),
+        # 'faster' (AES-GCM only) or 'off' (plaintext). The hub and every worker MUST
+        # agree -- a mismatch is refused, not negotiated. Leave it empty to let
+        # $BISOCKET_ENCRYPTION decide.
+        'encryption': DEFAULT_ENCRYPTION,
         # 'username': 'XXXXX',
         # 'password': 'XXXXX'
     },
@@ -124,6 +135,12 @@ class HubSettings(YamlObj):
     def __init__(self, settings: dict):
         self.host = settings.get('host', DEFAULT_SETTINGS['hub']['host'])
         self.port = settings.get('port', DEFAULT_SETTINGS['hub']['port'])
+        # Read by both ends of the transport -- `bi_test_server`'s `BiServer` and
+        # `BiWorkerClient`'s `BiClient` -- so there is one key to change rather than two
+        # that can disagree. An empty value means "not set here": bisocket then falls
+        # back to $BISOCKET_ENCRYPTION, and to its own 'secure' default. BUGS.md #31.
+        _encryption = settings.get('encryption', DEFAULT_SETTINGS['hub']['encryption'])
+        self.encryption = None if _encryption is None or _encryption == '' else _encryption
         # self.username = settings.get('username', DEFAULT_SETTINGS['hub']['username'])
         # self.password = settings.get('password', DEFAULT_SETTINGS['hub']['password'])
 
