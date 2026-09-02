@@ -8,6 +8,7 @@ import asyncio
 import logging
 import datetime
 
+from buelon._version import __version__ as BUELON_VERSION
 from buelon.settings import settings, init, SETTINGS_PATH
 
 # Import necessary modules from buelon
@@ -260,7 +261,7 @@ def has_postgres_env_vars() -> bool:
 
 def cli():
     parser = argparse.ArgumentParser(description='Buelon command-line interface')
-    parser.add_argument('-v', '--version', action='version', version='Buelon 1.0.78-alpha1')
+    parser.add_argument('-v', '--version', action='version', version=f'Buelon {BUELON_VERSION}')
     parser.add_argument('-b', '--binding', help='Binding for uploading pipe code (host:port)')
     parser.add_argument('file_path', nargs='?', default='nothing', help='File path for uploading pipe code')
 

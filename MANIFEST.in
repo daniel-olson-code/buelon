@@ -2,3 +2,4 @@ include buelon/examples/example.bue
 include README.md
 include LICENSE
 recursive-include buelon/static *
+include version.json

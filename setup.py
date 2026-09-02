@@ -1,4 +1,11 @@
+import json
+
 from setuptools import setup, find_packages
+
+# The version literal lives in `version.json` and nowhere else (BUGS.md #26);
+# `buelon/_version.py` reads the same file at runtime.
+with open('version.json', 'r', encoding='utf-8') as fh:
+    version = json.load(fh)['last']
 
 # Requirements  for the package
 requirements = [
@@ -27,7 +34,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="buelon",
-    version="1.0.78-alpha1",
+    version=version,
     author="Daniel Olson",
     author_email="daniel@orphos.cloud",
     description="A scripting language to simply manage a very large amount of i/o heavy workloads. Such as API calls "
