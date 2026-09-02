@@ -130,16 +130,37 @@ def get_steps_v2(scopes: list[str], limit: int = 100, reverse: bool = False, sin
         if reverse:
             scopes = scopes[::-1]
 
+        # `STEPS` prunes itself -- an emptied priority list and then an emptied scope
+        # are deleted, here and in `remove_ids_from_steps` -- so the (scope, priority)
+        # pairs that actually hold jobs are few. Walking those and sorting them beats
+        # scanning the full 101-priorities x N-scopes grid on every `hold`, which is
+        # the common case now that idle workers back off and re-ask (BUGS.md #6, #26).
+        priority_order = {p: n for n, p in enumerate(_preset_priorities)}
+        scope_order = {s: n for n, s in enumerate(scopes)}
+
         def get_scope_and_priority():
-            for i in _preset_priorities:
-                for s in scopes:
-                    if s in STEPS and i in STEPS[s] and STEPS[s][i]:
-                        yield s, i
+            # Priorities outside `preset_priorities` (0-100) are skipped, as before.
+            pairs = [
+                (s, i)
+                for s in scope_order
+                for i in STEPS.get(s, {})
+                if i in priority_order and STEPS[s][i]
+            ]
+            # Priority first, scope second -- the same order the nested loops produced.
+            pairs.sort(key=lambda pair: (priority_order[pair[1]], scope_order[pair[0]]))
+            yield from pairs
 
         for scope, priority in get_scope_and_priority():
             sl = max(0, limit - len(result))
             result.extend(STEPS[scope][priority][:sl])
-            STEPS[scope][priority] = STEPS[scope][priority][sl:]
+            remaining = STEPS[scope][priority][sl:]
+
+            if remaining:
+                STEPS[scope][priority] = remaining
+            else:
+                del STEPS[scope][priority]
+                if not STEPS[scope]:
+                    del STEPS[scope]
 
             if len(result) >= limit:
                 break
@@ -1405,7 +1426,16 @@ def remove_ids_from_steps(step_ids: set[str]) -> int:
             for priority, jobs in list(priorities.items()):
                 keep = [job for job in jobs if job.id not in step_ids]
                 removed += len(jobs) - len(keep)
-                priorities[priority] = keep
+
+                # Emptied queues are dropped rather than left behind, so the dispatch
+                # scan in `get_steps_v2` only ever sees pairs that hold jobs.
+                if keep:
+                    priorities[priority] = keep
+                else:
+                    del priorities[priority]
+
+            if not priorities:
+                del STEPS[scope]
 
         return removed
 
