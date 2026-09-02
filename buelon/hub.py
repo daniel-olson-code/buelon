@@ -415,6 +415,47 @@ def compressed_message_to_steps(data: str) -> list[buelon.core.step.Job]:
     return bytes_to_steps(bz2.decompress(b))
 
 
+def _unsendable_results_to_errors(
+    jobs: list[buelon.core.step.Job],
+    statuses: list[buelon.core.step.StepStatus],
+    results: list[Any],
+) -> tuple[list[buelon.core.step.StepStatus], list[Any]]:
+    """Replace any result `json` cannot encode with an error naming the job.
+
+    BUGS.md #43. A job's return value crosses the wire as part of a `release`,
+    which bisocket encodes with `json.dumps`. One job returning a `uuid.UUID`
+    used to raise `TypeError` for the *whole batch*, and because the caller never
+    recovered, every job in it stayed checked out on the hub forever with nothing
+    logged anywhere.
+
+    `json.dumps` is deliberate here rather than `orjson`: it has to be the encoder
+    bisocket actually uses, or this would pass values the send still rejects.
+    Encoding is per job, so one bad result cannot take its batch down with it.
+    """
+    new_statuses, new_results = [], []
+
+    for job, status, result in zip(jobs, statuses, results):
+        try:
+            json.dumps(result)
+        except (TypeError, ValueError) as e:
+            msg = (f'job {job.name!r} ({job.id}) returned a value that cannot be '
+                   f'sent to the hub: {e}')
+            print(msg)
+            new_statuses.append(buelon.core.step.StepStatus.error)
+            # 'error'/'trace' are the keys `bi_on_errors` looks for, so this shows
+            # up under `bue errors` like any other failure.
+            new_results.append({
+                'error': msg,
+                'trace': '',
+                'worker_name': f'{settings.worker.info.get("name", "Unknown")}',
+            })
+        else:
+            new_statuses.append(status)
+            new_results.append(result)
+
+    return new_statuses, new_results
+
+
 def all_steps_to_bytes() -> bytes:
     return orjson.dumps([[step[0], step[1].to_json()] for step in ALL_STEPS.values()])
 
@@ -1174,8 +1215,29 @@ class BiWorkerClient:
         return [uid, compressed_message_to_steps(jobs), args]
 
     async def release(self, uid: str, jobs: list[buelon.step.Job], statuses: list[buelon.step.StepStatus], results: list[any]):
-        data = [uid, steps_to_compressed_message(jobs), [status.value for status in statuses], results]
-        request_id = await self.client.asend_obj('release', data)
+        """Hand a batch of finished jobs back to the hub.
+
+        `results` is whatever user code returned, and it has to survive
+        `json.dumps` -- that is how bisocket encodes an object payload. A job
+        returning a `uuid.UUID`, a `set` or a `datetime` used to make this raise
+        `TypeError` and strand the whole batch on the hub forever (BUGS.md #43),
+        so a failed encode is retried once with the offending results replaced by
+        an error the user can actually read in `bue errors`.
+
+        Retrying is safe: `asend_obj` evaluates `json.dumps(data)` to build its
+        argument *before* `asend` is entered, so a raise from the encoder means no
+        lock was taken and no byte reached the socket.
+        """
+        def payload(_statuses, _results):
+            return [uid, steps_to_compressed_message(jobs),
+                    [status.value for status in _statuses], _results]
+
+        try:
+            request_id = await self.client.asend_obj('release', payload(statuses, results))
+        except (TypeError, ValueError):
+            statuses, results = _unsendable_results_to_errors(jobs, statuses, results)
+            request_id = await self.client.asend_obj('release', payload(statuses, results))
+
         self._read_ack_in_background(request_id)
 
     async def update_worker_info(self):
@@ -1838,6 +1900,18 @@ class BiWorkerJobQueue:
         return max([job.runtime for job in self.jobs]) if self.jobs else 0
 
 
+def _log_worker_task_exception(task: asyncio.Task) -> None:
+    """Print the traceback of a worker task that died, when it dies."""
+    if task.cancelled():
+        return
+
+    exc = task.exception()
+
+    if exc is not None:
+        print(f'worker task {task.get_name()!r} stopped with an exception:')
+        traceback.print_exception(type(exc), exc, exc.__traceback__)
+
+
 async def bi_test_worker(jobs_at_a_time: int = 25, single_step: str | None = None, max_time: float = 60 * 20, stop_on_no_jobs: bool = False):
     """Run jobs off the hub until `max_time` (or, with `single_step`, until that one job is done).
 
@@ -1938,40 +2012,59 @@ async def bi_test_worker(jobs_at_a_time: int = 25, single_step: str | None = Non
                 steps = [job.step for job in jobs]
                 statuses = [job.status for job in jobs]
                 results = [job.result for job in jobs]
-
-                print(f'finished {len(jobs):,} jobs')
-
-                await client.release(uid, steps, statuses, results)
                 n_released = len(jobs)
 
-                if single_job_mode:
-                    # The one job we were asked to run is done. Do not re-hold it.
+                print(f'finished {n_released:,} jobs')
+
+                # Anything raised in here used to kill this coroutine outright. The
+                # worker kept polling for new work but never handed another finished
+                # job back, and the slots these jobs occupied were never returned --
+                # `available` walked down to zero one dead batch at a time, with no
+                # traceback until the 20-minute `await t2` at shutdown. BUGS.md #43.
+                try:
+                    await client.release(uid, steps, statuses, results)
+
+                    if single_job_mode:
+                        # The one job we were asked to run is done. Do not re-hold it.
+                        await give_capacity(n_released)
+                        stop_now = True
+                        continue
+
+                    # The released jobs' slots are still counted as in use, so this
+                    # hold spends already-reserved capacity -- no `take_capacity`.
+                    uid, jobs, args = await client.hold(limit=n_released, reverse=settings.worker.reverse, single_job=single_step, wait_time=0.0)
+                    print(f'pulled {len(jobs):,} jobs')
+                    if stop_on_no_jobs:
+                        if not jobs and n_released:
+                            should_stop_n += 1
+                        else:
+                            should_stop_n = 0
+
+                    for job, arg in zip(jobs, args):
+                        await job_queue.aput(BiWorkerJob(mut, uid, job, arg))
+                        # job_queue.put(BiWorkerJob(mut, uid, job, arg))
+
+                    await give_capacity(n_released - len(jobs))
+                except Exception:
+                    # Hand the slots back and keep going. If the release itself is
+                    # what failed, the hub still has the jobs held; it requeues them
+                    # when this client disconnects.
+                    traceback.print_exc()
                     await give_capacity(n_released)
-                    stop_now = True
-                    continue
-
-                # The released jobs' slots are still counted as in use, so this hold
-                # spends already-reserved capacity -- no `take_capacity` here.
-                uid, jobs, args = await client.hold(limit=n_released, reverse=settings.worker.reverse, single_job=single_step, wait_time=0.0)
-                print(f'pulled {len(jobs):,} jobs')
-                if stop_on_no_jobs:
-                    if not jobs and n_released:
-                        should_stop_n += 1
-                    else:
-                        should_stop_n = 0
-
-                for job, arg in zip(jobs, args):
-                    await job_queue.aput(BiWorkerJob(mut, uid, job, arg))
-                    # job_queue.put(BiWorkerJob(mut, uid, job, arg))
-
-                await give_capacity(n_released - len(jobs))
+                    if single_job_mode:
+                        stop_now = True
 
             if not finished_jobs:
                 await asyncio.sleep(0.1)
 
     async with BiWorkerClient(settings.worker.host, settings.worker.port, ['test'] + settings.worker.scopes.split(',')) as client:
-        t1 = asyncio.create_task(see_if_more())
-        t2 = asyncio.create_task(handle_finished_jobs())
+        t1 = asyncio.create_task(see_if_more(), name='see_if_more')
+        t2 = asyncio.create_task(handle_finished_jobs(), name='handle_finished_jobs')
+        # Neither task is awaited until the run ends, so a crash in either was
+        # invisible for up to `max_time` -- the worker just quietly stopped doing
+        # half its job. Say so the moment it happens. BUGS.md #43.
+        t1.add_done_callback(_log_worker_task_exception)
+        t2.add_done_callback(_log_worker_task_exception)
 
         while (time.time() - t) < max_time and not should_stop():
             # await asyncio.sleep(5.0)

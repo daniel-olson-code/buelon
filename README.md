@@ -4,375 +4,400 @@
   <img src="https://raw.githubusercontent.com/daniel-olson-code/buelon/refs/heads/main/buelon/static/logo.png" alt="Buelon logo" width="50%">
 </p>
 
-Buelon is a Python orchestration system with a DML for managing large amounts of I/O-heavy work, such as API calls for ETL, ELT, and other programs that need coordinated Python and/or SQL execution.
+Buelon is a Python orchestration system with a small scripting language (a DML) for
+managing large amounts of I/O-heavy work — API calls for ETL and ELT, and other programs
+that need coordinated Python and/or SQL execution.
+
+A **hub** holds the job queue. **Workers** connect to it, pull jobs, run them, and hand the
+results back. Jobs form a DAG: a job's return value becomes its children's arguments.
 
 ## Table of Contents
-<!--
-- [Features](#features)
--->
+
 - [Installation](#installation)
 - [Quick Start](#quick-start)
-- [Supported Languages](#supported-languages) <!-- - [Configuration](#configuration) - [Usage](#usage) -->
-- [Learn by Example](#learn-by-example) <!-- - [Performance](#performance)   - [Contributing](#contributing) -->
+- [Architecture](#architecture)
+- [Configuration](#configuration)
+- [Command Reference](#command-reference)
+- [Supported Languages](#supported-languages)
+- [Learn by Example](#learn-by-example)
+- [Production Notes](#production-notes)
+- [Known Defects](#known-defects)
 - [Future of Buelon](#future-plans)
 - [In Loving Memory](#in-loving-memory)
 - [License](#license)
 
-<!--
-## Features
-- Asynchronous execution of code across multiple servers
-- Custom scripting language for defining ETL pipelines
-- Support for Python, SQLite3, and PostgreSQL
-- Efficient handling of APIs with long wait times
-- Optimized for I/O-heavy workloads
-- Scalable architecture for processing large amounts of data
--->
-
 ## Installation
 
-`pip install buelon` That's it!
+```bash
+pip install buelon
+```
 
-This will install the cli command `bue`. Check install by running `bue --version` or `bue -v`
+That's it. This installs the `bue` CLI (`boo` and `pete` are aliases). Check the install
+with `bue --version`.
 
-### Note:
-
-This package uses Cython and you may need to install `python3-dev` using 
-`sudo apt-get install python3-dev` [[more commands and information](https://stackoverflow.com/a/21530768/19907524)]. 
-If you would like to use this repository without Cython, 
-you may `git clone` since it is not technically dependent on 
-these scripts, but they do provide a significant performance boost.  
-
-
+Python 3.10 or newer is required.
 
 ## Quick Start
 
-1. Run bucket server: `bue bucket -b 0.0.0.0:61535`
-2. Run hub: `bue hub -b 0.0.0.0:65432 -k localhost:61535`
-3. Run n worker(s): `bue worker -b localhost:65432 -k localhost:61535`
-4. Upload code: `bue upload  -b localhost:65432 -f path/to/file.bue`
+Everything below runs in one directory. Each command reads its configuration from
+`.bue/settings.yaml` in the current working directory.
 
-## Production Start
+```bash
+# 1. Create .bue/settings.yaml
+bue init
 
-**Security:** Make sure bucket, hub and workers are under 
-a private network **only** 
-(you will need a web server or something similar
-under the same private network
-to access this tool using `bue upload -f path/to/file.bue`)
+# 2. (optional) edit .bue/settings.yaml -- host, port, scopes
+$EDITOR .bue/settings.yaml
 
-### With Postgres (Under 1,000,000 Jobs at once)
+# 3. Start the hub. It holds the queue; leave it running.
+bue hub
 
-1. Create a `.env` file
-```properties
-PIPE_WORKER_SCOPES=production-very-heavy,production-heavy,production-medium,production-small,testing-heavy,testing-medium,testing-small,default
-PIPE_WORKER_SUBPROCESS_JOBS=false
-N_WORKER_PROCESSES="25"
+# 4. In another terminal, start a worker (start as many as you like)
+bue worker
 
-USING_POSTGRES_HUB=true
-USING_POSTGRES_BUCKET="true"
-POSTGRES_HOST="123.45.67.89"
-POSTGRES_PORT="5432"
-POSTGRES_USER="daniel"
-POSTGRES_PASSWORD="Password123"
-POSTGRES_DATABASE="my_db"
+# 5. Upload a pipeline
+bue upload -f example.bue
+
+# 6. Watch it
+bue status            # one-shot
+bue status -s         # refresh every 3 seconds
+bue web               # web UI on http://localhost:11011
 ```
 
-2. Run n worker(s): `bue worker -b localhost:65432 -k localhost:61535`
-3. Upload code: `bue upload  -b localhost:65432 -f ./example.bue`
+A finished pipeline disappears from `bue status`: once every job in a DAG has succeeded,
+the hub drops the whole DAG, so `total: 0` means "everything completed", not "nothing was
+uploaded".
 
-### Without Postgres (Under 10,000 jobs at once)
+See [Learn by Example](#learn-by-example) for an `example.bue` / `example.py` pair that
+runs as written.
 
-1. Create a `.env` file
-```properties
-PIPE_WORKER_SCOPES=production-very-heavy,production-heavy,production-medium,production-small,testing-heavy,testing-medium,testing-small,default
-PIPE_WORKER_SUBPROCESS_JOBS=false
-N_WORKER_PROCESSES="15"
-PIPE_WORKER_HOST="123.45.67.89"
-PIPE_WORKER_PORT="65432"
+## Architecture
 
-PIPELINE_HOST="0.0.0.0"
-PIPELINE_PORT="65432"
+There are two long-running processes, and both keep all their state in memory:
 
-BUCKET_SERVER_HOST="0.0.0.0"
-BUCKET_SERVER_PORT="61535"
-BUCKET_CLIENT_HOST="123.45.67.89"
-BUCKET_CLIENT_PORT="61535"
+| process | command | what it does |
+|---|---|---|
+| hub | `bue hub` | Holds the job queue, the job graph, and every job's result. One per cluster. |
+| worker | `bue worker` | Connects to the hub, pulls jobs, runs them, reports back. Any number. |
+
+Every other command is a short-lived client that connects to the hub: `upload`, `status`,
+`errors`, `reset`, `delete`, `run-job`, and the `web` UI.
+
+Job results are held in the hub's memory and passed to child jobs from there. There is no
+separate results store — `bue bucket` still exists as a standalone key/value server, but
+nothing on the hub/worker path talks to it.
+
+**Hub state is snapshotted to disk.** By default the hub writes `.auto_save/snapshot` every
+ten minutes, plus once more on a clean shutdown (including `SIGTERM`, so `docker stop` and
+`systemctl stop` are safe), and reloads it on startup. A crash loses at most one interval.
+
+### Scopes and priority
+
+Every job has a **scope** (a free-form name) and a **priority** (an integer, 0-100). A
+worker only pulls jobs whose scope is in its own `scopes` list, highest priority first. That
+is how you keep heavy jobs on big machines, or stop one misbehaving pipeline from starving
+everything else.
+
+## Configuration
+
+Configuration lives in **`.bue/settings.yaml`**, relative to the directory each command is
+run from. `bue init` writes one with the defaults; `bue where` prints the path it will use.
+
+The hub/worker path reads nothing else. In particular there is no `.env` support for
+hub/worker configuration and **no command-line flags for host or port** — the CLI parses
+with `parse_known_args()`, so `bue hub -b 0.0.0.0:65432` is accepted and then silently
+ignored. Edit the yaml.
+
+```yaml
+hub:
+  host: 0.0.0.0        # interface the hub binds
+  port: 65432
+
+worker:
+  host: localhost      # the hub's address, as seen by this machine
+  port: 65432
+  scopes: production-heavy,production-small,default   # comma-separated, no spaces
+  reverse: false       # pull the lowest-priority scope first instead of the highest
+  info:
+    name: Worker       # shown in `bue web`'s worker list
+
+bucket:                # only used by `bue bucket`, which nothing else talks to
+  server: {use: true, path: .bue/bucket, host: 0.0.0.0, port: 61535}
+  client: {use: true, host: localhost, port: 61535}
+  postgres: {use: false, table: buelon_bucket, persistent_path: __PERSISTENT__}
+
+postgres:              # NOT read by anything -- see Known Defects
+  host: localhost
+  port: 5432
+  username: XXXXX
+  password: XXXXX
+  database: XXXXX
 ```
-1. Run bucket server: `bue bucket`
-2. Run hub: `bue hub`
-3. Run n worker(s): `bue worker`
-4. Upload code: `bue upload -f ./example.bue`
+
+`hub.port` and `worker.port` must match, and every client command (`upload`, `status`, …)
+uses the **`worker`** block to find the hub.
+
+### Environment variables
+
+| variable | default | effect |
+|---|---|---|
+| `CRYPTO_KEY` | an insecure built-in default | Transport encryption key. **Set this in production.** Every hub, worker and CLI invocation must use the same value; a mismatch fails the connection with `EncryptionMismatch`. |
+| `BUELON_SETTINGS_PATH` | `.bue/settings.yaml` | Full path to the settings file. |
+| `BUELON_DIR_PATH` | `.bue` | Directory the default settings path is built from. |
+| `BUELON_AUTO_SAVE` | `true` | Set to `false` to disable hub snapshots entirely. |
+| `BUELON_AUTO_SAVE_PATH` | `.auto_save` | Directory the hub snapshot is written to. |
+| `BUELON_AUTO_SAVE_INTERVAL` | `600` | Seconds between snapshots. |
+| `BOO_WEB_HOST` / `BOO_WEB_PORT` | `localhost` / `11011` | Where `bue web` listens. |
+| `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DATABASE` | localhost/5432/… | Connection used by `postgres` **jobs** (see [Supported Languages](#supported-languages)). Read by workers, not by the hub. |
+| `ENV_PATH` | `.env` | A `.env` file at this path is loaded, if `python-dotenv` is installed. Only the variables in this table have any effect. |
+
+A working `.bue/` directory is created in the current working directory on import
+regardless of `BUELON_DIR_PATH`; the parser uses it for scratch files.
+
+## Command Reference
+
+```
+bue init                    create .bue/settings.yaml
+bue where                   print the settings.yaml path in use
+
+bue hub                     run the hub (foreground)
+bue worker                  run a worker (foreground)
+bue work                    same as `bue worker`
+bue run-job -j <job_id>     run one job by id, once, then exit
+
+bue upload -f <file.bue>    parse a pipeline and send its jobs to the hub
+bue run -f <file.bue>       run a pipeline locally, start to finish, with no hub
+
+bue status                  one-shot job counts
+bue status -s               refresh every 3 seconds
+bue status -s -l            ...and print a permanent line every 15 minutes
+bue errors                  print every errored job with its traceback
+bue reset                   move errored jobs back onto the queue
+bue delete                  cancel jobs belonging to errored pipelines
+bue delete --all            delete every job on the hub (prompts; -y to skip)
+bue web [-o]                web UI on :11011 (-o opens a browser)
+
+bue bucket                  run the standalone bucket server
+bue example                 write example.bue / example.py / demo.py into the cwd
+bue demo                    run a bucket, a hub and three workers in one process
+bue joke                    a boo joke
+bue --version               print the version
+```
+
+`bue repair` and `bue test` are accepted and do nothing.
+
+**`bue worker` and `bue work` exit on their own after 20 minutes.** That is deliberate
+(a periodic restart drops any leaked memory or module state), and it is not configurable.
+Run them under a supervisor that restarts them — systemd with `Restart=always`, a Docker
+restart policy, or a shell loop.
 
 ## Supported Languages
-- Python
-- SQLite3
-- PostgreSQL
+
+A job's language is the second line of its definition. Three are available:
+
+- `python` (also `python3`, `py`)
+- `sqlite3` (also `sqlite`)
+- `postgres` (also `postgresql`, `pg`)
+
+For `python`, the third line is the **function** to call. For the SQL languages it is the
+**table name** the incoming rows are loaded under, and the job's code is a query against
+that table; the query's result set becomes the job's return value.
+
+> **`postgres` here means "run this job's SQL on Postgres", not "store Buelon's state in
+> Postgres".** There is no Postgres backend for the hub. Postgres jobs connect using the
+> `POSTGRES_*` environment variables on the worker that runs them, and require
+> `psycopg2-binary` and `asyncpg`.
+
+### Job return values
+
+Whatever a Python job returns is sent to the hub and handed to its children, so it has to
+survive JSON serialization: dicts, lists, strings, numbers, booleans, `None`. Return an
+object that cannot be — a `uuid.UUID`, a `set`, a `datetime` — and that job fails with
+
+```
+job 'request' (a699…) returned a value that cannot be sent to the hub:
+Object of type UUID is not JSON serializable
+```
+
+visible in `bue errors`. Only that job fails; the rest of its batch is unaffected. Convert
+to a primitive (`f'{uuid.uuid4()}'`, `dt.isoformat()`, `list(s)`) before returning.
+
+A job can also return a `Result` to control what the hub does next:
+
+```python
+from buelon.core.step import Result, StepStatus
+
+return Result(status=StepStatus.pending)   # not ready; re-queue me and try again later
+return Result(status=StepStatus.reset)     # start this chain over from its root
+return Result(status=StepStatus.cancel)    # drop this chain
+```
+
+`pending` is the important one: it is how you poll a slow API without holding a worker slot
+for the whole wait.
 
 ## Learn by Example
 
-(see below for `example.py` contents)
+The two files below are the ones used to verify this README. Write both into the same
+directory, then `bue upload -f example.bue`.
 
-```python
-# IMPORTANT: tabs are 4 spaces. white_space == "    "
-# [Optional] change tab sizes like this
-TAB = '    '
+#### example.bue
 
-# set config values globally
-!scope production-small  # job scope [see bellow]
-!priority 0  # higher priority jobs are run first
-!timeout 20 * 60  # job's max time to run in seconds
-!retries 0  # how many times a job can run after error
+```
+# Defaults for every job in this file.
+!scope default
+!timeout 20 * 60
 
-# setting scopes is how you make new jobs with errors
-# not interfere with all servers job queues
-# and/or how you handle running heavy processes on large machine
-# and small process on small machines
-
-# define a single job called `accounts`
+# A job definition: name, language, function/table name, then the code
+# (a file path, or inline code between backticks).
 accounts:
-    python  # <-- select the language to be run. currently only python, sqlite3 and postgres are available
-    accounts  # select the function(for python) or table(for sql) name that will be used
-    example.py  # either provide a file or write code directly using the "`" char (see below example)
+    python
+    accounts
+    example.py
 
-# or
-
-# define multiple jobs with:
+# Or define several at once out of the same file.
 import python (
-    request_report 
-        as request,
-    get_status 
-        as status 
-        !scope testing-small,
-    get_report 
-        as download 
-        !priority 9
-        !timeout 60**2 * 5 / (1 % 2) // (1 + 1 - 1),  # 5 hrs
-    transform_data 
-        as py_transform 
-        !scope production-heavy,
+    request_report as request,
+    get_status as status,
+    get_report
+        as download
+        !priority 9,
     upload_to_db as upload
-) example.py  # <-- file path or using "`" like sql below
+) example.py
 
-
+# SQL jobs take their input table under the name you give here.
 manipulate_data:
     sqlite3
-    some_table  # *vvvv* see below for writing code directly *vvvv*
+    some_table
     `
 SELECT
     *,
-    CASE
-        WHEN sales = 0
-        THEN 0.0
-        ELSE spend / sales
-    END AS acos
+    CASE WHEN sales = 0 THEN 0.0 ELSE spend / sales END AS acos
 FROM some_table
 `
 
-## this one's just to show postgres as well
-#manipulate_data_again:
-#    postgres
-#    another_table
-#    `
-#select
-#    *,
-#    case
-#        when spend = 0
-#        then 0.0
-#        else sales / spend
-#    end AS roas
-#from another_table
-#`
+# Pipes say what order jobs run in, and pass each job's return value to the next.
+accounts_pipe = | accounts
+api_pipe = request | status | download | manipulate_data | upload
 
-# these are pipes and what will tell the server what order to run the steps
-# and also transfer the returned  data between steps
-# each step will be run individually and could be run on a different computer each time
-accounts_pipe = | accounts  # single pipes currently need a `|` before or behind the value
-# api_pipe = request | status | download | manipulate_data | py_transform | upload
-# # or
-api_pipe = (
-    request | status | download 
-    | manipulate_data | py_transform | upload
-)
-
-
-# currently there are only two syntax's for "running" pipes.
-# either by itself:
-# pipe()
-#
-# or in a loop:
-# for value in pipe1():
-#     pipe2(value)
-
-# # Another Example:
-# v = pipe()  # <-- single call
-# pipe2(v)
-
+# Run them. `accounts_pipe` returns a list, so each element starts its own
+# `api_pipe` -- three independent chains from one job.
 for account in accounts_pipe():
     api_pipe(account)
 ```
 
 #### example.py
+
 ```python
 import time
-import random
 import uuid
-import logging
-from typing import List, Dict, Union
 
 from buelon.core.step import Result, StepStatus
 
-# Set up logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
 
-
-def accounts(*args) -> List[Dict[str, Union[int, str]]]:
-    """Returns a list of sample account dictionaries.
-
-    Returns:
-        List[Dict[str, Union[int, str]]]: A list of dictionaries containing account information.
-    """
-    account_list = [
-        {'id': 0, 'name': 'Account 1'},
-        {'id': 2, 'name': 'Account 2'},
-        {'id': 3, 'name': 'Account 4'},
+def accounts(*args) -> list[dict]:
+    """The first job in the pipeline. Takes no arguments and returns a list."""
+    return [
+        {'account_id': 123, 'account': 'mr. business'},
+        {'account_id': 456, 'account': 'mrs. business'},
+        {'account_id': 789, 'account': 'sr. business'},
     ]
-    logger.info(f"Retrieved {len(account_list)} accounts")
-    return account_list
 
 
-def request_report(config: Dict[str, Union[int, str]]) -> Dict[str, Union[Dict, uuid.UUID, float]]:
-    """Simulates a report request for a given account.
+def request_report(account: dict) -> dict:
+    """Ask the (imaginary) API for a report. Returns whatever the next job needs."""
+    return {**account, 'report_id': f'{uuid.uuid4()}', 'requested_at': time.time()}
 
-    Args:
-        config (Dict[str, Union[int, str]]): A dictionary containing account information.
 
-    Returns:
-        Dict[str, Union[Dict, uuid.UUID, float]]: A dictionary with account data and request details.
+def get_status(request: dict) -> Result | dict:
+    """Poll until the report is ready.
+
+    `StepStatus.pending` hands the job back to the hub, which re-queues it, so this
+    job runs again later instead of blocking a worker for the whole wait.
     """
-    account_id = config['id']
-    
-    request = {
-        'report_id': uuid.uuid4(),
-        'time': time.time(),
-        'account_id': account_id
-    }
-    
-    logger.info(f"Requested report for account ID: {account_id}, Report ID: {request['report_id']}")
-    return {
-        'account': config,
-        'request': request
-    }
-
-
-def get_status(config: Dict[str, Union[Dict, uuid.UUID, float]]) -> Union[Dict, Result]:
-    """Checks the status of a report request.
-
-    Args:
-        config (Dict[str, Union[Dict, uuid.UUID, float]]): A dictionary containing request information.
-
-    Returns:
-        Union[Dict, Result]: Either the input config if successful, or a Result object if pending.
-    """
-    requested_time = config['request']['time']
-    account_id = config['account']['id']
-    
-    status = 'success' if requested_time + random.randint(10, 15) < time.time() else 'pending'
-    
-    if status == 'pending':
-        logger.info(f"Report status for account ID {account_id} is pending")
+    if time.time() - request['requested_at'] < 10:
         return Result(status=StepStatus.pending)
-    
-    logger.info(f"Report status for account ID {account_id} is success")
-    return config
-    
-
-def get_report(config: Dict[str, Union[Dict, uuid.UUID, float]]) -> Union[Dict, Result]:
-    """Retrieves a report or simulates an error.
-
-    Args:
-        config (Dict[str, Union[Dict, uuid.UUID, float]]): A dictionary containing request configuration.
-
-    Returns:
-        Union[Dict, Result]: Either a dictionary with report data or a Result object for reset.
-
-    Raises:
-        ValueError: If an unexpected error occurs.
-    """
-    account_id = config['account']['id']
-    
-    if random.randint(0, 10) == 0:
-        report_data = {'status': 'error', 'msg': 'timeout error'}
-    else:
-        report_data = [
-            {'sales': i * 10, 'spend': i % 10, 'clicks': i * 13}
-            for i in range(random.randint(25, 100))
-        ]
-    
-    if not isinstance(report_data, list):
-        if isinstance(report_data, dict):
-            if (report_data.get('status') == 'error' 
-                and report_data.get('msg') == 'timeout error'):
-                logger.warning(f"Timeout error for account ID {account_id}. Resetting.")
-                return Result(status=StepStatus.reset)
-        error_msg = f'Unexpected error: {report_data}'
-        logger.error(f"Error getting report for account ID {account_id}: {error_msg}")
-        raise ValueError(error_msg)
-    
-    logger.info(f"Successfully retrieved report for account ID {account_id} with {len(report_data)} rows")
-    return {
-        'config': config,
-        'table_data': report_data
-    }
+    return request
 
 
-def transform_data(data: Dict[str, Union[Dict, List[Dict]]]) -> None:
-    """Transforms the report data by adding account information to each row.
+def get_report(request: dict) -> list[dict]:
+    """Download the report. Returns a table -- a list of flat dicts."""
+    return [
+        {**request, 'sales': i * 10.0, 'spend': i * 3.0}
+        for i in range(1, 50)
+    ]
 
-    Args:
-        data (Dict[str, Union[Dict, List[Dict]]]): A dictionary containing config and table data.
-    """
-    config = data['config']
-    table_data = data['table_data']
-    account_name = config['account']['name']
-    
-    for row in table_data:
-        row['account'] = account_name
-    
-    logger.info(f"Transformed {len(table_data)} rows of data for account: {account_name}")
 
-    
-def upload_to_db(data: Dict[str, Union[Dict, List[Dict]]]) -> None:
-    """Handles table upload to database.
-
-    Args:
-        data (Dict[str, Union[Dict, List[Dict]]]): A dictionary containing table data to be uploaded.
-    """    
-    table_data = data['table_data']
-    account_name = data['config']['account']['name']
-    # Implementation for database upload
-    logger.info(f"Uploaded {len(table_data)} rows to the database for account: {account_name}")
+def upload_to_db(table: list[dict]) -> None:
+    """The last job. Returning None is fine."""
+    print(f'uploaded {len(table)} rows for {table[0]["account"]}')
 ```
+
+### Syntax notes
+
+- **Indentation is four spaces.** Change it with `TAB = '  '` on the first line.
+- `!scope`, `!priority`, `!timeout` and `!retries` set defaults for the whole file when they
+  are at the left margin, and override them for one job when they are indented inside a job
+  definition or attached to an `import (...)` entry. See
+  [Known Defects](#known-defects) before using the file-level `!priority` / `!retries`.
+- `!timeout` takes an arithmetic expression in seconds (`20 * 60`, `60**2 * 5`), but it must
+  not contain parentheses inside an `import (...)` block — the parser counts brackets.
+- A single-job pipe needs a leading `|`: `p = | accounts`.
+- A pipe can be wrapped across lines in parentheses.
+- Only two ways to run a pipe: `pipe()` on its own, or `for x in pipe1(): pipe2(x)`.
+- `#` starts a comment.
+
+## Production Notes
+
+**Security.** The hub speaks a custom encrypted protocol with no authentication: anything
+that can reach the port can queue and run arbitrary code. Keep the hub and its workers on a
+private network, and put anything user-facing (the `bue web` UI, an upload endpoint) in
+front of it rather than exposing the hub itself. Set `CRYPTO_KEY` to a real secret on every
+process — hub, workers and any machine running `bue upload` / `bue status` — or the built-in
+default key is used and the transport is effectively unencrypted.
+
+**Sizing.** One hub, N workers. Each worker runs up to 25 jobs concurrently on an asyncio
+loop, so the useful number of worker processes is driven by how CPU-bound your jobs are;
+for the I/O-heavy work Buelon is built for, a handful of processes per machine is plenty.
+Use scopes to route heavy jobs to the machines that can take them.
+
+**Restarts.** Workers are disposable — a worker that dies mid-job has its jobs requeued by
+the hub, and it exits by itself every 20 minutes anyway, so run it under a supervisor. The
+hub is not disposable: it holds the queue and every job result, and loses up to
+`BUELON_AUTO_SAVE_INTERVAL` seconds of progress on an unclean stop.
+
+**Memory.** The hub keeps every intermediate result until the whole DAG finishes. A pipeline
+with an errored branch pins its results in hub memory until you run `bue reset` or
+`bue delete`.
 
 ## Known Defects
 
-Error handling and logging exists but are currently lacking in features
-
+- **File-level `!priority` and `!retries` are broken.** Set at the left margin they are
+  left as strings instead of integers. A string priority makes the hub skip those jobs
+  forever — they sit in `bue status` as `jobs: N` and no worker ever pulls them — and a
+  string `retries` makes the hub's error path raise. Both work correctly when set on an
+  individual job (indented inside a job definition, or on an `import (...)` entry). Avoid
+  them at file level until this is fixed; `!scope` and `!timeout` are fine either way.
+- **The `postgres:` block in `settings.yaml` is not read by anything.** Postgres jobs use
+  the `POSTGRES_*` environment variables instead.
+- **`bue example` writes a `.env` file describing a configuration that no longer exists**,
+  and the `example.bue` it writes uses a scope syntax the parser has since dropped, so it
+  fails to upload. Use the example in this README instead.
+- **`bue demo` starts a bucket server that nothing uses** and is not a useful demo.
+- Error handling and logging work but are thin.
 
 ## Future Plans
 
-If this projects sees some love, 
-or I just find more free time, 
-I'd like to support more languages like `javascript` and
-even compiled languages such as 
-`rust`, `go` and `c++`. 
-Allowing teams that write different 
-languages to work on the same program.
+If this project sees some love, or I just find more free time, I'd like to support more
+languages like `javascript` and even compiled languages such as `rust`, `go` and `c++`,
+allowing teams that write different languages to work on the same program.
 
-Web app for logging, execution and worker management
+Web app for logging, execution and worker management.
 
-Add a scheduler process to allow scheduled pipelines
+Add a scheduler process to allow scheduled pipelines.
 
-Create an official programming/scripting language for parallel processing. This would be separate from the current DML while still being designed to use the Buelon orchestration system.
+Create an official programming/scripting language for parallel processing. This would be
+separate from the current DML while still being designed to use the Buelon orchestration
+system.
 
 ## In Loving Memory
 
