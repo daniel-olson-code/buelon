@@ -2107,7 +2107,6 @@ async def v1_bi_test_worker(jobs_at_a_time: int = 25, single_step: str | None = 
     #
     #         if not job_queue.qsize() or not last_hold:
     #             # if waited:
-    #             #     buelon.hub_v1.delete_last_line()
     #             print(f'waiting({i:02d})' + ('.' * waited))
     #             await asyncio.sleep(1.0 if not job_queue.qsize() else 0.05)
     #             waited = ((waited + 1) % 4) + 1

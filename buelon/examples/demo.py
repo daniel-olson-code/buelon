@@ -2,8 +2,7 @@
 
 This script demonstrates how to use the Pipeline project from GitHub.
 It sets up and runs a demo pipeline system with a bucket, a pipeline,
-and multiple worker processes. The script can use either Python or Cython
-modules, depending on availability.
+and multiple worker processes.
 
 """
 import os

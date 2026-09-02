@@ -1,16 +1,7 @@
-from setuptools import setup, find_packages, Extension
-# from Cython.Build import cythonize
-#
-# # List of Cython files to compile
-# extensions = [
-#     Extension("buelon.cython.c_bucket", ["buelon/cython/c_bucket.pyx"]),
-#     Extension("buelon.cython.c_worker", ["buelon/cython/c_worker.pyx"]),
-#     Extension("buelon.cython.c_hub", ["buelon/cython/c_hub.pyx"])
-# ]
+from setuptools import setup, find_packages
 
 # Requirements  for the package
 requirements = [
-    'Cython',
     'psycopg2-binary',
     'orjson',
     'python-dotenv',
@@ -49,16 +40,12 @@ setup(
         'buelon/examples': [
             "example.pipe",
         ],
-        'buelon/cython': [
-            "*.pyx",
-        ],
         'buelon.static': [
             "*",
         ],
     },
     include_package_data=True,
     package_name="buelon",
-    # ext_modules=cythonize(extensions),
     install_requires=requirements,
     entry_points={
         'console_scripts': [

@@ -1,4 +1,3 @@
-include buelon/cython/*.pyx
 include buelon/examples/example.bue
 include README.md
 include LICENSE

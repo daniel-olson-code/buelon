@@ -748,7 +748,6 @@ def main() -> None:
 
 
 # try:
-#     from cython.c_bucket import *
 # except (ImportError, ModuleNotFoundError):
 #     pass
 

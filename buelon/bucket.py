@@ -3,6 +3,11 @@ This module implements a socket server for sending and receiving byte data using
 
 The server allows clients to set, get, and delete data associated with specific keys.
 Data is stored in files within a '.bucket' directory.
+
+STANDALONE: the bucket is no longer part of the hub/worker path. The hub keeps all of
+its state (jobs, results, holds) in memory and workers talk only to the hub, so nothing
+in ``buelon.hub``, ``buelon.worker`` or ``buelon.core`` imports this module. It is kept
+as a standalone key/value store, reachable on its own via ``bue bucket``.
 """
 from buelon.settings import settings
 from buelon.bucket_v1 import *
