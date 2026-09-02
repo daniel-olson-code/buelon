@@ -1378,21 +1378,15 @@ def bi_get_web_info(request: ServerRequest, workers_info: bool = False):
 def bi_get_all_worker_info(request: ServerRequest):
     with lock:
         _workers = json.loads(json.dumps(workers))
-        # _holds_v2: dict[str, dict[str, buelon.core.step.Job]] = json.loads(json.dumps(holds_v2))
 
         for client_id, worker_info in _workers.items():
             client_holds = holds_v2.get(client_id, {})
             if client_holds:
-                _holds: list[buelon.core.step.Job] = list(client_holds.values())
-                _holds[:] = [s.to_json() for s in _holds]
-                _holds: list[dict]
+                _holds: list[dict] = [job.to_json() for job in client_holds.values()]
                 worker_info['jobs'] = _holds
                 worker_info['holds'] = len(_holds)
 
-        try:
-            return _workers
-        except:
-            return {}
+        return _workers
 
 
 def remove_ids_from_steps(step_ids: set[str]) -> int:
