@@ -1,13 +1,15 @@
-# the default scope is set to `production` for all steps (imports)
-# setting scopes is how you make new steps with errors
-# not slow down your servers by setting them to a lower scope
-$ default
+# Every job in this file gets these unless it overrides them.
+# `scope` is how you route work: a worker only pulls jobs whose scope is in its
+# own `scopes` list (see `worker.scopes` in .bue/settings.yaml), so a scope with
+# failing jobs cannot slow down the rest of your queue.
+!scope default
+!timeout 20 * 60  # seconds; an arithmetic expression is fine
 
 # step 1: `accounts`
 accounts:
-    python  # <-- select the language to be run. currently only python, sqlite3 and postgres are available
-    accounts  # define the function or table name that will be used
-    example.py  # either provide a file or write code directly using the "`" char (see below example)
+    python  # <-- the language. python, sqlite3 and postgres are available
+    accounts  # <-- the function name (for python) or table name (for sql)
+    example.py  # <-- a file path, or write code inline with the "`" char (see below)
 
 request:
     python
@@ -16,19 +18,19 @@ request:
 
 status:
     python
-    $ default  # <-- "scope" for a single step. A lower scope will be given less priority over higher scopes. See PIPE_WORKER_SCOPES in `.env` file
+    !scope default  # <-- override the scope for this one job
     get_status
     example.py
 
 download:
     python
-    !9  # <-- "priority" higher numbers are more important and run first within their scope.
+    !priority 9  # <-- higher numbers run first within their scope
     get_report
     example.py
 
 manipulate_data:
     sqlite3
-    some_table  # *vvvv* see below for writing code directly *vvvv*
+    some_table  # <-- the incoming rows are loaded under this name
     `
 SELECT
     *,
@@ -61,9 +63,9 @@ upload:
     example.py
 
 
-# these are pipes and what will tell the server what order to run the steps
-# and also transfer the returned  data between steps
-# each step will be run individually and could be run on a different computer each time
+# these are pipes and what will tell the server what order to run the jobs
+# and also transfer the returned data between them
+# each job will be run individually and could be run on a different computer each time
 accounts_pipe = | accounts  # single pipes currently need a `|` before or behind the value
 api_pipe = request | status | download | manipulate_data | upload
 
@@ -80,7 +82,7 @@ api_pipe = request | status | download | manipulate_data | upload
 # v = pipe(accounts_pipe)  # <-- single call
 # pipe2(v)
 
-# right not you cannot pass arguments within the pipe being used for the for loop.
+# right now you cannot pass arguments within the pipe being used for the for loop.
 # in this case `accounts_pipe()` cannot be `accounts_pipe(some_value)`
 for account in accounts_pipe():
     api_pipe(account)

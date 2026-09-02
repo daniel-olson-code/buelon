@@ -14,28 +14,6 @@ import buelon.core.pipe_debug
 
 
 counter = buelon.core.pipe_debug.counter
-DOT_ENV_CONTENT = '''
-PIPELINE_HOST=0.0.0.0
-PIPELINE_PORT=65432
-
-PIPE_WORKER_HOST=localhost
-PIPE_WORKER_PORT=65432
-PIPE_WORKER_SCOPES=production-heavy,production-medium,production-small,testing-heavy,testing-medium,testing-small
-PIPE_WORKER_SUBPROCESS_JOBS=true
-
-BUCKET_SERVER_HOST=0.0.0.0
-BUCKET_SERVER_PORT=61535
-
-BUCKET_CLIENT_HOST=localhost
-BUCKET_CLIENT_PORT=61535
-
-POSTGRES_HOST=localhost
-POSTGRES_PORT=5432
-POSTGRES_USER=daniel
-POSTGRES_PASSWORD=Password123
-POSTGRES_DATABASE=my_database
-
-'''
 
 
 def accounts(*args):
@@ -125,13 +103,21 @@ def upload_to_db(data: list[dict]) -> None:
 # remove start
 
 def setup():
+    # Imported here rather than at the top: everything between the `# remove`
+    # markers is stripped out of the copy handed to the user, so a top-level
+    # import would leave them an unused one.
+    import buelon.settings
+
     pipe_path = os.path.join(os.getcwd(), 'example.bue')
     example_py_path = os.path.join(os.getcwd(), 'example.py')
     demo_py_path = os.path.join(os.getcwd(), 'demo.py')
-    dot_env_path = os.path.join(os.getcwd(), '.env')
 
-    with open(dot_env_path, 'w') as f:
-        f.write(DOT_ENV_CONTENT)
+    # This used to write a `.env` of PIPELINE_HOST / PIPE_WORKER_* / BUCKET_* /
+    # POSTGRES_* variables. Nothing on the hub/worker path has read any of them
+    # since configuration moved to `.bue/settings.yaml`, so it taught a new user
+    # the wrong model -- and it wrote unconditionally, clobbering a real `.env`.
+    # Leave them the file that is actually read instead. BUGS.md #44.
+    buelon.settings.init()
 
     files_to_copy = [pipe_path, example_py_path, demo_py_path]
 
@@ -173,9 +159,12 @@ def main():
     print('the table test currently has', l1, 'rows')
     try:
         for i in range(number_of_jobs):
-            buelon.hub.upload_pipe_code_from_file(pipe_path)
+            # `upload_pipe_code_from_file` has not existed on `buelon.hub` for a
+            # long time -- this raised `AttributeError`, not a hub error. BUGS.md #44.
+            buelon.hub.upload_file_to_server(pipe_path)
     except ConnectionRefusedError:
-        raise ConnectionRefusedError(f'please start the moss.hub first by running "{sys.executable} demo.py"')
+        raise ConnectionRefusedError('please start a hub and a worker first: '
+                                     '`bue hub` in one terminal, `bue worker` in another')
 
     print(f'waiting waiting until all tasks finish')
     while len(accounts()) * number_of_jobs > (c := counter('done1', 0)):

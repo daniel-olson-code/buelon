@@ -238,7 +238,9 @@ for the whole wait.
 ## Learn by Example
 
 The two files below are the ones used to verify this README. Write both into the same
-directory, then `bue upload -f example.bue`.
+directory, then `bue upload -f example.bue`. (`bue example` writes a second, slightly
+fuller working example into the current directory — same pipeline shape, plus a `sqlite3`
+job and a `.bue/settings.yaml`.)
 
 #### example.bue
 
@@ -343,6 +345,11 @@ def upload_to_db(table: list[dict]) -> None:
 - A single-job pipe needs a leading `|`: `p = | accounts`.
 - A pipe can be wrapped across lines in parentheses.
 - Only two ways to run a pipe: `pipe()` on its own, or `for x in pipe1(): pipe2(x)`.
+- **A `for` loop's source pipe runs on the machine doing the upload**, not on a worker.
+  `bue upload` has to know how many jobs to create, so it executes that pipe's last job
+  locally, in the uploading process and working directory, before anything reaches the
+  hub. So `bue upload` needs the source job's code and its dependencies present, and
+  that job ignores `!scope`. Keep loop sources cheap and side-effect-free.
 - `#` starts a comment.
 
 ## Production Notes
@@ -372,9 +379,6 @@ with an errored branch pins its results in hub memory until you run `bue reset` 
 
 - **The `postgres:` block in `settings.yaml` is not read by anything.** Postgres jobs use
   the `POSTGRES_*` environment variables instead.
-- **`bue example` writes a `.env` file describing a configuration that no longer exists**,
-  and the `example.bue` it writes uses a scope syntax the parser has since dropped, so it
-  fails to upload. Use the example in this README instead.
 - **`bue demo` starts a bucket server that nothing uses** and is not a useful demo.
 - Error handling and logging work but are thin.
 
