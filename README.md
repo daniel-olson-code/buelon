@@ -93,10 +93,10 @@ ten minutes, plus once more on a clean shutdown (including `SIGTERM`, so `docker
 
 ### Scopes and priority
 
-Every job has a **scope** (a free-form name) and a **priority** (an integer, 0-100). A
-worker only pulls jobs whose scope is in its own `scopes` list, highest priority first. That
-is how you keep heavy jobs on big machines, or stop one misbehaving pipeline from starving
-everything else.
+Every job has a **scope** (a free-form name) and a **priority** (any integer; 0-100 is the
+usual range, but nothing is clamped and negatives are fine). A worker only pulls jobs whose
+scope is in its own `scopes` list, highest priority first. That is how you keep heavy jobs
+on big machines, or stop one misbehaving pipeline from starving everything else.
 
 ## Configuration
 

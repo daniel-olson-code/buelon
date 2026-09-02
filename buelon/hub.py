@@ -72,6 +72,9 @@ send_open: set[str] = set()
 db: dict[str, Any] = {}  # : dict[str, bytes] = {}
 
 
+# The conventional priority range, high to low. `get_steps_v2` no longer consults it
+# -- it sorts on the priority number itself, so any integer dispatches (BUGS.md #45).
+# Kept as the documented default range.
 preset_priorities = list(range(100, -1, -1)) # 100 - 0
 
 # Back-off for an idle worker -- BUGS.md #6.
@@ -125,7 +128,6 @@ def get_steps_v2(scopes: list[str], limit: int = 100, reverse: bool = False, sin
             return []
 
         result = []
-        _preset_priorities = preset_priorities[::-1] if reverse else preset_priorities
 
         if reverse:
             scopes = scopes[::-1]
@@ -135,19 +137,24 @@ def get_steps_v2(scopes: list[str], limit: int = 100, reverse: bool = False, sin
         # pairs that actually hold jobs are few. Walking those and sorting them beats
         # scanning the full 101-priorities x N-scopes grid on every `hold`, which is
         # the common case now that idle workers back off and re-ask (BUGS.md #6, #26).
-        priority_order = {p: n for n, p in enumerate(_preset_priorities)}
         scope_order = {s: n for n, s in enumerate(scopes)}
 
         def get_scope_and_priority():
-            # Priorities outside `preset_priorities` (0-100) are skipped, as before.
+            # Every priority present is dispatchable. This used to look each one up in
+            # a 0-100 allow-list built from `preset_priorities` and silently drop the
+            # misses, so `!priority 500` or `!priority -1` produced a job that sat in
+            # `STEPS` -- counted by `bue status` -- and was never offered to anyone.
+            # Sorting on the number itself needs no allow-list. BUGS.md #45.
             pairs = [
                 (s, i)
                 for s in scope_order
                 for i in STEPS.get(s, {})
-                if i in priority_order and STEPS[s][i]
+                if STEPS[s][i]
             ]
-            # Priority first, scope second -- the same order the nested loops produced.
-            pairs.sort(key=lambda pair: (priority_order[pair[1]], scope_order[pair[0]]))
+            # Priority first, scope second. Highest priority leads, or lowest under
+            # `reverse` -- the same order the old nested loops produced.
+            pairs.sort(key=lambda pair: (pair[1] if reverse else -pair[1],
+                                         scope_order[pair[0]]))
             yield from pairs
 
         for scope, priority in get_scope_and_priority():
