@@ -270,14 +270,22 @@ def handle_step(step:  buelon.core.step.Job, status: buelon.core.step.StepStatus
                 ALL_STEPS[step.id] = [status.value, step]
                 errors[step.id] = step
         elif status == buelon.core.step.StepStatus.reset:
-            for step in get_all_steps(step).values():
-                remove_id(step.id, True)
-                if step.parents:
-                    ALL_STEPS[step.id] = [status.queued.value, step]
-                    queued[step.id] = step
+            # The loop variable used to be called `step`, shadowing the parameter for
+            # the rest of the function. Nothing after the loop read it, so it was
+            # harmless -- but it was a trap for the next edit. BUGS.md #34.
+            #
+            # The `queued` / `pending` split here is load-bearing: `reset` rebuilds the
+            # DAG's initial state, so a job with parents goes back to blocked-on-parent
+            # and a root goes back on the dispatch queue -- exactly what
+            # `_register_uploaded_steps` does at upload time. Do not collapse them.
+            for job in get_all_steps(step).values():
+                remove_id(job.id, True)
+                if job.parents:
+                    ALL_STEPS[job.id] = [buelon.core.step.StepStatus.queued.value, job]
+                    queued[job.id] = job
                 else:
-                    ALL_STEPS[step.id] = [status.pending.value, step]
-                    upload_step(step)
+                    ALL_STEPS[job.id] = [buelon.core.step.StepStatus.pending.value, job]
+                    upload_step(job)
         elif status == buelon.core.step.StepStatus.success:
             ALL_STEPS[step.id] = [status.value, step]
             done[step.id] = step
@@ -306,7 +314,7 @@ def handle_step(step:  buelon.core.step.Job, status: buelon.core.step.StepStatus
                     # The status write is the child's, not the parent's -- the parent's
                     # `success` entry set above must survive. BUGS.md #9.
                     del queued[step_id]
-                    ALL_STEPS[step_id] = [status.pending.value, child]
+                    ALL_STEPS[step_id] = [buelon.core.step.StepStatus.pending.value, child]
                     upload_step(child)
             else:
                 ids = get_all_ids(step)
