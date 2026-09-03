@@ -57,7 +57,7 @@ def run_bucket(args):
 
 def run_demo():
     # Run the demo
-    pete.examples.demo.main()
+    return pete.examples.demo.main()
 
 
 def run_example():
@@ -415,7 +415,7 @@ def cli():
     elif args.command == 'bucket':
         run_bucket(args)
     elif args.command == 'demo':
-        run_demo()
+        sys.exit(run_demo())
     elif args.command == 'web':
         from buelon.web import run
         run(args.open_browser)

@@ -13,6 +13,7 @@ import concurrent
 import inspect
 import tempfile
 import importlib
+import logging
 import contextlib
 from typing import List, Dict, Any
 
@@ -26,10 +27,25 @@ from . import pipe_debug
 
 sys.path.append(os.getcwd())
 
+logger = logging.getLogger(__name__)
+
 
 class PipeLineException(Exception):
     """Custom exception for pipeline-related errors."""
     pass
+
+
+def _module_missing_is(e: ModuleNotFoundError, module_name: str) -> bool:
+    """True when `e` says `module_name` itself is what could not be found.
+
+    `e.name` is the module Python was looking for when it gave up. For
+    `import_module('a.b')` that is `'a.b'` when the submodule is absent and
+    `'a'` when the package is; anything else means the module was found and one
+    of *its* imports failed.
+    """
+    if e.name is None:  # pragma: no cover -- only from odd custom loaders
+        return True
+    return module_name == e.name or module_name.startswith(f'{e.name}.')
 
 
 @contextlib.contextmanager
@@ -39,6 +55,9 @@ def temp_mod(txt: str, module_name: str | None = None):
 
     Args:
         txt (str): The Python code to be written to the temporary module.
+        module_name (str | None): Name of an importable module holding the same
+            code. When given it is imported directly and `txt` is only used as a
+            fallback for workers where that module is not present.
 
     Yields:
         types.ModuleType: The imported temporary module.
@@ -48,7 +67,20 @@ def temp_mod(txt: str, module_name: str | None = None):
     if local_mod:
         try:
             module = importlib.import_module(module_name)
-        except:
+        except ModuleNotFoundError as e:
+            # Only fall back when it is *this* module (or a package it lives in)
+            # that cannot be found -- that is the "not installed on this worker"
+            # case the inline source exists for. A module that is importable but
+            # blows up while importing -- a NameError, a top-level DB connect, an
+            # `ImportError` from one of its own dependencies -- must propagate;
+            # swallowing it used to run `txt` instead, silently and possibly
+            # against a different version of the code (BUGS.md #37).
+            if not _module_missing_is(e, module_name):
+                raise
+            logger.debug(
+                'could not import %r (%s); falling back to the inline source',
+                module_name, e,
+            )
             with temp_mod(txt) as m:
                 yield m
             return

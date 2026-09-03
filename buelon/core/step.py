@@ -171,6 +171,8 @@ class Step(pipe_util.PipeObject):
         priority (int): Priority of the step.
         velocity (float): Velocity associated with the step.
         attempts (int): Number of attempts made for the step.
+        handbacks (int): Number of times the step handed itself back as `pending`.
+        max_handbacks (int): Ceiling on `handbacks`; 0 means unlimited.
         timeout (float): Timeout for the step execution.
         parents (list[str]): List of parent step IDs.
         children (List[str]): List of child step IDs.
@@ -193,6 +195,24 @@ class Step(pipe_util.PipeObject):
     # `__dict__` (so it survives the requeue -> dispatch -> release round trip) and
     # defaults to 0 for every job built before the field existed.
     attempts: int = 0
+    # Wall-clock timestamp before which the hub must not dispatch this job; 0.0 means
+    # "dispatchable now". Set by `handle_step` when a failed job is requeued for a retry
+    # and skipped over by `get_steps_v2` until it passes -- BUGS.md #35. Hub-owned
+    # bookkeeping, not a `.bue` job arg, and like `attempts` it rides along in
+    # `__dict__` so it survives the requeue -> dispatch -> release round trip and the
+    # hub snapshot.
+    not_before: float = 0.0
+    # How many times this job has handed itself back as `pending` -- BUGS.md #50.
+    # Counted hub-side in `handle_step`'s `pending` branch. Deliberately NOT
+    # `attempts`: that is the error budget `!retries` spends, and a poll that says
+    # "not ready yet" is not a failure. Kept separate so a job can do both without
+    # one starving the other. Like `attempts` it rides along in `__dict__`.
+    handbacks: int = 0
+    # Optional ceiling on `handbacks`; 0 (the default) means unlimited, because
+    # unbounded re-queueing is the documented point of `pending` -- a poll loop has no
+    # idea how many attempts it needs. Set `!max_handbacks N` on a job that should give
+    # up rather than spin forever. BUGS.md #50.
+    max_handbacks: int = 0
 
     parents: list[str] = None
     children: List[str] = None

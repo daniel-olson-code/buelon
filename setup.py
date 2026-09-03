@@ -22,7 +22,6 @@ requirements = [
     'kazoo',
     'tqdm',
     'asyncpg',
-    'websockets',
     'fastapi',
     'uvicorn',
     'bisocket>=0.0.9',
@@ -44,15 +43,18 @@ setup(
     url="https://github.com/daniel-olson-code/buelon",
     packages=find_packages(),
     package_data={
-        'buelon/examples': [
-            "example.pipe",
+        # Dotted package names, not paths -- setuptools silently ignores a key
+        # that is not an installed package. `bue example` copies example.bue out
+        # of the installed package directory, so a wheel that omits it breaks the
+        # command outright (BUGS.md #41).
+        'buelon.examples': [
+            "example.bue",
         ],
         'buelon.static': [
             "*",
         ],
     },
     include_package_data=True,
-    package_name="buelon",
     install_requires=requirements,
     entry_points={
         'console_scripts': [

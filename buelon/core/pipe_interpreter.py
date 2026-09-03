@@ -43,7 +43,9 @@ PIPE_TOKENS = {
         'scope': {'type': 'string'},
         'priority': {'type': 'int'},
         'timeout': {'type': 'calculate'},
-        'retries': {'type': 'int'}
+        'retries': {'type': 'int'},
+        # 0 means unlimited -- see `Step.max_handbacks` and BUGS.md #50.
+        'max_handbacks': {'type': 'int'}
     }
 }
 
@@ -304,7 +306,8 @@ class PipelineParser:
             'scope': self.scope,
             'priority': self.priority,
             'timeout': 20 * 60,
-            'retries': 0
+            'retries': 0,
+            'max_handbacks': 0
         }
 
     def build(self, prepared_content: str):
@@ -665,6 +668,9 @@ class PipelineParser:
         job.scope = definition['args']['scope']  # ['scope']
         job.timeout = definition['args']['timeout']
         job.retries = definition['args']['retries']
+        # `.get`, not `[...]`: a prepared/parsed file written before #50 has no
+        # `max_handbacks` key in its args, and 0 (unlimited) is the old behaviour.
+        job.max_handbacks = definition['args'].get('max_handbacks', 0)
         job.kwargs = definition['args']
         return job
 

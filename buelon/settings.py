@@ -114,6 +114,24 @@ DEFAULT_SETTINGS = {
 }
 
 
+def _section(settings) -> dict:
+    """A section written as `hub:` with an empty body parses as `None`, and an empty
+    settings.yaml parses as `None` for the whole document. Treat either -- and anything
+    else that is not a mapping -- as "absent", so the defaults apply instead of an
+    `AttributeError` on `NoneType.get`. BUGS.md #38.
+    """
+    return settings if isinstance(settings, dict) else {}
+
+
+def _get(settings: dict, key, default):
+    """`settings.get(key, default)`, except that a present-but-null key falls back like an
+    absent one, so `port:` with nothing after it means the default rather than `None`.
+    BUGS.md #38.
+    """
+    value = settings.get(key, default)
+    return default if value is None else value
+
+
 class YamlObj:
     def convert(self, v):
         if isinstance(v, YamlObj):
@@ -133,32 +151,36 @@ class YamlObj:
 
 class HubSettings(YamlObj):
     def __init__(self, settings: dict):
-        self.host = settings.get('host', DEFAULT_SETTINGS['hub']['host'])
-        self.port = settings.get('port', DEFAULT_SETTINGS['hub']['port'])
+        settings = _section(settings)
+        self.host = _get(settings, 'host', DEFAULT_SETTINGS['hub']['host'])
+        self.port = _get(settings, 'port', DEFAULT_SETTINGS['hub']['port'])
         # Read by both ends of the transport -- `bi_test_server`'s `BiServer` and
         # `BiWorkerClient`'s `BiClient` -- so there is one key to change rather than two
         # that can disagree. An empty value means "not set here": bisocket then falls
         # back to $BISOCKET_ENCRYPTION, and to its own 'secure' default. BUGS.md #31.
+        # Deliberately `.get`, not `_get`: here a present-but-null `encryption:` is
+        # meaningful ("defer to bisocket"), so it must NOT fall back to the default.
         _encryption = settings.get('encryption', DEFAULT_SETTINGS['hub']['encryption'])
         self.encryption = None if _encryption is None or _encryption == '' else _encryption
-        # self.username = settings.get('username', DEFAULT_SETTINGS['hub']['username'])
-        # self.password = settings.get('password', DEFAULT_SETTINGS['hub']['password'])
+        # self.username = _get(settings, 'username', DEFAULT_SETTINGS['hub']['username'])
+        # self.password = _get(settings, 'password', DEFAULT_SETTINGS['hub']['password'])
 
 
 class WorkerSettings(YamlObj):
     def __init__(self, settings: dict):
-        self.host = settings.get('host', DEFAULT_SETTINGS['worker']['host'])
-        self.port = settings.get('port', DEFAULT_SETTINGS['worker']['port'])
-        self.scopes = settings.get('scopes', DEFAULT_SETTINGS['worker']['scopes'])
-        # self.subprocess = settings.get('subprocess', DEFAULT_SETTINGS['worker']['subprocess'])
-        # self.n_processes = settings.get('n_processes', DEFAULT_SETTINGS['worker']['n_processes'])
-        # self.n_threads = settings.get('n_threads', DEFAULT_SETTINGS['worker']['n_threads'])
-        # self.n_jobs = settings.get('n_jobs', DEFAULT_SETTINGS['worker']['n_jobs'])
-        # self.job_timeout = settings.get('job_timeout', DEFAULT_SETTINGS['worker']['job_timeout'])
-        # self.restart_interval = settings.get('restart_interval', DEFAULT_SETTINGS['worker']['restart_interval'])
-        self.reverse = settings.get('reverse', DEFAULT_SETTINGS['worker']['reverse'])
+        settings = _section(settings)
+        self.host = _get(settings, 'host', DEFAULT_SETTINGS['worker']['host'])
+        self.port = _get(settings, 'port', DEFAULT_SETTINGS['worker']['port'])
+        self.scopes = _get(settings, 'scopes', DEFAULT_SETTINGS['worker']['scopes'])
+        # self.subprocess = _get(settings, 'subprocess', DEFAULT_SETTINGS['worker']['subprocess'])
+        # self.n_processes = _get(settings, 'n_processes', DEFAULT_SETTINGS['worker']['n_processes'])
+        # self.n_threads = _get(settings, 'n_threads', DEFAULT_SETTINGS['worker']['n_threads'])
+        # self.n_jobs = _get(settings, 'n_jobs', DEFAULT_SETTINGS['worker']['n_jobs'])
+        # self.job_timeout = _get(settings, 'job_timeout', DEFAULT_SETTINGS['worker']['job_timeout'])
+        # self.restart_interval = _get(settings, 'restart_interval', DEFAULT_SETTINGS['worker']['restart_interval'])
+        self.reverse = _get(settings, 'reverse', DEFAULT_SETTINGS['worker']['reverse'])
 
-        _info = settings.get('info', DEFAULT_SETTINGS['worker']['info'])
+        _info = _get(settings, 'info', DEFAULT_SETTINGS['worker']['info'])
         # Copy, so a consumer renaming the worker (web.py) cannot mutate either
         # the parsed yaml or DEFAULT_SETTINGS itself.
         self.info = {} if not isinstance(_info, dict) else dict(_info)
@@ -169,55 +191,61 @@ class WorkerSettings(YamlObj):
 
 class BucketServerSettings(YamlObj):
     def __init__(self, settings: dict):
-        self.use = settings.get('use', DEFAULT_SETTINGS['bucket']['server']['use'])
-        self.path = settings.get('path', DEFAULT_SETTINGS['bucket']['server']['path'])
-        self.host = settings.get('host', DEFAULT_SETTINGS['bucket']['server']['host'])
-        self.port = settings.get('port', DEFAULT_SETTINGS['bucket']['server']['port'])
+        settings = _section(settings)
+        self.use = _get(settings, 'use', DEFAULT_SETTINGS['bucket']['server']['use'])
+        self.path = _get(settings, 'path', DEFAULT_SETTINGS['bucket']['server']['path'])
+        self.host = _get(settings, 'host', DEFAULT_SETTINGS['bucket']['server']['host'])
+        self.port = _get(settings, 'port', DEFAULT_SETTINGS['bucket']['server']['port'])
 
 
 class BucketClientSettings(YamlObj):
     def __init__(self, settings: dict):
-        self.use = settings.get('use', DEFAULT_SETTINGS['bucket']['client']['use'])
-        self.host = settings.get('host', DEFAULT_SETTINGS['bucket']['client']['host'])
-        self.port = settings.get('port', DEFAULT_SETTINGS['bucket']['client']['port'])
+        settings = _section(settings)
+        self.use = _get(settings, 'use', DEFAULT_SETTINGS['bucket']['client']['use'])
+        self.host = _get(settings, 'host', DEFAULT_SETTINGS['bucket']['client']['host'])
+        self.port = _get(settings, 'port', DEFAULT_SETTINGS['bucket']['client']['port'])
 
 
 class BucketPostgresSettings(YamlObj):
     def __init__(self, settings: dict):
-        self.use = settings.get('use', DEFAULT_SETTINGS['bucket']['postgres']['use'])
-        self.table = settings.get('table', DEFAULT_SETTINGS['bucket']['postgres']['table'])
-        self.persistent_path = settings.get('persistent_path', DEFAULT_SETTINGS['bucket']['postgres']['persistent_path'])
+        settings = _section(settings)
+        self.use = _get(settings, 'use', DEFAULT_SETTINGS['bucket']['postgres']['use'])
+        self.table = _get(settings, 'table', DEFAULT_SETTINGS['bucket']['postgres']['table'])
+        self.persistent_path = _get(settings, 'persistent_path', DEFAULT_SETTINGS['bucket']['postgres']['persistent_path'])
 
 
 class BucketSettings(YamlObj):
     def __init__(self, settings: dict):
-        self.server = BucketServerSettings(settings.get('server', DEFAULT_SETTINGS['bucket']['server']))
-        self.client = BucketClientSettings(settings.get('client', DEFAULT_SETTINGS['bucket']['client']))
-        self.postgres = BucketPostgresSettings(settings.get('postgres', DEFAULT_SETTINGS['bucket']['postgres']))
+        settings = _section(settings)
+        self.server = BucketServerSettings(_get(settings, 'server', DEFAULT_SETTINGS['bucket']['server']))
+        self.client = BucketClientSettings(_get(settings, 'client', DEFAULT_SETTINGS['bucket']['client']))
+        self.postgres = BucketPostgresSettings(_get(settings, 'postgres', DEFAULT_SETTINGS['bucket']['postgres']))
 
 
 class PostgresSettings(YamlObj):
     def __init__(self, settings: dict):
-        self.host = settings.get('host', DEFAULT_SETTINGS['postgres']['host'])
-        self.port = settings.get('port', DEFAULT_SETTINGS['postgres']['port'])
-        self.username = settings.get('username', DEFAULT_SETTINGS['postgres']['username'])
-        self.password = settings.get('password', DEFAULT_SETTINGS['postgres']['password'])
-        self.database = settings.get('database', DEFAULT_SETTINGS['postgres']['database'])
-        # self.schema = settings.get('schema', DEFAULT_SETTINGS['postgres']['schema'])
+        settings = _section(settings)
+        self.host = _get(settings, 'host', DEFAULT_SETTINGS['postgres']['host'])
+        self.port = _get(settings, 'port', DEFAULT_SETTINGS['postgres']['port'])
+        self.username = _get(settings, 'username', DEFAULT_SETTINGS['postgres']['username'])
+        self.password = _get(settings, 'password', DEFAULT_SETTINGS['postgres']['password'])
+        self.database = _get(settings, 'database', DEFAULT_SETTINGS['postgres']['database'])
+        # self.schema = _get(settings, 'schema', DEFAULT_SETTINGS['postgres']['schema'])
 
 
 class BuelonSettings(YamlObj):
     def __init__(self, settings: dict):
-        self.hub = HubSettings(settings.get('hub', DEFAULT_SETTINGS['hub']))
-        self.worker = WorkerSettings(settings.get('worker', DEFAULT_SETTINGS['worker']))
-        self.bucket = BucketSettings(settings.get('bucket', DEFAULT_SETTINGS['bucket']))
-        self.postgres = PostgresSettings(settings.get('postgres', DEFAULT_SETTINGS['postgres']))
-        # self.redis = RedisSettings(settings.get('redis', DEFAULT_SETTINGS['redis']))
+        settings = _section(settings)
+        self.hub = HubSettings(_get(settings, 'hub', DEFAULT_SETTINGS['hub']))
+        self.worker = WorkerSettings(_get(settings, 'worker', DEFAULT_SETTINGS['worker']))
+        self.bucket = BucketSettings(_get(settings, 'bucket', DEFAULT_SETTINGS['bucket']))
+        self.postgres = PostgresSettings(_get(settings, 'postgres', DEFAULT_SETTINGS['postgres']))
+        # self.redis = RedisSettings(_get(settings, 'redis', DEFAULT_SETTINGS['redis']))
 
 
 if os.path.exists(SETTINGS_PATH):
     with open(SETTINGS_PATH, 'r') as f:
-        settings = BuelonSettings(yaml.safe_load(f))
+        settings = BuelonSettings(yaml.safe_load(f) or {})
 else:
     settings = BuelonSettings(DEFAULT_SETTINGS)
 

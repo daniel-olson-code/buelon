@@ -167,6 +167,20 @@ async function runJob(jobId) {
 }
 
 
+// `1536` -> `'1.5 KB'`. Mirrors `hub.format_bytes`.
+function formatBytes(n) {
+    let size = Number(n) || 0;
+    const units = ['B', 'KB', 'MB', 'GB'];
+    for (let i = 0; i < units.length; i++) {
+        if (size < 1024 || i === units.length - 1) {
+            return i === 0
+                ? `${Math.round(size)} B`
+                : `${size.toLocaleString(undefined, {minimumFractionDigits: 1, maximumFractionDigits: 1})} ${units[i]}`;
+        }
+        size /= 1024;
+    }
+}
+
 // Dashboard rendering
 function renderStats(counts) {
     const statsGrid = document.getElementById('statsGrid');
@@ -175,15 +189,51 @@ function renderStats(counts) {
         { label: 'Remaining', value: counts.remaining, color: 'var(--text-secondary)' },
         { label: 'Completed', value: counts.done, color: 'var(--success)' },
         { label: 'Pending', value: counts.jobs, color: 'var(--text-secondary)' },
+        // Subset of Pending: jobs the hub is holding back, either a failed job serving
+        // out its retry back-off (BUGS.md #35) or a `pending` hand-back waiting out its
+        // poll delay (BUGS.md #50).
+        { label: 'Delayed', value: counts.delayed, color: 'var(--warning)' },
         { label: 'Queued', value: counts.queued, color: 'var(--warning)' },
         { label: 'On Hold', value: counts.holds, color: 'var(--warning)' },
         { label: 'Errors', value: counts.errors, color: 'var(--danger)' },
+        // Retained job results, not jobs -- deliberately outside Total. A pipeline
+        // parked on an error keeps its chain's intermediate data until it is re-run
+        // or deleted, and this is the only place that cost shows up. BUGS.md #36.
+        {
+            label: 'Results Held',
+            value: counts.results,
+            color: 'var(--text-secondary)',
+            sub: counts.results_bytes ? `~${formatBytes(counts.results_bytes)}` : null,
+        },
+        // Chunks of an upload the hub is holding but cannot dispatch until the
+        // client commits it -- also outside Total. Non-zero here with nothing
+        // moving means a stalled `bue upload`. BUGS.md #49.
+        {
+            label: 'Staged Uploads',
+            value: counts.staged,
+            color: 'var(--text-secondary)',
+            sub: counts.staged_uploads
+                ? `${counts.staged_uploads.toLocaleString()} upload${counts.staged_uploads === 1 ? '' : 's'}`
+                : null,
+        },
+        // Jobs that have returned `pending` at least once -- a subset of Pending and
+        // On Hold, so outside Total. Unbounded re-queueing is the point of `pending`,
+        // so there is no cap by default; this is how a job polling forever becomes
+        // visible instead of looking like one waiting its turn. BUGS.md #50.
+        {
+            label: 'Handed Back',
+            value: counts.handbacks,
+            color: 'var(--text-secondary)',
+            sub: counts.handbacks_max
+                ? `max ${counts.handbacks_max.toLocaleString()}x`
+                : null,
+        },
     ];
 
     statsGrid.innerHTML = stats.map(stat => `
         <div class="card stat-card">
-            <div class="stat-value" style="color: ${stat.color}">${stat.value.toLocaleString()}</div>
-            <div class="stat-label">${stat.label}</div>
+            <div class="stat-value" style="color: ${stat.color}">${(stat.value ?? 0).toLocaleString()}</div>
+            <div class="stat-label">${stat.label}${stat.sub ? ` <span class="stat-sub">${stat.sub}</span>` : ''}</div>
         </div>
     `).join('');
 }

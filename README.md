@@ -90,6 +90,8 @@ nothing on the hub/worker path talks to it.
 **Hub state is snapshotted to disk.** By default the hub writes `.auto_save/snapshot` every
 ten minutes, plus once more on a clean shutdown (including `SIGTERM`, so `docker stop` and
 `systemctl stop` are safe), and reloads it on startup. A crash loses at most one interval.
+`BUELON_AUTO_SAVE=false` turns both halves off; `BUELON_AUTO_SAVE=load-only` restores a
+snapshot without writing one back.
 
 ### Scopes and priority
 
@@ -173,9 +175,12 @@ bisocket's `secure` default if that is unset too.
 | `CRYPTO_KEY` | an insecure built-in default | Transport encryption key. **Set this in production.** Every hub, worker and CLI invocation must use the same value; a mismatch fails the connection with `EncryptionMismatch`. |
 | `BUELON_SETTINGS_PATH` | `.bue/settings.yaml` | Full path to the settings file. |
 | `BUELON_DIR_PATH` | `.bue` | Directory the default settings path is built from. |
-| `BUELON_AUTO_SAVE` | `true` | Set to `false` to disable hub snapshots entirely. |
+| `BUELON_AUTO_SAVE` | `true` | Set to `false` to disable hub snapshots entirely — nothing is written *and* nothing is restored on startup. `load-only` restores an existing snapshot but never overwrites it. |
 | `BUELON_AUTO_SAVE_PATH` | `.auto_save` | Directory the hub snapshot is written to. |
 | `BUELON_AUTO_SAVE_INTERVAL` | `600` | Seconds between snapshots. |
+| `BUELON_RETRY_BACKOFF_BASE` | `5` | Seconds before a job's first retry. Each further attempt doubles it. `0` retries immediately. Read by the hub. |
+| `BUELON_RETRY_BACKOFF_MAX` | `300` | Ceiling on that doubling, in seconds. |
+| `BUELON_HANDBACK_DELAY` | `5` | Seconds a job that returns `pending` waits before it is offered again. Constant, not doubling — a poll is not a failure. `0` re-queues immediately. Read by the hub. |
 | `BOO_WEB_HOST` / `BOO_WEB_PORT` | `localhost` / `11011` | Where `bue web` listens. |
 | `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DATABASE` | localhost/5432/… | Connection used by `postgres` **jobs** (see [Supported Languages](#supported-languages)). Read by workers, not by the hub. |
 | `ENV_PATH` | `.env` | A `.env` file at this path is loaded, if `python-dotenv` is installed. Only the variables in this table have any effect. |
@@ -264,7 +269,10 @@ return Result(status=StepStatus.cancel)    # drop this chain
 ```
 
 `pending` is the important one: it is how you poll a slow API without holding a worker slot
-for the whole wait.
+for the whole wait. The hub holds the job back for `BUELON_HANDBACK_DELAY` seconds (5 by
+default) before offering it again, so the poll is a poll rather than a hot loop, and counts
+the hand-backs — `bue status` reports them as `handed back`, and the web UI as *Handed
+Back*. There is no limit unless you set `!max_handbacks`.
 
 Those three are the whole list. The other `StepStatus` members — `queued`, `working`,
 `success`, `error`, `unknown` — are hub bookkeeping, not things a job returns. `queued` in
@@ -375,9 +383,17 @@ def upload_to_db(table: list[dict]) -> None:
 ### Syntax notes
 
 - **Indentation is four spaces.** Change it with `TAB = '  '` on the first line.
-- `!scope`, `!priority`, `!timeout` and `!retries` set defaults for the whole file when they
-  are at the left margin, and override them for one job when they are indented inside a job
-  definition or attached to an `import (...)` entry.
+- `!scope`, `!priority`, `!timeout`, `!retries` and `!max_handbacks` set defaults for the
+  whole file when they are at the left margin, and override them for one job when they are
+  indented inside a job definition or attached to an `import (...)` entry.
+- `!retries N` gives a failed job N further attempts. They are spaced out, not immediate:
+  the hub holds the job back for 5s, then 10s, then 20s and so on, capped at 5 minutes, so
+  a rate limit or a failover has time to clear. `bue status` counts the jobs currently
+  waiting as `delayed`. Tune it with `BUELON_RETRY_BACKOFF_BASE` / `_MAX` on the hub.
+- `!max_handbacks N` caps how many times a job may return `StepStatus.pending` before the
+  hub gives up and records it as an error. It defaults to `0`, meaning unlimited, because
+  a poll loop genuinely does not know how many turns it needs — set it only on a job that
+  should not poll forever. It is a separate budget from `!retries`, which counts failures.
 - `!timeout` takes an arithmetic expression in seconds (`20 * 60`, `60**2 * 5`), but it must
   not contain parentheses inside an `import (...)` block — the parser counts brackets.
 - A single-job pipe needs a leading `|`: `p = | accounts`.
@@ -425,9 +441,40 @@ the hub, and it exits by itself every 20 minutes anyway, so run it under a super
 hub is not disposable: it holds the queue and every job result, and loses up to
 `BUELON_AUTO_SAVE_INTERVAL` seconds of progress on an unclean stop.
 
-**Memory.** The hub keeps every intermediate result until the whole DAG finishes. A pipeline
-with an errored branch pins its results in hub memory until you run `bue reset` or
-`bue delete`.
+**Memory.** The hub keeps every intermediate result until the whole DAG finishes, and a
+pipeline parked on an error keeps its chain's results for as long as the error sits there.
+That is deliberate, not a leak: `bue reset` requeues the errored job *by itself*, so its
+parents' results have to still be there when you fix the code two days later and re-run
+it. It is also what the web UI's job tree shows you when you click into a failure.
+
+The cost is that those results are re-serialized on every autosave. `bue status` and the
+web UI report it, so it is a number you can watch rather than a surprise:
+
+```
+$ bue status
+done: 0, queued: 18, errors: 4, jobs: 3, delayed: 0, holds: 0, remaining: 21, total: 21, results: 12 (~4.7 MB), staged: 0 in 0 upload(s), handed back: 0 (max 0)
+```
+
+`results` counts held job results and is deliberately outside `total` — a result is not a
+job. The size is estimated from a sample, hence the `~`. Two things release
+it: the pipeline finishing (a DAG that fully succeeds drops all of it), or `bue delete`,
+which discards errored pipelines outright. `bue reset` only releases it if the re-run
+succeeds. Errors are per pipeline, so one parked chain does not hold another one's
+results.
+
+`staged` is the other number outside `total`: the chunks of a `bue upload` that has not
+finished yet. A multi-chunk upload is buffered on the hub and only enters the queue when
+the whole thing commits, so those jobs are not runnable and must not count towards
+`total` — but the hub is holding them in memory, and a non-zero `staged` that never moves
+is a stalled uploader. An abandoned buffer is discarded when the connection drops, or
+reaped after fifteen minutes if the client hangs around without sending anything.
+
+`handed back` is the third: how many jobs still in play have returned `pending` at least
+once, and the highest count among them. These *are* already counted in `jobs` and
+`holds` — the number exists because a job polling an API that will never be ready looks
+exactly like a job waiting its turn, and `max 4,000` on an otherwise quiet hub is the
+only thing that gives it away. There is no cap by default; add `!max_handbacks N` to a
+job that should give up and land in `bue errors` instead of polling forever.
 
 ## Known Defects
 

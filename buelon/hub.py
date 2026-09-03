@@ -1,5 +1,6 @@
 import collections
 import os
+import itertools
 import uuid
 import time
 import json
@@ -9,7 +10,7 @@ import traceback
 import threading
 import contextlib
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Tuple
 
 import orjson
 
@@ -59,6 +60,88 @@ holds_v2: dict[str, dict[str, buelon.step.Job]] = {}
 workers: dict[str, dict] = {}
 
 db: dict[str, Any] = {}  # : dict[str, bytes] = {}
+
+# `db` retention is deliberate, so its cost is reported rather than evicted -- BUGS.md
+# #36. A job's result is dropped only when its whole connected DAG has succeeded (the
+# `success` leaf branch of `handle_step`), which means a pipeline parked on an error
+# keeps its chain's intermediate results for as long as the error sits there. That is
+# the point: `bue reset` requeues the errored job *alone* (the `reset-errors` branch of
+# `bi_handle_messages` calls `upload_steps` on `errors.values()`, not on the DAG), so
+# the parents' results have to still be in `db` when you come back and re-run it two
+# days later. The web UI's parent tree (`get_job_parents_and_results`) reads the same
+# entries. What was actually wrong was that none of this was visible: the only shared
+# cost of a parked error is that `auto_save` re-serializes every retained result every
+# `AUTO_SAVE_INTERVAL`, and nothing reported how much there was to serialize.
+DB_SIZE_SAMPLE: int = 200
+DB_SIZE_CACHE_TTL: float = 15.0
+
+# (computed_at_monotonic, len(db) at that point, estimated bytes)
+_db_size_cache: tuple[float, int, int] = (0.0, -1, 0)
+
+
+def db_size_bytes() -> int:
+    """Approximate serialized size of `db`. Read by `bue status` and the web UI.
+
+    Deliberately an estimate. Exact would mean `orjson.dumps`-ing every result on
+    every status poll -- `bue status -s` polls every 3s and the web UI faster than
+    that, so that is the whole autosave cost two orders of magnitude more often. This
+    serializes at most `DB_SIZE_SAMPLE` entries, scales by `len(db)`, and caches the
+    answer for `DB_SIZE_CACHE_TTL`.
+
+    The sample is the *oldest* entries (dict insertion order), which is the useful
+    bias here: successful DAGs are removed, so what accumulates at the front of `db`
+    is exactly the parked-error chains this number exists to expose.
+
+    Always reported with a `~`. It is only ever read by a human deciding whether to
+    run `bue delete`, so being off by a factor on a `db` of wildly uneven result
+    sizes costs nothing.
+    """
+    global _db_size_cache
+
+    now = time.monotonic()
+
+    with lock:
+        n = len(db)
+        if n == 0:
+            _db_size_cache = (now, 0, 0)
+            return 0
+
+        cached_at, cached_n, cached_bytes = _db_size_cache
+        # The `n` check keeps the number responsive right after an operator action
+        # (`bue delete` empties `db`; reporting a stale non-zero size for 15s after
+        # that reads as a bug). Re-estimating costs `DB_SIZE_SAMPLE` dumps.
+        if cached_n == n and (now - cached_at) < DB_SIZE_CACHE_TTL:
+            return cached_bytes
+
+        # References only -- the dumps below stay outside the lock (invariant #2).
+        sample = list(itertools.islice(db.values(), DB_SIZE_SAMPLE))
+
+    sampled_bytes = 0
+    sampled = 0
+    for value in sample:
+        try:
+            sampled_bytes += len(orjson.dumps(value))
+        except TypeError:
+            # The same values `_dumps_snapshot` drops from the snapshot. They occupy
+            # RAM but have no serialized size to report, so they leave the average
+            # alone rather than counting as zero.
+            continue
+        sampled += 1
+
+    total = int(sampled_bytes / sampled * n) if sampled else 0
+    _db_size_cache = (now, n, total)
+    return total
+
+
+def format_bytes(n: int) -> str:
+    """`1536` -> `'1.5 KB'`. For the status line and the web UI's stat card."""
+    size = float(n)
+    for unit in ('B', 'KB', 'MB', 'GB'):
+        if size < 1024 or unit == 'GB':
+            if unit == 'B':
+                return f'{int(size)} {unit}'
+            return f'{size:,.1f} {unit}'
+        size /= 1024
 
 # Chunks of an in-flight `bue upload` that have not been committed yet -- BUGS.md #32.
 #
@@ -124,6 +207,32 @@ UPLOAD_RESPONSE_TIMEOUT = 300.0
 UPLOAD_STAGING_TIMEOUT = 900.0
 UPLOAD_STAGING_SWEEP_INTERVAL = 60.0
 
+# Exponential back-off between a job's retries -- BUGS.md #35.
+#
+# #14 made `!retries` work, but a failed job went straight back on the dispatch queue at
+# its normal priority, so a worker polling an otherwise-idle hub picked it up again in
+# milliseconds and `!retries 5` burned six attempts before the rate limit, failover or
+# network blip it exists for had any chance to clear.
+#
+# The delay for attempt N is `BASE * 2 ** (N - 1)`, capped at `MAX`: 5s, 10s, 20s, 40s...
+# It is written onto the job as an absolute `not_before` timestamp, which `get_steps_v2`
+# skips over. `BUELON_RETRY_BACKOFF_BASE=0` turns the delay off entirely (the pre-#35
+# behaviour) without touching the retry budget itself.
+RETRY_BACKOFF_BASE: float = float(os.environ.get('BUELON_RETRY_BACKOFF_BASE', 5.0))
+RETRY_BACKOFF_MAX: float = float(os.environ.get('BUELON_RETRY_BACKOFF_MAX', 300.0))
+
+# How long a job that hands itself back as `pending` waits before it is offered again --
+# BUGS.md #50.
+#
+# The `pending` branch used to be a bare `upload_step`, so "not ready, try me later" on an
+# otherwise-idle hub came back in milliseconds: the README's "poll a slow API without
+# holding a worker slot" was a hot loop, hammering the API and burning a dispatch slot per
+# turn. It reuses #35's `not_before` mechanism, but the delay is a *constant*, not that
+# exponential back-off: a poll is not a failure, and a job waiting on a report that takes
+# ten minutes should keep asking at a steady cadence rather than drifting out to the
+# five-minute cap. `BUELON_HANDBACK_DELAY=0` restores the pre-#50 immediate requeue.
+HANDBACK_DELAY: float = float(os.environ.get('BUELON_HANDBACK_DELAY', 5.0))
+
 # endregion
 
 # region handling steps
@@ -131,6 +240,8 @@ UPLOAD_STAGING_SWEEP_INTERVAL = 60.0
 def get_steps_v2(scopes: list[str], limit: int = 100, reverse: bool = False, single_step: str | None = None):
     with lock:
         if single_step:
+            # An explicit `bue run-job -j ID` bypasses the retry back-off below on
+            # purpose -- the operator asked for this one job, now (BUGS.md #35).
             s = pop_step_from_id(single_step)
 
             if s:
@@ -168,10 +279,27 @@ def get_steps_v2(scopes: list[str], limit: int = 100, reverse: bool = False, sin
                                          scope_order[pair[0]]))
             yield from pairs
 
+        # One clock reading for the whole scan, so a long walk cannot make two jobs
+        # with the same `not_before` land on opposite sides of the cut-off.
+        now = time.time()
+
         for scope, priority in get_scope_and_priority():
             sl = max(0, limit - len(result))
-            result.extend(STEPS[scope][priority][:sl])
-            remaining = STEPS[scope][priority][sl:]
+
+            # This used to be a plain `[:sl]` / `[sl:]` slice pair. A job serving out a
+            # retry back-off has to be stepped over and *left where it is* rather than
+            # dispatched or dropped, so the split is a filter now (BUGS.md #35). Same
+            # O(len(queue)) as the slice it replaces -- the rebuild of `remaining` was
+            # already linear -- so the dispatch path costs nothing extra for it.
+            taken, remaining = [], []
+
+            for job in STEPS[scope][priority]:
+                if len(taken) < sl and job_not_before(job) <= now:
+                    taken.append(job)
+                else:
+                    remaining.append(job)
+
+            result.extend(taken)
 
             if remaining:
                 STEPS[scope][priority] = remaining
@@ -184,6 +312,83 @@ def get_steps_v2(scopes: list[str], limit: int = 100, reverse: bool = False, sin
                 break
 
         return result
+
+
+def count_delayed_steps() -> int:
+    """How many queued jobs are being held back right now -- BUGS.md #35, #50.
+
+    Reported alongside the `jobs` count so an operator looking at an idle cluster with a
+    non-zero queue can tell "waiting on its back-off" from "undispatchable", which is
+    what #45 looked like from the outside.
+
+    Both delays land in the same `not_before` field and so in the same count: a retry
+    serving out its exponential back-off (#35) and a `pending` hand-back waiting out
+    `HANDBACK_DELAY` (#50). The `handbacks` count below is what separates them.
+    """
+    with lock:
+        now = time.time()
+        return sum(1
+                   for priorities in STEPS.values()
+                   for jobs in priorities.values()
+                   for job in jobs
+                   if job_not_before(job) > now)
+
+
+def count_handbacks() -> tuple[int, int]:
+    """Live jobs that have handed themselves back, and the worst one's count -- #50.
+
+    Unbounded re-queueing is the *point* of `pending`, so this is observability rather
+    than a limit: a job stuck in a poll that will never succeed is indistinguishable
+    from one legitimately waiting, and this is what makes "that job has been handed back
+    4,000 times" visible without a cap that would break the documented pattern.
+
+    Scoped to the jobs still in play -- waiting in `STEPS` or checked out in `holds_v2`
+    -- not all of `ALL_STEPS`. That keeps it the same cost as `count_delayed_steps`
+    rather than a walk of every finished job, and a hand-back count on a job that has
+    since succeeded is history, not something an operator needs to act on.
+    """
+    with lock:
+        live = itertools.chain(
+            (job
+             for priorities in STEPS.values()
+             for jobs in priorities.values()
+             for job in jobs),
+            (job
+             for client_holds in holds_v2.values()
+             for job in client_holds.values()),
+        )
+
+        jobs_seen, worst = 0, 0
+
+        for job in live:
+            # Read, never repaired: this runs over every live job on every status
+            # refresh, and rewriting the field here would be the per-scan write
+            # `job_not_before` avoids for the same reason.
+            count = getattr(job, 'handbacks', 0)
+
+            if not isinstance(count, int) or isinstance(count, bool) or count <= 0:
+                continue
+
+            jobs_seen += 1
+            worst = max(worst, count)
+
+        return jobs_seen, worst
+
+
+def count_staged_jobs() -> tuple[int, int]:
+    """Jobs sitting in `staging`, and how many in-flight uploads they belong to -- #49.
+
+    Deliberately *not* part of `total`/`remaining`: those answer "what can a worker
+    run", and a staged chunk cannot be dispatched until its `upload-commit` arrives
+    (BUGS.md #32). Reported separately because otherwise a hub holding 50,000 staged
+    jobs looks identical to an idle one, so a stalled upload is indistinguishable from
+    one that never started.
+    """
+    with lock:
+        uploads = [entry
+                   for client_uploads in staging.values()
+                   for entry in client_uploads.values()]
+        return sum(len(entry['jobs']) for entry in uploads), len(uploads)
 
 
 def add_step_to_steps(step: buelon.core.step.Job, jobs: list[buelon.core.step.Job]):
@@ -220,6 +425,46 @@ def job_int_field(job: buelon.core.step.Job, field: str, default: int = 0) -> in
     return coerced
 
 
+def job_not_before(job: buelon.core.step.Job) -> float:
+    """The timestamp before which `job` must not be dispatched. 0.0 means "now".
+
+    BUGS.md #35. Read on the dispatch path, so it never raises: the hub takes jobs from
+    clients it does not control, and a junk `not_before` arriving over the wire (or in an
+    old snapshot) must mean "dispatchable", never "wedge this queue forever". Unlike
+    `job_int_field` this does not repair the job in place -- the field is hub-owned
+    bookkeeping, and rewriting it here would fire on every scan of every queue.
+    """
+    value = getattr(job, 'not_before', 0.0)
+
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            return 0.0
+
+    # NaN is the nasty one: every comparison against it is False, so a NaN here would
+    # make the job fail the `<= now` test forever and sit in `STEPS` undispatchable --
+    # exactly the silent wedge #42 and #45 were about.
+    if value != value:
+        return 0.0
+
+    return float(value)
+
+
+def retry_backoff_delay(attempts: int) -> float:
+    """Seconds to hold a job back before retry number `attempts`. BUGS.md #35.
+
+    `BASE * 2 ** (attempts - 1)`, capped at `RETRY_BACKOFF_MAX`. The exponent is clamped
+    before the shift so a job that somehow arrives with a huge `attempts` cannot turn
+    this into a giant integer computation.
+    """
+    if RETRY_BACKOFF_BASE <= 0 or attempts < 1:
+        return 0.0
+
+    exponent = min(max(attempts - 1, 0), 32)
+    return min(RETRY_BACKOFF_BASE * (2 ** exponent), RETRY_BACKOFF_MAX)
+
+
 def upload_step(job: buelon.core.step.Job):
     with lock:
         priority = job_int_field(job, 'priority', 0)
@@ -242,8 +487,43 @@ def upload_steps(jobs: list[buelon.core.step.Job]):
 def handle_step(step:  buelon.core.step.Job, status: buelon.core.step.StepStatus):
     with lock:
         if status == buelon.core.step.StepStatus.pending:
-            ALL_STEPS[step.id] = [status.value, step]
-            upload_step(step)
+            # A job saying "not ready, try me again later" -- the documented way to poll
+            # a slow API without holding a worker slot for the whole wait. This used to
+            # be a bare `upload_step`: no counter, no delay, no ceiling, so a job that
+            # never became ready spun as fast as a worker could ask for it and looked
+            # exactly like a job that was simply waiting its turn. BUGS.md #50.
+            #
+            # `handbacks` is its own counter rather than `attempts`: `attempts` is the
+            # error budget `!retries` spends (#14), and a hand-back is not a failure.
+            step.handbacks = (getattr(step, 'handbacks', 0) or 0) + 1
+            # Normalised through `job_int_field` for the same reason `retries` is -- the
+            # hub takes jobs from clients it does not control, and a string here would
+            # raise on the comparison below (BUGS.md #42).
+            max_handbacks = job_int_field(step, 'max_handbacks', 0)
+
+            if max_handbacks and step.handbacks > max_handbacks:
+                # Opt-in only: 0 means unlimited, which is the default and the
+                # pre-#50 behaviour. Capping under `!retries` instead would have
+                # broken the poll pattern for everyone who never set one.
+                print(f'job {step.id} ({step.name}) handed itself back '
+                      f'{step.handbacks:,} times, over its !max_handbacks '
+                      f'{max_handbacks:,} -- recording as an error')
+                step.not_before = 0.0
+                ALL_STEPS[step.id] = [buelon.core.step.StepStatus.error.value, step]
+                errors[step.id] = step
+                db[step.id] = {
+                    'error': f'Job {step.name!r} ({step.id}) returned `pending` '
+                             f'{step.handbacks:,} times, exceeding its '
+                             f'`!max_handbacks {max_handbacks}`.',
+                    'trace': '',
+                }
+            else:
+                # Held back rather than requeued at once, so the poll is a poll and not
+                # a hot loop. Constant, unlike the exponential retry back-off -- see
+                # `HANDBACK_DELAY`. `get_steps_v2` steps over it until it passes.
+                step.not_before = time.time() + HANDBACK_DELAY
+                ALL_STEPS[step.id] = [status.value, step]
+                upload_step(step)
         elif status == buelon.core.step.StepStatus.cancel:
             for step_id in get_all_ids(step):
                 remove_id(step_id)
@@ -262,11 +542,21 @@ def handle_step(step:  buelon.core.step.Job, status: buelon.core.step.StepStatus
             retries = job_int_field(step, 'retries', 0)
 
             if step.attempts <= retries:
-                print(f'job {step.id} ({step.name}) failed, retrying '
+                # The retry is delayed, not immediate -- BUGS.md #35. Without this a
+                # worker on an idle hub picks the job straight back up, so the whole
+                # budget is spent in milliseconds and never outlives the transient
+                # failure retries are for. `get_steps_v2` steps over the job until
+                # `not_before` passes.
+                delay = retry_backoff_delay(step.attempts)
+                step.not_before = time.time() + delay
+                print(f'job {step.id} ({step.name}) failed, retrying in {delay:,.1f}s '
                       f'(attempt {step.attempts} of {retries + 1})')
                 ALL_STEPS[step.id] = [buelon.core.step.StepStatus.pending.value, step]
                 upload_step(step)
             else:
+                # Nothing will dispatch it again, so the stale back-off must not ride
+                # along into `errors` -- `bue reset-errors` requeues these objects.
+                step.not_before = 0.0
                 ALL_STEPS[step.id] = [status.value, step]
                 errors[step.id] = step
         elif status == buelon.core.step.StepStatus.reset:
@@ -280,6 +570,12 @@ def handle_step(step:  buelon.core.step.Job, status: buelon.core.step.StepStatus
             # `_register_uploaded_steps` does at upload time. Do not collapse them.
             for job in get_all_steps(step).values():
                 remove_id(job.id, True)
+                # `reset` is an operator saying "run this now". A job halfway through a
+                # retry back-off would otherwise go back on the queue still carrying a
+                # future `not_before` and sit there (BUGS.md #35). `attempts` is left
+                # alone on purpose: the retry budget is the job's, and #14 counts it on
+                # the job so it survives exactly this kind of requeue.
+                job.not_before = 0.0
                 if job.parents:
                     ALL_STEPS[job.id] = [buelon.core.step.StepStatus.queued.value, job]
                     queued[job.id] = job
@@ -744,17 +1040,40 @@ def display_text():
         holds_len = sum([len(client_holds) for client_holds in holds_v2.values()])
 
         done_len, queue_len, error_len = len(done), len(queued), len(errors)
+        # A subset of `jobs`, not a state of its own -- BUGS.md #35.
+        delayed_len = count_delayed_steps()
+        db_len = len(db)
+        staged_len, staged_uploads = count_staged_jobs()
+        # Also a subset of `jobs` + `holds`, not a state -- BUGS.md #50.
+        handback_jobs, worst_handbacks = count_handbacks()
 
     total = steps_len + holds_len + done_len + queue_len + error_len
     remaining = total - done_len
+
+    # Outside the lock: it serializes a sample of `db` (invariant #2).
+    db_bytes = db_size_bytes()
 
     text = (f'done: {done_len:,}'
             f', queued: {queue_len:,}'
             f', errors: {error_len:,}'
             f', jobs: {steps_len:,}'
+            f', delayed: {delayed_len:,}'
             f', holds: {holds_len:,}'
             f', remaining: {remaining:,}'
-            f', total: {total:,}')
+            f', total: {total:,}'
+            # Not part of `total` -- a retained result is not a job. It is here
+            # because a pipeline parked on an error keeps its results until you
+            # `bue delete` or re-run it, and that used to be invisible. BUGS.md #36.
+            f', results: {db_len:,} (~{format_bytes(db_bytes)})'
+            # Also outside `total` -- a staged job is not dispatchable until its
+            # upload commits, so it is not yet part of "what can a worker run".
+            # Reported so a stalled `bue upload` is visible at all. BUGS.md #49.
+            f', staged: {staged_len:,} in {staged_uploads:,} upload(s)'
+            # Jobs that have returned `pending` at least once, and the worst
+            # offender's count. Not part of `total` -- these are live jobs already
+            # counted under `jobs`/`holds`. Without it a job polling forever is
+            # indistinguishable from one waiting its turn. BUGS.md #50.
+            f', handed back: {handback_jobs:,} (max {worst_handbacks:,})')
 
     return text
 
@@ -874,8 +1193,29 @@ def get_args(steps):
 
 AUTO_SAVE_PATH: str = os.environ.get('BUELON_AUTO_SAVE_PATH', '.auto_save')
 AUTO_SAVE_INTERVAL: float = float(os.environ.get('BUELON_AUTO_SAVE_INTERVAL', 60 * 10))
-AUTO_SAVE_ENABLED: bool = os.environ.get('BUELON_AUTO_SAVE', 'true').strip().lower() not in (
-    'false', '0', 'no', 'off')
+
+
+def _parse_auto_save_mode(raw: str) -> Tuple[bool, bool]:
+    """`BUELON_AUTO_SAVE` -> (write snapshots, read one on startup).
+
+    BUGS.md #48: `false` used to switch off only the writing half, so a hub started in
+    a directory holding a stale `.auto_save/snapshot` came up owning jobs from a
+    previous session no matter what the environment said. `false` now means what the
+    README says it means -- no snapshot is written *or* read.
+
+    Loading without saving stays reachable, because reading a snapshot once without
+    letting the hub overwrite it is a legitimate thing to want: ask for it by name.
+    """
+    value = raw.strip().lower()
+    if value in ('false', '0', 'no', 'off'):
+        return False, False
+    if value in ('load', 'load-only', 'load_only', 'read-only', 'readonly'):
+        return False, True
+    return True, True
+
+
+AUTO_SAVE_ENABLED, AUTO_LOAD_ENABLED = _parse_auto_save_mode(
+    os.environ.get('BUELON_AUTO_SAVE', 'true'))
 
 SNAPSHOT_NAME = 'snapshot'
 SNAPSHOT_VERSION = 1
@@ -1136,7 +1476,12 @@ def _install_sigterm_shutdown():
 
 def auto_load():
     """Restore hub state written by `auto_save`. A missing or unreadable snapshot is
-    not fatal -- the hub starts empty, which is what it did before #15."""
+    not fatal -- the hub starts empty, which is what it did before #15.
+
+    `BUELON_AUTO_SAVE=false` disables restoring as well as writing (BUGS.md #48)."""
+    if not AUTO_LOAD_ENABLED:
+        return
+
     path = snapshot_path()
     try:
         if os.path.exists(path):
@@ -1746,6 +2091,9 @@ def bi_on_errors(request: ServerRequest, data):
 def bi_get_web_info(request: ServerRequest, workers_info: bool = False):
     info = {}
 
+    # Before taking the lock: it serializes a sample of `db` (invariant #2).
+    db_bytes = db_size_bytes()
+
     with lock:
         steps_len = sum([len(lst) for val in STEPS.values() for lst in val.values()])
         # `holds` is the dead websocket path's dict; the live bi path checks jobs out into
@@ -1753,13 +2101,31 @@ def bi_get_web_info(request: ServerRequest, workers_info: bool = False):
         holds_len = sum([len(client_holds) for client_holds in holds_v2.values()])
 
         done_len, queue_len, error_len = len(done), len(queued), len(errors)
+        staged_len, staged_uploads = count_staged_jobs()
+        handback_jobs, worst_handbacks = count_handbacks()
 
         total = steps_len + holds_len + done_len + queue_len + error_len
         remaining = total - done_len
 
         info['counts'] = {
             'done': done_len, 'queued': queue_len, 'errors': error_len, 'jobs': steps_len, 'holds': holds_len,
-            'remaining': remaining, 'total': total
+            # `delayed` is a subset of `jobs` (jobs serving out a retry back-off), so it
+            # is deliberately absent from `total` and `remaining` -- BUGS.md #35.
+            'delayed': count_delayed_steps(),
+            'remaining': remaining, 'total': total,
+            # Retained job results. Not part of `total`/`remaining` -- these are not
+            # jobs, they are the intermediate data behind them, kept until the whole
+            # DAG succeeds. `results_bytes` is an estimate; see `db_size_bytes`.
+            # BUGS.md #36.
+            'results': len(db), 'results_bytes': db_bytes,
+            # Chunks of an in-flight `bue upload`, not yet committed and so not yet
+            # dispatchable -- outside `total`/`remaining` for the same reason #32
+            # kept them out of `STEPS`. BUGS.md #49.
+            'staged': staged_len, 'staged_uploads': staged_uploads,
+            # Live jobs that have handed themselves back as `pending` at least once,
+            # and the highest count among them. A subset of `jobs` + `holds`, so like
+            # `delayed` it stays out of `total`/`remaining` -- BUGS.md #50.
+            'handbacks': handback_jobs, 'handbacks_max': worst_handbacks,
         }
 
         if workers_info:
@@ -2010,8 +2376,15 @@ def bi_on_finally(finally_info: OnFinallyInfo):
         return
 
     if getattr(finally_info, 'connection_type', None) == CONNECTION_RECEIVE:
-        print(f'client {client_id} lost its receive socket; keeping its held jobs '
-              f'until the send socket closes')
+        # Only worth a line if the client actually has jobs checked out. Every
+        # short-lived client (`bue status`, `bue errors`, each web-UI poll) reaches
+        # here holding nothing, and the unconditional print buried the two lines
+        # that mattered -- BUGS.md #47. One dict read under the lock, nothing more.
+        with lock:
+            held = len(holds_v2.get(client_id, {}))
+        if held:
+            print(f'client {client_id} lost its receive socket; keeping its {held} '
+                  f'held job(s) until the send socket closes')
         return
 
     # Send connection, or an unidentified one: safety net behind `bi_on_close`.
