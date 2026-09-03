@@ -1041,11 +1041,11 @@ def display_text():
         holds_len = sum([len(client_holds) for client_holds in holds_v2.values()])
 
         done_len, queue_len, error_len = len(done), len(queued), len(errors)
-        # A subset of `jobs`, not a state of its own -- BUGS.md #35.
+        # A subset of `pending`, not a state of its own -- BUGS.md #35.
         delayed_len = count_delayed_steps()
         db_len = len(db)
         staged_len, staged_uploads = count_staged_jobs()
-        # Also a subset of `jobs` + `holds`, not a state -- BUGS.md #50.
+        # Also a subset of `pending` + `holds`, not a state -- BUGS.md #50.
         handback_jobs, worst_handbacks = count_handbacks()
 
     total = steps_len + holds_len + done_len + queue_len + error_len
@@ -1057,7 +1057,12 @@ def display_text():
     text = (f'done: {done_len:,}'
             f', queued: {queue_len:,}'
             f', errors: {error_len:,}'
-            f', jobs: {steps_len:,}'
+            # `STEPS` -- jobs ready to dispatch. Printed as `pending` because that is
+            # the status it is, and because sitting next to `queued`/`done`/`errors`
+            # the old label `jobs` read like a total rather than one state among
+            # them. The wire key stays `jobs`; `static/script.js` reads it and has
+            # always labelled it "Pending". BUGS.md #53.
+            f', pending: {steps_len:,}'
             f', delayed: {delayed_len:,}'
             f', holds: {holds_len:,}'
             f', remaining: {remaining:,}'
@@ -1072,22 +1077,11 @@ def display_text():
             f', staged: {staged_len:,} in {staged_uploads:,} upload(s)'
             # Jobs that have returned `pending` at least once, and the worst
             # offender's count. Not part of `total` -- these are live jobs already
-            # counted under `jobs`/`holds`. Without it a job polling forever is
+            # counted under `pending`/`holds`. Without it a job polling forever is
             # indistinguishable from one waiting its turn. BUGS.md #50.
             f', handed back: {handback_jobs:,} (max {worst_handbacks:,})')
 
     return text
-
-
-last_display = time.time()
-time_to_next_display = 2.0
-def display():
-    global last_display, time_to_next_display
-    if time.time() - last_display < time_to_next_display:
-        return
-    steps_len = sum([len(lst) for val in STEPS.values() for lst in val.values()])
-    print(f'done: {len(done):,}, queued: {len(queued):,}, errors: {len(errors):,}, steps: {steps_len}, total: {steps_len + len(done) + len(queued) + len(errors):,}')
-    last_display = time.time()
 
 
 def temp_get_all_ids(step:  buelon.core.step.Job, already: set | None = None, has_none: dict | None = None):
