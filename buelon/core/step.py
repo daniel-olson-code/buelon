@@ -9,7 +9,7 @@ import enum
 import os
 import asyncio
 import inspect
-from typing import Any, List
+from typing import Any, Container, Iterable, List
 
 import orjson
 import unsync
@@ -153,6 +153,28 @@ def _local_module_name(path: str) -> str:
     became `appl` and `happy.py` became `ha` (BUGS.md #17).
     """
     return os.path.basename(path).removesuffix('.py')
+
+
+def all_parents_complete(parents: Iterable[str], completed: Container[str]) -> bool:
+    """Is every one of `parents` finished, so a child is safe to run?
+
+    The one condition two separate schedulers kept getting wrong in the same way, so
+    they now ask it here:
+
+      * the hub's `handle_step` success branch used to promote a child as soon as it
+        found it in `queued` -- true after the *first* of two parents finished
+        (BUGS.md #51);
+      * `PipelineParser.run`, the `bue run -f` local runner, had no gate at all and
+        enqueued a fan-in child once per parent, running it twice (BUGS.md #52).
+
+    `completed` must mean "actually succeeded", not "has an entry somewhere". The hub
+    passes its `done` dict rather than `db`, because a job that returned `pending`
+    ("not ready, try me again") is already in `db` carrying a placeholder -- see #33
+    and #51. A `dict`, `set` or anything else supporting `in` works.
+
+    A job with no parents is complete by definition, so this returns True for `()`.
+    """
+    return all(parent in completed for parent in parents)
 
 
 class Step(pipe_util.PipeObject):

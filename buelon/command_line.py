@@ -441,7 +441,14 @@ def cli():
     elif args.command == 'run':
         if args.file:
             with open(args.file) as f:
-                pete.core.pipe_interpreter.run_code(f.read())
+                try:
+                    pete.core.pipe_interpreter.run_code(f.read())
+                except pete.core.pipe_interpreter.LocalRunError as e:
+                    # The local runner reports each failed job as it happens and raises
+                    # at the end so the exit code is honest -- but a traceback out of a
+                    # CLI is noise, and the useful detail is already printed. BUGS.md #52.
+                    print(f'\n{e}')
+                    sys.exit(1)
     elif args.command == 'joke':
         tell_a_boo_joke()
     else:

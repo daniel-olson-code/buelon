@@ -247,6 +247,16 @@ class BuelonBuildError(Exception):
     pass
 
 
+class LocalRunError(Exception):
+    """Raised by `PipelineParser.run` when a job did not succeed.
+
+    The local runner keeps going after a failed job so the rest of the pipeline
+    still runs -- the hub does the same, recording the failure in `errors` -- and
+    then raises this at the end so `bue run -f` does not exit 0 on a pipeline that
+    partly failed. BUGS.md #52.
+    """
+
+
 def name_warning(name: str):
     if '  ' in name:
         print(f'Warning: `{name}` contains consecutive spaces.')
@@ -366,9 +376,34 @@ class PipelineParser:
             # yield '', ''
 
     def run(self, prepared_content: str):
+        """Run a whole pipeline in this process -- the `bue run -f FILE` path.
+
+        This is a second scheduler alongside the hub's, and the point of it is that a
+        pipeline behaves the same here as it will on the cluster. Two ways it did not,
+        both fixed here (BUGS.md #52):
+
+          * There was no gate on enqueuing children, so a fan-in job (`pc(v1, v2)`,
+            two parents) was enqueued once per parent and **ran twice**. Ordering was
+            not guaranteed either -- nothing stopped a child being drained before its
+            second parent had run, which would `KeyError` on `data[parent]`. Both are
+            now handled by `succeeded` plus `step.all_parents_complete`, the same
+            condition the hub applies in `handle_step` (#51).
+          * Only `success`, `pending` and `reset` had arms. Every other status --
+            `error`, `cancel`, `working`, `queued`, `unknown` -- fell off the end, so
+            the job vanished from the run with no message and its children never
+            fired. That is the local twin of #13, which fixed exactly this on the hub.
+            Each is now reported; failures are collected and raised as a
+            `LocalRunError` once the rest of the pipeline has finished, so one bad
+            branch does not hide the others.
+        """
         with tempfile.NamedTemporaryFile(mode='w', dir='.bue', suffix='.jsonl') as temp_file:
             q = buelon.helpers.persistqueue.JsonPersistentQueue(temp_file.name)
             data = {}  # buelon.helpers.lazy_load_class.LazyMap()
+            # The local stand-in for the hub's `done` dict: job ids that actually
+            # succeeded. `data` cannot answer that question -- a `pending` or `error`
+            # result is written there too, carrying a placeholder (see #33, #51).
+            succeeded: set[str] = set()
+            failures: list[str] = []
 
             def run(job: buelon.core.step.Job):
                 # job = self._get_job(job_id)
@@ -377,19 +412,51 @@ class PipelineParser:
                 data[job_id] = r.data
 
                 if r.status == buelon.core.step.StepStatus.success:
-                    for child in job.children:
-                        q.put(child)
+                    succeeded.add(job_id)
+                    for child_id in job.children:
+                        # A child is unblocked only when EVERY one of its parents has
+                        # succeeded. For a linear chain that is the same question as
+                        # "did my parent just finish?", which is why enqueuing
+                        # unconditionally held up for so long; for a fan-in it is not.
+                        if not step.all_parents_complete(
+                                self._get_job(child_id).parents, succeeded):
+                            continue
+                        q.put(child_id)
                 elif r.status == buelon.core.step.StepStatus.pending:
                     q.put(job_id)
                 elif r.status == buelon.core.step.StepStatus.reset:
                     parents = job.parents.copy()
+                    rewound = {job_id}
                     while parents:
                         p = parents.pop(0)
+                        rewound.add(p)
                         j = self._get_job(p)
                         if not j.parents:
                             q.put(p)
                         else:
                             parents.extend(j.parents)
+                    # The rewound jobs are about to run again, so their old success no
+                    # longer counts -- leaving it in `succeeded` would let a fan-in
+                    # child promote on a stale parent. The hub's `reset` branch does
+                    # the same thing by way of `remove_id(job.id, True)`.
+                    succeeded.difference_update(rewound)
+                elif r.status == buelon.core.step.StepStatus.cancel:
+                    # The hub's `cancel` drops the whole DAG. Locally there is nothing
+                    # to drop -- not enqueuing the children is the same thing -- but it
+                    # says so instead of disappearing.
+                    print(f'job {job.name!r} ({job_id}) returned `cancel` -- '
+                          f'stopping this branch, {len(job.children):,} child job(s) '
+                          f'will not run')
+                else:
+                    # `error`, plus `working` / `queued` / `unknown`, which user code
+                    # can return through `create_return_value`'s tuple form.
+                    detail = ''
+                    if isinstance(r.data, dict) and 'error' in r.data:
+                        detail = f": {r.data['error']}"
+                    print(f'job {job.name!r} ({job_id}) returned '
+                          f'`{r.status.name}`{detail} -- stopping this branch, '
+                          f'{len(job.children):,} child job(s) will not run')
+                    failures.append(f'{job.name!r} ({job_id}) returned `{r.status.name}`')
 
             for job in self.build(prepared_content):
                 if not job.parents:
@@ -399,6 +466,11 @@ class PipelineParser:
                 job_id = q.get()
                 job = self._get_job(job_id)
                 run(job)
+
+            if failures:
+                raise LocalRunError(
+                    f'{len(failures):,} job(s) did not succeed:\n  '
+                    + '\n  '.join(failures))
 
     def _get_job(self, job_id: str) -> step.Job:
         job_json = self.conn.execute("SELECT value FROM jobs WHERE id = ?", (job_id,)).fetchone()[0]

@@ -604,7 +604,8 @@ def handle_step(step:  buelon.core.step.Job, status: buelon.core.step.StepStatus
                     # BUGS.md #33) is already in `db` carrying a placeholder. Membership
                     # in `db` therefore does not mean "has produced a result", and using
                     # it here handed children a `None` in place of real parent output.
-                    if child is None or not all(p in done for p in child.parents):
+                    if child is None or not buelon.core.step.all_parents_complete(
+                            child.parents, done):
                         continue
 
                     # The status write is the child's, not the parent's -- the parent's
