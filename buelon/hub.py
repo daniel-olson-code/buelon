@@ -697,9 +697,30 @@ def pop_step_from_id(step_id: str):
 
         s = None
 
+        # A job in `queued` is *blocked*: it is waiting on a parent that has not
+        # finished. It used to be popped straight out of here and handed to the
+        # worker, which then ran it before its input existed. Nothing ran on garbage
+        # -- `get_args` catches the missing parent -- but the recovery is
+        # `temp_handle_step_args`' reset of the ENTIRE DAG, so asking to run one
+        # blocked job silently restarted its whole pipeline from the roots and wiped
+        # the `db` entries of every upstream job that had already succeeded. And the
+        # operator saw nothing: `run-job` just appeared to do nothing. BUGS.md #54.
+        #
+        # Same root confusion as #51 -- `queued` is not "a job you can dispatch".
+        # The `errors` and `done` arms below are fine to keep: those jobs have their
+        # inputs. `single_job_unavailable_reason` turns the `None` into a sentence for
+        # the operator who asked.
         if step_id in queued:
-            s = queued[step_id]
+            blocked = queued[step_id]
+            if not buelon.core.step.all_parents_complete(blocked.parents, done):
+                return None
+            # Every parent has finished, so this one is runnable and only its
+            # promotion is missing (a hub that reloaded saved state mid-DAG, say).
+            # Promote it the way the `success` branch of `handle_step` would rather
+            # than refusing an operator a job that is genuinely ready.
+            s = blocked
             del queued[step_id]
+            ALL_STEPS[step_id] = [buelon.core.step.StepStatus.pending.value, s]
         elif step_id in errors:
             s = errors[step_id]
             del errors[step_id]
@@ -729,6 +750,38 @@ def pop_step_from_id(step_id: str):
             remove_ids_from_steps({step_id})
 
         return s
+
+
+def single_job_unavailable_reason(step_id: str) -> str | None:
+    """Why did `pop_step_from_id` hand back nothing? A sentence for the operator.
+
+    `bue run-job -j ID` (and the web UI's "run job" button) is an explicit, direct
+    question about one job, so a silent no-op is the wrong answer -- and before
+    BUGS.md #54 that is exactly what all three of these cases produced. Called by
+    `bi_on_hold` only when a single-job hold came back empty, so it never costs the
+    dispatch path anything.
+
+    Returns `None` when the job looks runnable after all -- the id was handed out
+    between the pop and this call, which is a race, not a refusal, and inventing an
+    explanation for it would be worse than saying nothing.
+    """
+    with lock:
+        if step_id in queued:
+            job = queued[step_id]
+            waiting = [p for p in job.parents if p not in done]
+            return (f'job {step_id} is blocked: waiting on '
+                    f'{len(waiting)} unfinished parent(s): '
+                    f'{", ".join(waiting)}. It is dispatched automatically once they '
+                    f'succeed -- run a parent instead, or `bue reset` if one errored.')
+
+        for client_id, client_holds in holds_v2.items():
+            if step_id in client_holds:
+                return f'job {step_id} is already checked out by worker {client_id}.'
+
+        if step_id not in ALL_STEPS:
+            return f'job {step_id} is unknown to the hub.'
+
+        return None
 
 
 def remove_id(step_id: str, skip_all_ids: bool = False):
@@ -1600,6 +1653,9 @@ class BiWorkerClient:
         # function, and bisocket calls a non-coroutine callback via `asyncio.to_thread`,
         # i.e. off the loop -- so waking a waiter has to go through the loop.
         self._loop: asyncio.AbstractEventLoop | None = None
+        # The explanation the hub attached to the most recent `hold` reply, or None.
+        # Only a single-job hold that came back empty ever sets it -- BUGS.md #54.
+        self.last_hold_note: str | None = None
 
     async def __aenter__(self):
         # self.websocket = await connect(
@@ -1715,7 +1771,15 @@ class BiWorkerClient:
 
         msg = await self.get_response(request_id, wait_time=wait_time, timeout=timeout)
 
-        uid, jobs, args = msg.get_obj()  # json.loads(await self.websocket.recv())
+        payload = msg.get_obj()  # json.loads(await self.websocket.recv())
+        uid, jobs, args = payload[:3]
+
+        # A hub that could not honour a single-job request explains itself in a
+        # fourth element (BUGS.md #54). It is kept off the return value on purpose:
+        # `hold`'s three-item shape is unpacked in a dozen places, and the note is
+        # only ever read by the single-job branch of `bi_test_worker`, immediately
+        # after the call it belongs to.
+        self.last_hold_note = payload[3] if len(payload) > 3 else None
 
         return [uid, compressed_message_to_steps(jobs), args]
 
@@ -1909,16 +1973,32 @@ def bi_on_hold(request: ServerRequest, data):
             release_back(jobs)
             return
 
+        # An operator asking for one job by id and getting nothing back deserves to be
+        # told why -- blocked on a parent, already checked out, or an id the hub has
+        # never seen. BUGS.md #54. Computed here rather than in `get_steps_v2` so the
+        # batch dispatch path never pays for it, and only when the answer was empty.
+        #
+        # After `get_args`, not before: a job that reached `STEPS` blocked anyway (a
+        # snapshot reloaded mid-DAG) is dropped by `temp_handle_step_args`' backstop,
+        # which resets it into `queued` -- so asking now gets that job the blocked
+        # message too, instead of no message at all.
+        note = None
+        if data.get('single_step') and not jobs:
+            note = single_job_unavailable_reason(data['single_step'])
+
         if jobs:
             client_holds = holds_v2.setdefault(request.client_id, {})
             for job in jobs:
                 client_holds[job.id] = job
 
     try:
+        # The fourth element is #54's note. `BiWorkerClient.hold` treats it as
+        # optional, so a reply from an older hub still parses.
         request.send_data(json.dumps([
             uid,
             steps_to_compressed_message(jobs),
-            args
+            args,
+            note
         ]).encode())
     except:
         traceback.print_exc()
@@ -2688,9 +2768,15 @@ async def bi_test_worker(jobs_at_a_time: int = 25, single_step: str | None = Non
             if single_job_mode:
                 # One attempt, then stop pulling. If we got the job,
                 # handle_finished_jobs stops the run once it is released; if we did
-                # not (unknown id, or already held by another worker) there is
-                # nothing to wait for.
+                # not (unknown id, already held by another worker, or blocked on an
+                # unfinished parent) there is nothing to wait for.
                 if not jobs:
+                    # Say why. `bue run-job` used to exit silently on all three of
+                    # those, which read as "the command did nothing". BUGS.md #54.
+                    if client.last_hold_note:
+                        print(client.last_hold_note)
+                    else:
+                        print(f'job {single_step} was not dispatched')
                     stop_now = True
                 return
 
