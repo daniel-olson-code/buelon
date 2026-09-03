@@ -266,6 +266,13 @@ return Result(status=StepStatus.cancel)    # drop this chain
 `pending` is the important one: it is how you poll a slow API without holding a worker slot
 for the whole wait.
 
+Those three are the whole list. The other `StepStatus` members — `queued`, `working`,
+`success`, `error`, `unknown` — are hub bookkeeping, not things a job returns. `queued` in
+particular is not a slower `pending`: it means "this job is blocked on a parent that has not
+finished yet", and the hub sets and clears it as parents complete. Returning it from a job
+is recorded as an error, because by the time a worker holds a job its parents are already
+done, so there is nothing left to wait for. Use `pending` to be tried again.
+
 ## Learn by Example
 
 The two files below are the ones used to verify this README. Write both into the same

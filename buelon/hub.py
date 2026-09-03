@@ -60,6 +60,19 @@ workers: dict[str, dict] = {}
 
 db: dict[str, Any] = {}  # : dict[str, bytes] = {}
 
+# Chunks of an in-flight `bue upload` that have not been committed yet -- BUGS.md #32.
+#
+#   staging[client_id][upload_id] = {'jobs': [Job, ...], 'updated': monotonic}
+#
+# `bi_on_upload` used to merge every 500-job chunk straight into the dicts above, so a
+# pipeline whose 3rd chunk was rejected left the first 1,000 jobs queued on the hub --
+# some of them parents of children that never arrived. A multi-chunk upload now lands
+# here first and moves into `STEPS`/`ALL_STEPS`/`queued` all at once on `upload-commit`.
+#
+# Deliberately *not* part of the `auto_save` snapshot: an uncommitted upload never
+# existed as far as the queue is concerned, so it must not survive a hub restart.
+staging: dict[str, dict[str, dict]] = {}
+
 
 # The conventional priority range, high to low. `get_steps_v2` no longer consults it
 # -- it sorts on the priority number itself, so any integer dispatches (BUGS.md #45).
@@ -101,6 +114,15 @@ HOLD_RESPONSE_TIMEOUT = 300.0
 # the hub has to decompress and register up to 500 jobs under `lock` before sending it,
 # behind however many other workers are queued ahead of it.
 UPLOAD_RESPONSE_TIMEOUT = 300.0
+
+# How long a staged upload may sit untouched before the hub reaps it -- BUGS.md #32.
+#
+# The common failure paths do not need this: a rejected chunk or a dead uploader both
+# end with the connection going away, and `bi_release_client` drops that client's
+# buffers. This covers only the client that stays connected but stops mid-upload, whose
+# chunks would otherwise be held in memory for the life of the hub.
+UPLOAD_STAGING_TIMEOUT = 900.0
+UPLOAD_STAGING_SWEEP_INTERVAL = 60.0
 
 # endregion
 
@@ -261,14 +283,31 @@ def handle_step(step:  buelon.core.step.Job, status: buelon.core.step.StepStatus
             done[step.id] = step
             if step.children:
                 for step_id in step.children:
-                    if step_id in queued:
-                        # Promote the *child* out of `queued` and into the dispatch
-                        # queue. The status write is the child's, not the parent's --
-                        # the parent's `success` entry set above must survive. See
-                        # BUGS.md #9.
-                        child = queued.pop(step_id)
-                        ALL_STEPS[step_id] = [status.pending.value, child]
-                        upload_step(child)
+                    child = queued.get(step_id)
+
+                    # A child is unblocked only when EVERY one of its parents has
+                    # succeeded -- not merely when it is still sitting in `queued`.
+                    #
+                    # For a linear chain those are the same question, which is why the
+                    # old `if step_id in queued` guard held up for so long. For a job
+                    # with two or more parents (`pipe3(v1, v2)` builds one) they are
+                    # not: whichever parent finished first popped the child onto the
+                    # dispatch queue while the other was still running. BUGS.md #51.
+                    #
+                    # The test is `done`, not `db`. `bi_on_release` writes
+                    # `db[job.id] = result` unconditionally *before* calling us, so a
+                    # parent that returned `pending` ("not ready, try me again" --
+                    # BUGS.md #33) is already in `db` carrying a placeholder. Membership
+                    # in `db` therefore does not mean "has produced a result", and using
+                    # it here handed children a `None` in place of real parent output.
+                    if child is None or not all(p in done for p in child.parents):
+                        continue
+
+                    # The status write is the child's, not the parent's -- the parent's
+                    # `success` entry set above must survive. BUGS.md #9.
+                    del queued[step_id]
+                    ALL_STEPS[step_id] = [status.pending.value, child]
+                    upload_step(child)
             else:
                 ids = get_all_ids(step)
                 if all([i in done for i in ids]):
@@ -282,6 +321,20 @@ def handle_step(step:  buelon.core.step.Job, status: buelon.core.step.StepStatus
             # `'unknown'`. `create_return_value` lets user code return an arbitrary
             # `StepStatus` in a tuple, so this is reachable from a `.bue` script. Record it
             # as an error instead -- visible in `bue errors`, and cancellable. BUGS.md #13.
+            #
+            # `queued` in particular keeps landing here rather than getting a branch of its
+            # own (BUGS.md #33). `queued` is hub-internal bookkeeping meaning "blocked on a
+            # parent that has not finished yet": it is written only by
+            # `_register_uploaded_steps` and the `reset` branch, and cleared by the
+            # `success` branch promoting the child into `pending`. A job only reaches a
+            # worker through `STEPS`, which it only enters once its parents are done -- so
+            # honouring a worker's `queued` would park it waiting on parents that have
+            # already finished, and nothing would ever promote it again. The supported
+            # "not ready, try me later" outcome is `pending`, which requeues for dispatch.
+            hint = ''
+            if status == buelon.core.step.StepStatus.queued:
+                hint = (' -- `queued` means "waiting on an unfinished parent" and is set by '
+                        'the hub only; return `pending` to be requeued for another attempt')
             print(f'unhandled job status {status.name!r} for job {step.id} '
                   f'({step.name}) -- recording as an error')
             ALL_STEPS[step.id] = [buelon.core.step.StepStatus.error.value, step]
@@ -290,7 +343,7 @@ def handle_step(step:  buelon.core.step.Job, status: buelon.core.step.StepStatus
             if not (isinstance(existing, dict) and 'error' in existing and 'trace' in existing):
                 db[step.id] = {
                     'error': f'Unhandled job status {status.name!r} returned by job '
-                             f'{step.name!r} ({step.id})',
+                             f'{step.name!r} ({step.id}){hint}',
                     'trace': '',
                 }
 
@@ -739,7 +792,15 @@ def temp_handle_step_args(step: buelon.core.step.Job):
     with lock:
         args = []
         for parent in step.parents:
-            if parent not in db:
+            # `done`, not `db` -- see the note in `handle_step`'s success branch. A
+            # parent that returned `pending`, or errored, is in `db` with a placeholder
+            # but has not produced a result, and running the child on that is silent
+            # data corruption rather than a visible failure. BUGS.md #51.
+            #
+            # This is the backstop; the promotion guard above is what normally keeps a
+            # blocked child off the queue. It still matters for the other routes into
+            # `STEPS` -- a snapshot reload, or `bue run-job` on a queued job (#54).
+            if parent not in done or parent not in db:
                 handle_step(step, buelon.core.step.StepStatus.reset)
                 # has_none, tmp_ids = temp_get_all_ids(step)
                 # if has_none.get('has_none', False):
@@ -1357,18 +1418,31 @@ class BiWorkerClient:
         return (await self.get_response(request_id)).get_obj()
 
     async def upload(self, jobs: list[buelon.step.Job],
-                     timeout: float | int | None = UPLOAD_RESPONSE_TIMEOUT):
-        """Send a chunk of jobs and wait for the hub to confirm it stored them.
+                     timeout: float | int | None = UPLOAD_RESPONSE_TIMEOUT,
+                     upload_id: str | None = None):
+        """Send a chunk of jobs and wait for the hub to confirm it has them.
 
         The ack used to be handed to `_read_ack_in_background`, which `__aexit__`
         cancels -- so `bue upload` returned before the hub had processed anything, and a
         hub-side failure on any chunk was invisible. Waiting here also gives the chunk
         loop in `_bi_test_upload` its only backpressure. BUGS.md #8.
 
+        Without `upload_id` the hub registers the chunk immediately, which is right for
+        a caller that sends its whole pipeline in one call. With one, the chunk is only
+        *staged*: it reaches the queue when `commit_upload(upload_id)` is called, so a
+        multi-chunk upload is all-or-nothing (BUGS.md #32).
+
         Raises `HubTimeout` if the hub never answers, `UploadRejected` if it answers
         that the upload failed.
         """
-        request_id = await self.client.asend_obj('upload', steps_to_compressed_message(jobs))
+        message = steps_to_compressed_message(jobs)
+
+        if upload_id is None:
+            request_id = await self.client.asend_obj('upload', message)
+        else:
+            request_id = await self.client.asend_obj(
+                'upload', {'id': upload_id, 'jobs': message})
+
         msg = await self.get_response(request_id, timeout=timeout)
 
         if msg is None:
@@ -1380,6 +1454,29 @@ class BiWorkerClient:
             raise UploadRejected(
                 f'the hub failed to store {len(jobs):,} job(s): '
                 f'{err.type}: {err.message}')
+
+    async def commit_upload(self, upload_id: str,
+                            timeout: float | int | None = UPLOAD_RESPONSE_TIMEOUT) -> int:
+        """Merge everything staged under `upload_id` into the hub's queue.
+
+        Returns the number of jobs committed. Until this returns, none of the chunks
+        sent with `upload_id` are visible to a worker, and if the connection goes away
+        first the hub discards them (BUGS.md #32).
+        """
+        request_id = await self.client.asend_obj('upload-commit', {'id': upload_id})
+        msg = await self.get_response(request_id, timeout=timeout)
+
+        if msg is None:
+            raise UploadRejected(
+                f'no confirmation from the hub for the commit of upload {upload_id}')
+
+        if msg.is_error:
+            err = msg.error
+            raise UploadRejected(
+                f'the hub failed to commit upload {upload_id}: '
+                f'{err.type}: {err.message}')
+
+        return msg.get_obj().get('jobs', 0)
 
     async def display(self) -> str:
         request_id = await self.client.asend_obj('display', '')
@@ -1497,11 +1594,8 @@ def bi_on_release(request: ServerRequest, data):
                 client_holds.pop(job.id, None)
 
 
-def bi_on_upload(request: ServerRequest, data):
-    steps = compressed_message_to_steps(data)
-
-    print(f'uploading {len(steps):,} jobs')
-
+def _register_uploaded_steps(steps: list[buelon.core.step.Job]) -> None:
+    """Move a fully received pipeline into the live dicts. Caller holds no lock."""
     with lock:
         for step in steps:
             if step.parents:
@@ -1511,7 +1605,116 @@ def bi_on_upload(request: ServerRequest, data):
                 ALL_STEPS[step.id] = [buelon.core.step.StepStatus.pending.value, step]
                 upload_step(step)
 
+
+def sweep_stale_uploads(now: float | None = None) -> int:
+    """Drop staged uploads untouched for `UPLOAD_STAGING_TIMEOUT` -- BUGS.md #32.
+
+    Returns the number of jobs discarded. Safe to call from anywhere; it is run both
+    opportunistically on every upload request and from the hub's reaper thread, because
+    a client that stalls mid-upload sends nothing more to trigger the first.
+    """
+    now = time.time() if now is None else now
+    dropped = 0
+
+    with lock:
+        for client_id, uploads in list(staging.items()):
+            for upload_id, entry in list(uploads.items()):
+                if now - entry['updated'] < UPLOAD_STAGING_TIMEOUT:
+                    continue
+                uploads.pop(upload_id, None)
+                dropped += len(entry['jobs'])
+                print(f'upload {upload_id} from client {client_id} abandoned '
+                      f'({len(entry["jobs"]):,} staged job(s) discarded); nothing was '
+                      f'added to the queue')
+            if not uploads:
+                staging.pop(client_id, None)
+
+    return dropped
+
+
+def _drop_staged_uploads(client_id: str) -> int:
+    """Discard everything `client_id` has staged but not committed.
+
+    This is the whole reason hub-side staging is safe: a rejected chunk and a dead
+    uploader both end with the connection going away, and this runs from
+    `bi_release_client` on that teardown.
+    """
+    with lock:
+        uploads = staging.pop(client_id, None)
+
+    if not uploads:
+        return 0
+
+    n = sum(len(entry['jobs']) for entry in uploads.values())
+    print(f'client {client_id} left {len(uploads)} uncommitted upload(s) '
+          f'({n:,} staged job(s) discarded)')
+    return n
+
+
+def bi_on_upload(request: ServerRequest, data):
+    """Receive one chunk of an upload.
+
+    Two payload shapes, and the difference is the whole of BUGS.md #32:
+
+      - a bare compressed message -- a single-shot upload, registered immediately. This
+        is the pre-#32 wire format and the only shape a one-chunk caller needs.
+      - ``{'id': upload_id, 'jobs': compressed}`` -- one chunk of a multi-chunk upload.
+        It is *staged* under `upload_id` and nothing reaches the queue until the client
+        sends `upload-commit`, so a rejection partway through leaves the hub untouched
+        rather than half-loaded.
+    """
+    # Decompression stays outside `lock` (invariant #2).
+    if isinstance(data, dict):
+        upload_id = data['id']
+        steps = compressed_message_to_steps(data['jobs'])
+    else:
+        upload_id = None
+        steps = compressed_message_to_steps(data)
+
+    if upload_id is None:
+        print(f'uploading {len(steps):,} jobs')
+        _register_uploaded_steps(steps)
+        request.send_data(b'ok')
+        return
+
+    sweep_stale_uploads()
+
+    with lock:
+        entry = staging.setdefault(request.client_id, {}).setdefault(
+            upload_id, {'jobs': [], 'updated': time.time()})
+        entry['jobs'].extend(steps)
+        entry['updated'] = time.time()
+        staged = len(entry['jobs'])
+
+    print(f'staging {len(steps):,} jobs for upload {upload_id} ({staged:,} staged)')
     request.send_data(b'ok')
+
+
+def bi_on_upload_commit(request: ServerRequest, data):
+    """Merge a staged upload into the queue, all chunks at once -- BUGS.md #32.
+
+    An unknown id is an error rather than a silent no-op: it means the client believes
+    it uploaded a pipeline the hub has already reaped or never saw, and reporting
+    success there would recreate exactly the half-loaded state #32 is about.
+    """
+    upload_id = data['id'] if isinstance(data, dict) else data
+
+    sweep_stale_uploads()
+
+    with lock:
+        uploads = staging.get(request.client_id) or {}
+        entry = uploads.pop(upload_id, None)
+        if not uploads:
+            staging.pop(request.client_id, None)
+
+    if entry is None:
+        raise KeyError(f'no staged upload {upload_id!r} for this client')
+
+    steps = entry['jobs']
+    print(f'committing upload {upload_id}: {len(steps):,} jobs')
+    _register_uploaded_steps(steps)
+
+    request.send_data(json.dumps({'jobs': len(steps)}).encode())
 
 
 def bi_on_errors(request: ServerRequest, data):
@@ -1687,6 +1890,8 @@ def bi_handle_messages(request: ServerRequest):
         request.send_data(json.dumps(res).encode())
     elif method == 'upload':
         bi_on_upload(request, data)
+    elif method == 'upload-commit':
+        bi_on_upload_commit(request, data)
     elif method == 'display':
         text = display_text()
         request.send_data(text.encode())
@@ -1741,6 +1946,10 @@ def bi_release_client(client_id: str) -> int:
 
     Returns the number of jobs put back on the queue.
     """
+    # An upload staged but never committed dies with the connection that sent it
+    # (BUGS.md #32). Done before the holds work so it also runs if that raises.
+    _drop_staged_uploads(client_id)
+
     with lock:
         held = holds_v2.pop(client_id, None)
         jobs = list(held.values()) if isinstance(held, dict) else []
@@ -1801,6 +2010,18 @@ def bi_on_finally(finally_info: OnFinallyInfo):
     bi_release_client(client_id)
 
 
+_staging_stop = threading.Event()
+
+
+def upload_staging_reaper_task():
+    """Daemon loop: reap abandoned staged uploads -- BUGS.md #32."""
+    while not _staging_stop.wait(UPLOAD_STAGING_SWEEP_INTERVAL):
+        try:
+            sweep_stale_uploads()
+        except Exception:
+            traceback.print_exc()
+
+
 def bi_test_server():
     global auto_saving
 
@@ -1818,6 +2039,10 @@ def bi_test_server():
         saver = threading.Thread(target=auto_save_task, daemon=True, name='buelon-auto-save')
         saver.start()
 
+    reaper = threading.Thread(target=upload_staging_reaper_task, daemon=True,
+                              name='buelon-upload-reaper')
+    reaper.start()
+
     # `docker stop` and systemd both stop a service with SIGTERM, whose default action
     # kills the process outright -- no `finally`, so no shutdown snapshot, and up to
     # `AUTO_SAVE_INTERVAL` of work lost on every ordinary restart. Turning it into a
@@ -1832,10 +2057,12 @@ def bi_test_server():
         # last one -- a clean `bue hub` restart should lose nothing at all.
         auto_saving = False
         _auto_save_stop.set()
+        _staging_stop.set()
         if _restore_sigterm is not None:
             _restore_sigterm()
         if saver is not None:
             saver.join(timeout=5)
+        reaper.join(timeout=5)
         try:
             auto_save(force=True)
         except Exception:
@@ -2336,21 +2563,38 @@ def bi_test_upload(upload_type: str, code_file: str, return_jobs: bool = False) 
 
 
 async def _bi_test_upload(code: str, return_jobs: bool = False) -> None | list[buelon.core.step.Job]:
+    """Upload a pipeline in 500-job chunks, atomically.
+
+    Every chunk carries the same `upload_id` and is staged hub-side; the queue only
+    learns about any of them once `commit_upload` returns. If a chunk is rejected, or
+    this process dies mid-upload, the connection closes without a commit and the hub
+    discards what it staged -- rather than leaving the earlier chunks queued as
+    parentless orphans of children that never arrived. BUGS.md #32.
+    """
     chunk = []
     jobs = []
+    upload_id = uuid.uuid4().hex
+    sent = False
 
     async with BiWorkerClient(settings.worker.host, settings.worker.port, ['test'] + settings.worker.scopes.split(',')) as client:
         for step in buelon.core.pipe_interpreter.generate_steps_from_code(code):
             chunk.append(step)
             if len(chunk) >= 500:
-                await client.upload(chunk)
+                await client.upload(chunk, upload_id=upload_id)
                 chunk.clear()
+                sent = True
 
             if return_jobs:
                 jobs.append(step)
 
         if chunk:
-            await client.upload(chunk)
+            await client.upload(chunk, upload_id=upload_id)
+            sent = True
+
+        # Code that yields no jobs at all staged nothing, and committing an id the hub
+        # has never seen is an error -- so an empty pipeline stays the no-op it was.
+        if sent:
+            await client.commit_upload(upload_id)
 
     if return_jobs:
         return jobs
