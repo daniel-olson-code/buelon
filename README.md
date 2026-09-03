@@ -40,14 +40,14 @@ Python 3.10 or newer is required.
 ## Quick Start
 
 Everything below runs in one directory. Each command reads its configuration from
-`.bue/settings.yaml` in the current working directory.
+`.boo/settings.yaml` in the current working directory.
 
 ```bash
-# 1. Create .bue/settings.yaml
+# 1. Create .boo/settings.yaml
 bue init
 
-# 2. (optional) edit .bue/settings.yaml -- host, port, scopes
-$EDITOR .bue/settings.yaml
+# 2. (optional) edit .boo/settings.yaml -- host, port, scopes
+$EDITOR .boo/settings.yaml
 
 # 3. Start the hub. It holds the queue; leave it running.
 bue hub
@@ -102,7 +102,7 @@ on big machines, or stop one misbehaving pipeline from starving everything else.
 
 ## Configuration
 
-Configuration lives in **`.bue/settings.yaml`**, relative to the directory each command is
+Configuration lives in **`.boo/settings.yaml`**, relative to the directory each command is
 run from. `bue init` writes one with the defaults; `bue where` prints the path it will use.
 
 The hub/worker path reads nothing else. In particular there is no `.env` support for
@@ -125,7 +125,7 @@ worker:
     name: Worker       # shown in `bue web`'s worker list
 
 bucket:                # only used by `bue bucket`, which nothing else talks to
-  server: {use: true, path: .bue/bucket, host: 0.0.0.0, port: 61535}
+  server: {use: true, path: .boo/bucket, host: 0.0.0.0, port: 61535}
   client: {use: true, host: localhost, port: 61535}
   postgres: {use: false, table: buelon_bucket, persistent_path: __PERSISTENT__}
 
@@ -173,8 +173,9 @@ bisocket's `secure` default if that is unset too.
 |---|---|---|
 | `BISOCKET_ENCRYPTION` | — | Wire format, consulted only when `hub.encryption` in the yaml is left empty. Same values as that setting. |
 | `CRYPTO_KEY` | an insecure built-in default | Transport encryption key. **Set this in production.** Every hub, worker and CLI invocation must use the same value; a mismatch fails the connection with `EncryptionMismatch`. |
-| `BUELON_SETTINGS_PATH` | `.bue/settings.yaml` | Full path to the settings file. |
-| `BUELON_DIR_PATH` | `.bue` | Directory the default settings path is built from. |
+| `BUELON_SETTINGS_PATH` | `.boo/settings.yaml` | Full path to the settings file. |
+| `BUELON_DIR_PATH` | `.boo` | Directory every state file lives under — settings, the parser's scratch files, the bucket store. Setting it also disables the `.bue/` → `.boo/` migration below. |
+| `BUELON_AUTO_MIGRATE` | `true` | Set to `false` to skip the one-time `.bue/` → `.boo/` copy described below. |
 | `BUELON_AUTO_SAVE` | `true` | Set to `false` to disable hub snapshots entirely — nothing is written *and* nothing is restored on startup. `load-only` restores an existing snapshot but never overwrites it. |
 | `BUELON_AUTO_SAVE_PATH` | `.auto_save` | Directory the hub snapshot is written to. |
 | `BUELON_AUTO_SAVE_INTERVAL` | `600` | Seconds between snapshots. |
@@ -185,13 +186,20 @@ bisocket's `secure` default if that is unset too.
 | `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DATABASE` | localhost/5432/… | Connection used by `postgres` **jobs** (see [Supported Languages](#supported-languages)). Read by workers, not by the hub. |
 | `ENV_PATH` | `.env` | A `.env` file at this path is loaded, if `python-dotenv` is installed. Only the variables in this table have any effect. |
 
-A working `.bue/` directory is created in the current working directory on import
-regardless of `BUELON_DIR_PATH`; the parser uses it for scratch files.
+The state directory is created in the current working directory the first time something
+needs it — the parser uses it for scratch files, and `bue upload` / `bue run` will make it.
+
+**It used to be called `.bue/`.** buelon is named after Buelon Rexford Moss, whose nickname
+was *boo*; `bue` was a misspelling. On startup, if a non-empty `.bue/` is present and
+`.boo/` is not, buelon **copies** the one to the other and prints a line saying so. `.bue/`
+is left where it is — so a downgrade still finds its state — but it stops being read from
+that moment, so the two drift apart. Delete it once you are happy. Set
+`BUELON_AUTO_MIGRATE=false`, or point `BUELON_DIR_PATH` somewhere explicit, to skip this.
 
 ## Command Reference
 
 ```
-bue init                    create .bue/settings.yaml
+bue init                    create .boo/settings.yaml
 bue where                   print the settings.yaml path in use
 
 bue hub                     run the hub (foreground)
@@ -286,7 +294,7 @@ done, so there is nothing left to wait for. Use `pending` to be tried again.
 The two files below are the ones used to verify this README. Write both into the same
 directory, then `bue upload -f example.bue`. (`bue example` writes a second, slightly
 fuller working example into the current directory — same pipeline shape, plus a `sqlite3`
-job and a `.bue/settings.yaml`.)
+job and a `.boo/settings.yaml`.)
 
 #### example.bue
 

@@ -1,6 +1,6 @@
 # Every job in this file gets these unless it overrides them.
 # `scope` is how you route work: a worker only pulls jobs whose scope is in its
-# own `scopes` list (see `worker.scopes` in .bue/settings.yaml), so a scope with
+# own `scopes` list (see `worker.scopes` in .boo/settings.yaml), so a scope with
 # failing jobs cannot slow down the rest of your queue.
 !scope default
 !timeout 20 * 60  # seconds; an arithmetic expression is fine

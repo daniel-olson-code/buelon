@@ -9,7 +9,24 @@ except ModuleNotFoundError:
     pass
 
 
-DIR_PATH = os.environ.get('BUELON_DIR_PATH', '.bue')
+def _default_dir_path() -> str:
+    """`.boo` is the state directory (BUGS.md #55). `.bue` is the pre-rename name.
+
+    `buelon.migration` normally copies one to the other before this module is imported,
+    so the fallback below only matters to someone who reached `buelon.settings` without
+    going through `import buelon` -- or who turned the migration off with
+    `BUELON_AUTO_MIGRATE=false`. Reading their existing `.bue/` is better than silently
+    starting from an empty `.boo/`.
+    """
+    if not os.path.isdir('.boo') and os.path.isdir('.bue'):
+        return '.bue'
+    return '.boo'
+
+
+_env_dir_path = os.environ.get('BUELON_DIR_PATH')
+# Every path under the state directory goes through `DIR_PATH`; before #55 five modules
+# hardcoded the literal `.bue`, so `BUELON_DIR_PATH` moved `settings.yaml` alone.
+DIR_PATH = _env_dir_path if _env_dir_path is not None else _default_dir_path()
 SETTINGS_PATH = os.environ.get('BUELON_SETTINGS_PATH', os.path.join(DIR_PATH, 'settings.yaml'))
 
 # Environment variables for client and server configuration

@@ -1,3 +1,11 @@
+# The `.bue/` -> `.boo/` state-directory migration has to happen before anything else in
+# the package. `settings` resolves `DIR_PATH` at import time, so by the time any other
+# submodule is loaded the decision has already been made. `migration` imports nothing from
+# buelon, which is what makes it safe to run here. BUGS.md #55.
+from . import migration
+
+migration.migrate_bue_to_boo()
+
 # Import modules from subpackages
 from . import settings
 from .core import action, execution, loop, pipe, pipe_interpreter, step, step_definition

@@ -8,10 +8,18 @@ from typing import Any
 
 import orjson
 
+from buelon.settings import DIR_PATH
+
 
 LAZY_LOAD_PREFIX = '__lazy_load__'
-TEMP_FILE_DIR = os.path.join('.bue', 'lazy_load_classes')
-os.makedirs(TEMP_FILE_DIR, exist_ok=True)
+TEMP_FILE_DIR = os.path.join(DIR_PATH, 'lazy_load_classes')
+
+
+def _ensure_temp_file_dir() -> None:
+    """Created on first use rather than at import -- see `created_cache._ensure_dir`
+    and BUGS.md #55.
+    """
+    os.makedirs(TEMP_FILE_DIR, exist_ok=True)
 
 
 class LazyMap:
@@ -27,6 +35,7 @@ class LazyMap:
         # self.__items = {}
         # self.__classes = (classes or {})
         # self.__shared_variables = {}
+        _ensure_temp_file_dir()
         self.__db_path = (path or os.path.join(TEMP_FILE_DIR, f'lazy_map_{uuid.uuid1().hex}.db'))
         self.__conn = sqlite3.connect(self.__db_path, check_same_thread=False)
 
@@ -139,6 +148,7 @@ class LazyMap:
             if row:
                 file_path = row[0]
             else:
+                _ensure_temp_file_dir()
                 file_path = os.path.join(TEMP_FILE_DIR, f'lazy_bue_{uuid.uuid4().hex}')
 
             result = value.__class__.lazy_save(value, file_path, self.__shared_variables)

@@ -65,11 +65,14 @@ import datetime
 import sqlite3
 
 
-# home = os.path.expanduser('~')
-default_db_location = os.path.join('.bue', 'sqlite3_helper', 'pipe.db')  # os.path.join(home, '.sqlite3_helper', 'my.db')
+from buelon.settings import DIR_PATH
 
-if not os.path.exists(default_db_location):
-    os.makedirs(os.path.dirname(default_db_location), exist_ok=True)
+# home = os.path.expanduser('~')
+default_db_location = os.path.join(DIR_PATH, 'sqlite3_helper', 'pipe.db')  # os.path.join(home, '.sqlite3_helper', 'my.db')
+
+# The directory used to be created here, at import time -- which made `import buelon`
+# create the state directory as a side effect (BUGS.md #55). `Sqlite3.__init__` already
+# calls `check_location()`, which makes it on first use, so this was redundant as well.
 
 
 def change_column_type():

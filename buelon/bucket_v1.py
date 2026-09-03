@@ -18,6 +18,7 @@ from kazoo.client import KazooClient
 import kazoo.exceptions
 import tqdm
 
+import buelon.settings
 import buelon.helpers.postgres
 import buelon.helpers.created_cache
 
@@ -56,7 +57,7 @@ PERSISTENT_PATH: str = f"{os.environ.get('PERSISTENT_PATH', '__PERSISTENT__')}"
 BUCKET_END_TOKEN = b'[-_-]'
 BUCKET_SPLIT_TOKEN = b'[*BUCKET_SPLIT_TOKEN*]'
 
-save_path = os.path.join('.bue', 'bucket')
+save_path = os.path.join(buelon.settings.DIR_PATH, 'bucket')
 
 database: dict[str, bytes] = {}
 database_keys_in_order = []

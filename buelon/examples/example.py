@@ -114,7 +114,7 @@ def setup():
 
     # This used to write a `.env` of PIPELINE_HOST / PIPE_WORKER_* / BUCKET_* /
     # POSTGRES_* variables. Nothing on the hub/worker path has read any of them
-    # since configuration moved to `.bue/settings.yaml`, so it taught a new user
+    # since configuration moved to `.boo/settings.yaml`, so it taught a new user
     # the wrong model -- and it wrote unconditionally, clobbering a real `.env`.
     # Leave them the file that is actually read instead. BUGS.md #44.
     buelon.settings.init()

@@ -9,6 +9,7 @@ Constants:
     PIPE_TOKENS (dict): A dictionary defining various tokens used in the pipeline language.
     LANGUAGES (dict): A dictionary mapping language names to their standardized identifiers.
 """
+import os
 import sys
 import inspect
 import string
@@ -23,6 +24,7 @@ from typing import Dict, Any, Generator
 import yaml
 
 # import buelon.core.step
+import buelon.settings
 from buelon.helpers import pipe_util, lazy_load_class
 import buelon.helpers.pipe_util
 import buelon.helpers.persistqueue
@@ -321,8 +323,9 @@ class PipelineParser:
         }
 
     def build(self, prepared_content: str):
-        with tempfile.NamedTemporaryFile(mode='w', dir='.bue', suffix='.db') as temp_file:
-            self.conn = sqlite3.connect(temp_file.name)  # ('.bue/test.db')  # (':memory:')
+        os.makedirs(buelon.settings.DIR_PATH, exist_ok=True)
+        with tempfile.NamedTemporaryFile(mode='w', dir=buelon.settings.DIR_PATH, suffix='.db') as temp_file:
+            self.conn = sqlite3.connect(temp_file.name)  # (':memory:')
             self.conn.execute('PRAGMA journal_mode=WAL')
             self.conn.execute('PRAGMA synchronous=NORMAL')
             self.conn.execute('DROP table if exists jobs;')
@@ -396,7 +399,8 @@ class PipelineParser:
             `LocalRunError` once the rest of the pipeline has finished, so one bad
             branch does not hide the others.
         """
-        with tempfile.NamedTemporaryFile(mode='w', dir='.bue', suffix='.jsonl') as temp_file:
+        os.makedirs(buelon.settings.DIR_PATH, exist_ok=True)
+        with tempfile.NamedTemporaryFile(mode='w', dir=buelon.settings.DIR_PATH, suffix='.jsonl') as temp_file:
             q = buelon.helpers.persistqueue.JsonPersistentQueue(temp_file.name)
             data = {}  # buelon.helpers.lazy_load_class.LazyMap()
             # The local stand-in for the hub's `done` dict: job ids that actually
