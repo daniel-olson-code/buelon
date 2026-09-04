@@ -10,14 +10,24 @@ import uuid
 import enum
 from typing import Union, List, Dict, Any, Optional, Callable, Optional, Callable, Dict, List, Union, AsyncGenerator, Generator
 
-import asyncpg
-
-import psycopg2
-import psycopg2.extensions
-import psycopg2.extras
-import psycopg2.errors
+# `from ... import`, not `import buelon.helpers.optional`: this module is reached
+# while `buelon/__init__.py` is still executing, so the `buelon` package object does
+# not have its `helpers` attribute yet and the dotted form raises AttributeError.
+from buelon.helpers.optional import optional_import
 
 import buelon.helpers.persistqueue
+
+# The drivers ship as `buelon[postgres]`, not in the base install (BUGS.md #58).
+# `buelon/__init__.py` imports this module eagerly and downstream code does
+# `import buelon.helpers.postgres` directly, so the import has to succeed
+# without them; every use below is inside a function body, and the file has
+# `from __future__ import annotations`, so the `asyncpg.Connection` type hints
+# in signatures are never evaluated either. Touching either name without the
+# extra installed raises a ModuleNotFoundError naming the extra.
+asyncpg = optional_import('asyncpg', 'postgres')
+
+psycopg2 = optional_import(
+    'psycopg2', 'postgres', submodules=('extensions', 'extras', 'errors'))
 
 try:
     import dotenv

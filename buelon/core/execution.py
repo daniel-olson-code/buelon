@@ -20,9 +20,14 @@ from typing import List, Dict, Any
 import unsync
 
 from buelon.helpers import pipe_util
-import buelon.helpers.postgres
 import buelon.helpers.sqlite3_helper
 from . import pipe_debug
+
+# NOTE: `buelon.helpers.postgres` is deliberately NOT imported here. This module is
+# squarely on the worker path -- `bue worker` cannot start without it -- but the only
+# things that need Postgres are `run_postgres`/`arun_postgres`, two step types a given
+# pipeline may never contain. Both import it locally instead, so the drivers can live
+# in the `buelon[postgres]` extra. BUGS.md #58.
 
 
 sys.path.append(os.getcwd())
@@ -459,6 +464,7 @@ def run_postgres(txt: str, func: str, *args, **kwargs) -> Any:
     Raises:
         PipeLineException: If there's an error in query execution.
     """
+    import buelon.helpers.postgres  # lazy: `buelon[postgres]` extra, BUGS.md #58
     db: buelon.helpers.postgres.Postgres = buelon.helpers.postgres.get_postgres_from_env()
     tables = [pipe_util.get_id() for v in args]
     txt, uuids = check_for_uuid_kwargs(txt, kwargs)
@@ -500,6 +506,7 @@ async def arun_postgres(txt: str, func: str, *args, **kwargs) -> Any:
     Raises:
         PipeLineException: If there's an error in query execution.
     """
+    import buelon.helpers.postgres  # lazy: `buelon[postgres]` extra, BUGS.md #58
     db: buelon.helpers.postgres.Postgres = buelon.helpers.postgres.get_postgres_from_env()
     tables = [pipe_util.get_id() for v in args]
     txt, uuids = check_for_uuid_kwargs(txt, kwargs)

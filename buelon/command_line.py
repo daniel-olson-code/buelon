@@ -417,7 +417,20 @@ def cli():
     elif args.command == 'demo':
         sys.exit(run_demo())
     elif args.command == 'web':
-        from buelon.web import run
+        # Imported here, not at module scope, so `bue hub`/`bue worker` never pay for
+        # FastAPI -- which is what lets the web stack live in the `buelon[web]` extra
+        # rather than the base install. Translate the resulting ImportError into
+        # something that names the extra, instead of a bare `No module named
+        # 'fastapi'`. BUGS.md #58.
+        try:
+            from buelon.web import run
+        except ImportError as e:
+            print(
+                f'`bue web` needs the web extra, which is not installed ({e}).\n'
+                f'Install it with:  pip install buelon[web]   (or buelon[all])',
+                file=sys.stderr,
+            )
+            sys.exit(1)
         run(args.open_browser)
     elif args.command == 'example':
         run_example()

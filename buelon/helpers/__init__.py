@@ -1,3 +1,4 @@
+from . import optional
 from . import json_parser
 from . import pipe_util
 from . import postgres
@@ -7,6 +8,7 @@ from . import persistqueue
 
 
 __all__ = [
+    'optional',
     'json_parser',
     'pipe_util',
     'postgres',

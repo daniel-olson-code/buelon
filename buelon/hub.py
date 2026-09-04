@@ -1176,6 +1176,24 @@ def temp_handle_step_args(step: buelon.core.step.Job):
             # blocked child off the queue. It still matters for the other routes into
             # `STEPS` -- a snapshot reload, or `bue run-job` on a queued job (#54).
             if parent not in done or parent not in db:
+                # The reset below walks `get_all_steps` -- the whole connected DAG --
+                # and puts every job in it back to queued/pending. That used to happen
+                # in total silence, so from the outside a pipeline simply started over
+                # from its roots with nothing to explain why. This line is the only
+                # thing that would ever explain a full re-run. BUGS.md #56.
+                #
+                # Counted before the reset, because afterwards `step`'s own bookkeeping
+                # has already moved. `get_all_steps` is a second walk of the same DAG
+                # the reset is about to make, which is fine here: this is the backstop,
+                # not the dispatch path, and it only fires when something has already
+                # gone wrong (a snapshot with a hole in it, `bue run-job` on a blocked
+                # job, a result removed while a child could still be dispatched).
+                missing_from = 'done' if parent not in done else 'db'
+                affected = len(get_all_steps(step))
+                print(f'job {step.id} ({step.name}) reached dispatch but its parent '
+                      f'{parent} is missing from `{missing_from}` -- resetting the '
+                      f'whole DAG: {affected:,} job(s) go back to queued/pending and '
+                      f'the pipeline restarts from its roots')
                 handle_step(step, buelon.core.step.StepStatus.reset)
                 # has_none, tmp_ids = temp_get_all_ids(step)
                 # if has_none.get('has_none', False):
@@ -2357,6 +2375,23 @@ def bi_handle_messages(request: ServerRequest):
         with lock:
             _steps = list(errors.values())
             errors = {}
+            for job in _steps:
+                # `upload_steps` only puts the job back into `STEPS`. Every other
+                # requeue path in `handle_step` (`pending`, `error`-with-retries-left,
+                # `reset`) pairs that with the status write, and this one did not -- so
+                # after `bue reset` the job was queued for dispatch while `ALL_STEPS`
+                # still said `error`, and `_job_status` (`bue run-job`, the web UI)
+                # reported an errored job that a worker was about to run. BUGS.md #57.
+                #
+                # Done inline rather than through `handle_step(job, pending)`: that
+                # branch is the job's own "not ready, try me later" hand-back and would
+                # bump `handbacks` and push `not_before` out by `HANDBACK_DELAY` (#50).
+                # An operator reset means "run this now", so `not_before` is cleared the
+                # way the `reset` branch clears it -- it should already be 0.0 (#35
+                # clears it on the way into `errors`), but the #13 fallback and a
+                # loaded snapshot (#15) are not held to that.
+                job.not_before = 0.0
+                ALL_STEPS[job.id] = [buelon.core.step.StepStatus.pending.value, job]
             upload_steps(_steps)
         request.send_data(b'ok')
     elif method == 'cancel-errors':

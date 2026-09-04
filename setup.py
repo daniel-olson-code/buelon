@@ -7,25 +7,51 @@ from setuptools import setup, find_packages
 with open('version.json', 'r', encoding='utf-8') as fh:
     version = json.load(fh)['last']
 
-# Requirements  for the package
+# Requirements for the package.
+#
+# The base install is exactly what `bue hub`, `bue worker` and `buelon.core` import.
+# Everything heavier is an extra (see `extras` below), so a worker box does not have
+# to build or download a Postgres driver it will never open. BUGS.md #58.
+#
+# Deleted here rather than moved, because nothing under `buelon/` imports them:
+#   asyncio-pool  -- never imported at all
+#   psutil        -- only ever appears in commented-out lines
+#   persistqueue  -- `buelon.helpers.persistqueue` is a LOCAL module, not this package
+#   redis, kazoo  -- the bucket's redis/ZooKeeper backends were removed outright
+#   tqdm          -- its one use was the ZooKeeper bulk_set progress bar
 requirements = [
-    'psycopg2-binary',
     'orjson',
     'python-dotenv',
-    'asyncio-pool',
-    'psutil',
     'unsync',
-    'redis',
-    # 'persist-queue',
-    'persistqueue',
     'PyYAML',
-    'kazoo',
-    'tqdm',
-    'asyncpg',
-    'fastapi',
-    'uvicorn',
     'bisocket>=0.0.9',
 ]
+
+# Optional dependency groups.
+#
+# `bucket` is a deliberate alias for `postgres`: since the redis and ZooKeeper
+# backends were removed, Postgres is the bucket's only backend beyond plain files,
+# so the two groups install the same thing. It is kept as a separate name because
+# `pip install buelon[bucket]` is what someone running `bue bucket` will reach for.
+postgres_requirements = [
+    'psycopg2-binary',
+    'asyncpg',
+]
+
+# pydantic is a hard import in web.py (`from pydantic import BaseModel`) but was
+# never declared -- it only ever arrived transitively via fastapi. Declared now.
+web_requirements = [
+    'fastapi',
+    'uvicorn',
+    'pydantic',
+]
+
+extras = {
+    'postgres': postgres_requirements,
+    'bucket': postgres_requirements,
+    'web': web_requirements,
+    'all': postgres_requirements + web_requirements,
+}
 
 # Read the long description from the README file
 with open("README.md", "r", encoding="utf-8") as fh:
@@ -56,6 +82,7 @@ setup(
     },
     include_package_data=True,
     install_requires=requirements,
+    extras_require=extras,
     entry_points={
         'console_scripts': [
             'boo=buelon.command_line:cli',

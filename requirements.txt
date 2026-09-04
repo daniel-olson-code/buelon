@@ -1,19 +1,33 @@
-psycopg2-binary
+# Development requirements: the base install plus every extra, so a checkout can
+# run the whole test suite and every `bue` subcommand.
+#
+# `setup.py` is the authority on what a *user* gets. It declares the same base list
+# below plus the extras `buelon[postgres]`, `buelon[bucket]`, `buelon[web]` and
+# `buelon[all]`; this file is the flattened everything-on version of that.
+#
+# Removed in BUGS.md #58 as genuinely unused: cython (no .pyx since #25 deleted
+# buelon/cython/), flask (web.py is FastAPI; the only mention is a commented-out
+# import at web.py:226), asyncio-pool (imported nowhere), psutil (only in
+# commented-out lines), and persistqueue / persist-queue (the importable module is
+# the local buelon/helpers/persistqueue.py, not the PyPI package). redis, kazoo and
+# tqdm went with the bucket's redis/ZooKeeper backends.
+
+# --- base (install_requires) ---
 orjson
 python-dotenv
-cython
-asyncio-pool
-psutil
 unsync
-redis
-persist-queue
-persistqueue
 PyYAML
-kazoo
-asyncpg
-flask
-fastapi
-uvicorn
+# Pinned exactly here, deliberately: buelon depends on `OnFinallyInfo.connection_type`,
+# added in 0.0.9 (BUGS.md #30), and bisocket is installed editable from a local
+# checkout during development, so a dev pin is worth more than a range. setup.py ships
+# `>=0.0.9` for users, which is the correct story for a published package.
 bisocket==0.0.9
 
+# --- buelon[postgres] / buelon[bucket] ---
+psycopg2-binary
+asyncpg
 
+# --- buelon[web] ---
+fastapi
+uvicorn
+pydantic

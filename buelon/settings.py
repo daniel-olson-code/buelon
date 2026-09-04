@@ -33,25 +33,11 @@ SETTINGS_PATH = os.environ.get('BUELON_SETTINGS_PATH', os.path.join(DIR_PATH, 's
 USING_POSTGRES: bool = os.environ.get('USING_POSTGRES_BUCKET', 'false') == 'true'
 POSTGRES_TABLE: str = os.environ.get('POSTGRES_TABLE', 'buelon_bucket')
 
-REDIS_HOST: str = os.environ.get('REDIS_HOST', 'null')
-REDIS_PORT: int = int(os.environ.get('REDIS_PORT', 6379))
-REDIS_DB: int = int(os.environ.get('REDIS_DB', 0))
-REDIS_EXPIRATION: int | None = os.environ.get('REDIS_EXPIRATION', 60*60*24*7)
-try:
-    REDIS_EXPIRATION = int(REDIS_EXPIRATION)
-except ValueError:
-    REDIS_EXPIRATION = None
-USING_REDIS: bool = os.environ.get('USING_REDIS', 'false') == 'true'  # False  # REDIS_HOST != 'null'
-
 BUCKET_CLIENT_HOST: str = os.environ.get('BUCKET_CLIENT_HOST', 'localhost')
 BUCKET_CLIENT_PORT: int = int(os.environ.get('BUCKET_CLIENT_PORT', 61535))
 
 BUCKET_SERVER_HOST: str = os.environ.get('BUCKET_SERVER_HOST', '0.0.0.0')
 BUCKET_SERVER_PORT: int = int(os.environ.get('BUCKET_SERVER_PORT', 61535))
-
-USING_ZOOKEEPER = os.environ.get('USING_ZOOKEEPER', 'false') == 'true'
-ZOOKEEPER_HOSTS: str = os.environ.get('ZOOKEEPER_HOSTS', 'localhost:2181')
-ZOOKEEPER_PATH: str = f"{os.environ.get('ZOOKEEPER_PATH', '/buelon/bucket')}"
 
 PERSISTENT_PATH: str = f"{os.environ.get('PERSISTENT_PATH', '__PERSISTENT__')}"
 
@@ -118,12 +104,6 @@ DEFAULT_SETTINGS = {
         'database': 'XXXXX',
         # 'schema': 'XXXXX',
     },
-    # 'redis': {
-    #     'host': 'localhost',
-    #     'port': 6379,
-    #     'db': 0,
-    #     'password': 'XXXXX',
-    # },
     # 'logging': {
     #     'level': 'INFO',
     #     'format': '%(asctime)s %(levelname)s %(name)s %(message)s',
@@ -257,7 +237,6 @@ class BuelonSettings(YamlObj):
         self.worker = WorkerSettings(_get(settings, 'worker', DEFAULT_SETTINGS['worker']))
         self.bucket = BucketSettings(_get(settings, 'bucket', DEFAULT_SETTINGS['bucket']))
         self.postgres = PostgresSettings(_get(settings, 'postgres', DEFAULT_SETTINGS['postgres']))
-        # self.redis = RedisSettings(_get(settings, 'redis', DEFAULT_SETTINGS['redis']))
 
 
 if os.path.exists(SETTINGS_PATH):

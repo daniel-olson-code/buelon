@@ -12,15 +12,18 @@ import sys
 import time
 
 # import psutil
-import redis
-import psycopg2
-from kazoo.client import KazooClient
-import kazoo.exceptions
-import tqdm
-
 import buelon.settings
+# `from ... import` rather than the dotted form: `buelon/__init__.py` imports this
+# module while it is still executing, so `buelon.helpers` is not an attribute yet.
+from buelon.helpers.optional import optional_import, is_available
 import buelon.helpers.postgres
 import buelon.helpers.created_cache
+
+# Postgres is the bucket's only backend beyond plain files, and it ships as
+# `buelon[bucket]` / `buelon[postgres]` rather than in the base install
+# (BUGS.md #58). `buelon/__init__.py` imports this module eagerly, so the
+# import must not hard-fail; the stub raises on first use instead.
+psycopg2 = optional_import('psycopg2', 'bucket', submodules=('extras', 'errors'))
 
 try:
     import dotenv
@@ -32,25 +35,11 @@ except ModuleNotFoundError:
 USING_POSTGRES: bool = os.environ.get('USING_POSTGRES_BUCKET', 'false') == 'true'
 POSTGRES_TABLE: str = os.environ.get('POSTGRES_TABLE', 'buelon_bucket')
 
-REDIS_HOST: str = os.environ.get('REDIS_HOST', 'null')
-REDIS_PORT: int = int(os.environ.get('REDIS_PORT', 6379))
-REDIS_DB: int = int(os.environ.get('REDIS_DB', 0))
-REDIS_EXPIRATION: int | None = os.environ.get('REDIS_EXPIRATION', 60*60*24*7)
-try:
-    REDIS_EXPIRATION = int(REDIS_EXPIRATION)
-except ValueError:
-    REDIS_EXPIRATION = None
-USING_REDIS: bool = os.environ.get('USING_REDIS', 'false') == 'true'  # False  # REDIS_HOST != 'null'
-
 BUCKET_CLIENT_HOST: str = os.environ.get('BUCKET_CLIENT_HOST', 'localhost')
 BUCKET_CLIENT_PORT: int = int(os.environ.get('BUCKET_CLIENT_PORT', 61535))
 
 BUCKET_SERVER_HOST: str = os.environ.get('BUCKET_SERVER_HOST', '0.0.0.0')
 BUCKET_SERVER_PORT: int = int(os.environ.get('BUCKET_SERVER_PORT', 61535))
-
-USING_ZOOKEEPER = os.environ.get('USING_ZOOKEEPER', 'false') == 'true'
-ZOOKEEPER_HOSTS: str = os.environ.get('ZOOKEEPER_HOSTS', 'localhost:2181')
-ZOOKEEPER_PATH: str = f"{os.environ.get('ZOOKEEPER_PATH', '/buelon/bucket')}"
 
 PERSISTENT_PATH: str = f"{os.environ.get('PERSISTENT_PATH', '__PERSISTENT__')}"
 
@@ -64,7 +53,7 @@ database_keys_in_order = []
 # MAX_DATABASE_SIZE: int = min(1024 * 1024 * 1024 * 1, int(psutil.virtual_memory().total / 8))
 MAX_DATABASE_SIZE: int = 50 * 1024 * 1024
 
-# if not USING_REDIS and not USING_POSTGRES and not USING_ZOOKEEPER:
+# if not USING_POSTGRES:
 #     if not os.path.exists(save_path):
 #         os.makedirs(save_path)
 
@@ -99,6 +88,22 @@ def send(conn: socket.socket, data: bytes) -> None:
     conn.sendall(data + BUCKET_END_TOKEN)
 
 
+def operational_errors() -> tuple:
+    """
+    The driver errors worth retrying, or an empty tuple if it is not installed.
+
+    An `except` clause is evaluated when an exception reaches it, not at
+    def time -- so a bare `except psycopg2.OperationalError` would ask the
+    missing-dependency stub for an attribute and raise ModuleNotFoundError
+    *over the top of* whatever error the file-mode bucket was actually
+    reporting. `except ():` matches nothing, which is the behaviour we want
+    on a base install (BUGS.md #58).
+    """
+    if is_available(psycopg2):
+        return (psycopg2.OperationalError,)
+    return ()
+
+
 def retry_connection(func: callable):
 
     """
@@ -118,25 +123,10 @@ def retry_connection(func: callable):
                 return func(self, *args, **kwargs)
             except (TimeoutError, ConnectionResetError):
                 kwargs['timeout'] *= 2
-            except psycopg2.OperationalError:
+            except operational_errors():
                 time.sleep((i + 1) * 5.)
                 # self.db = buelon.helpers.postgres.get_postgres_from_env()
         raise
-    return wrapper
-
-
-def redis_secure_connection(func: callable):
-    def wrapper(*args, **kwargs) -> bytes | None:
-        try:
-            return func(*args, **kwargs)
-        except redis.exceptions.ConnectionError:
-            self: Client = args[0]
-            try:
-                del self.redis_client
-            except Exception as e:
-                print(f'Change `Exception` to {type(e)}. e: {e}')
-            self.redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
-            return func(*args, **kwargs)
     return wrapper
 
 
@@ -152,11 +142,7 @@ class Client:
         self.PORT = BUCKET_CLIENT_PORT
         self.HOST = BUCKET_CLIENT_HOST
 
-        if USING_ZOOKEEPER:
-            self.zk = KazooClient(hosts=ZOOKEEPER_HOSTS)
-            self.zk.start(timeout=60 * 15)
-            self.zk.ensure_path(ZOOKEEPER_PATH)
-        elif USING_POSTGRES:
+        if USING_POSTGRES:
             self.db = (override_db if override_db else buelon.helpers.postgres.get_postgres_from_env())
             try:
                 with buelon.helpers.created_cache.AlreadyCreated(f'bucket_{POSTGRES_TABLE}') as obj:
@@ -176,8 +162,6 @@ class Client:
                             conn.commit()
             except psycopg2.errors.InsufficientPrivilege:
                 print('Insufficient privileges to use postgres bucket.')
-        elif USING_REDIS:
-            self.redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
 
     def __getattr__(self, item):
         if item == 'db':
@@ -191,22 +175,10 @@ class Client:
         return self
 
     def __del__(self):
-        if USING_ZOOKEEPER:
-            try:
-                self.zk.stop()
-                self.zk.close()
-            except kazoo.exceptions.WriterNotClosedException:
-                pass
+        pass
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        if USING_ZOOKEEPER:
-            try:
-                self.zk.stop()
-                self.zk.close()
-            except kazoo.exceptions.WriterNotClosedException:
-                pass
-        elif USING_REDIS:
-            self.redis_client.connection.disconnect()
+        pass
 
     @retry_connection
     def set(self, key: str, data: bytes, timeout: float | None = 60 * 5., persistent: bool = False) -> None:
@@ -220,20 +192,12 @@ class Client:
         """
         if persistent:
             key = PERSISTENT_PATH + '/' + key  # f'{PERSISTENT_PATH}/{key}'
-        if USING_ZOOKEEPER:
-            if not persistent:
-                key = 'temp/' + key  # f'temp/{key}'
-            key = ZOOKEEPER_PATH + '/' + key  # f'{ZOOKEEPER_PATH}/{key}'
-            self.zk.ensure_path(key)
-            self.zk.set(key, data)
-        elif USING_POSTGRES:
+        if USING_POSTGRES:
             with self.db.connect() as conn:
                 cur = conn.cursor()
                 cur.execute(f'INSERT INTO {POSTGRES_TABLE} (key, data, epoch) VALUES (%s, %s, %s) '
                              'ON CONFLICT (key) DO UPDATE SET (data, epoch) = (EXCLUDED.data, EXCLUDED.epoch)', (key, data, time.time()))
                 conn.commit()
-        elif USING_REDIS:
-            self.redis_set(key, data, True)
         else:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                 s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
@@ -262,15 +226,7 @@ class Client:
         """
         if persistent:
             key = PERSISTENT_PATH + '/' + key  # f'{PERSISTENT_PATH}/{key}'
-        if USING_ZOOKEEPER:
-            if not persistent:
-                key = 'temp/' + key  # f'temp/{key}'
-            key = ZOOKEEPER_PATH + '/' + key  # f'{ZOOKEEPER_PATH}/{key}'
-            try:
-                return self.zk.get(key)[0]
-            except (KeyError, kazoo.exceptions.NoNodeError):
-                return None
-        elif USING_POSTGRES:
+        if USING_POSTGRES:
             with self.db.connect() as conn:
                 cur = conn.cursor()
                 cur.execute(f'SELECT data FROM {POSTGRES_TABLE} WHERE key = %s', (key,))
@@ -278,9 +234,6 @@ class Client:
                 if not data:
                     return None
                 return bytes(data[0])
-        if USING_REDIS:
-            return self.redis_get(key)
-        # raise RuntimeError('Not using redis.')
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             s.settimeout(timeout)
@@ -311,19 +264,12 @@ class Client:
         """
         if persistent:
             key = PERSISTENT_PATH + '/' + key  # f'{PERSISTENT_PATH}/{key}'
-        if USING_ZOOKEEPER:
-            if not persistent:
-                key = 'temp/' + key  # f'temp/{key}'
-            key = ZOOKEEPER_PATH + '/' + key  # f'{ZOOKEEPER_PATH}/{key}'
-            raise ValueError('Not implemented yet.')
-        elif USING_POSTGRES:
+        if USING_POSTGRES:
             aconn = await self.db.async_connect()
             rows = await aconn.fetch(f'SELECT data FROM {POSTGRES_TABLE} WHERE key = $${key}$$')
             if not rows:
                 return None
             return rows[0][0]  # bytes(tuple(rows[0])[0])
-        if USING_REDIS:
-            raise ValueError('Not implemented yet.')
         raise ValueError('Not implemented yet.')
 
     @retry_connection
@@ -337,22 +283,13 @@ class Client:
         """
         if persistent:
             key = PERSISTENT_PATH + '/' + key  # f'{PERSISTENT_PATH}/{key}'
-        if USING_ZOOKEEPER:
-            if not persistent:
-                key = 'temp/' + key  # f'temp/{key}'
-            key = ZOOKEEPER_PATH + '/' + key  # f'{ZOOKEEPER_PATH}/{key}'
-            self.zk.delete(key)
-        elif USING_POSTGRES:
+        if USING_POSTGRES:
             with self.db.connect() as conn:
                 cur = conn.cursor()
                 cur.execute(f'DELETE FROM {POSTGRES_TABLE} WHERE key = %s', (key, ))
                 conn.commit()
             return
-        if USING_REDIS:
-            self.redis_delete(key)
-            return
 
-        # raise RuntimeError('Not using redis.')
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             s.settimeout(timeout)
@@ -402,22 +339,8 @@ class Client:
             keys_values (dict): A dictionary of key-value pairs to set.
             save (bool, optional): Whether to save the data to disk. Defaults to False.
         """
-        if USING_ZOOKEEPER:
-            for k, v in tqdm.tqdm(keys_values.items(), desc=f'setting {len(keys_values)} paths'):
-                self.set(k, v, persistent=persistent)
-            # for path in tqdm.tqdm(keys_values, desc=f'ensuring {len(keys_values)} paths'):
-            #     self.zk.ensure_path(path)
-            # transaction = self.zk.transaction()
-            # for k, v in keys_values.items():
-            #     transaction.set_data(k, v)
-            #     # transaction.create(k, v, makepath=True)
-            # results = transaction.commit()
-            # print('done uploading paths')
-            # # print('results', results)
-        elif USING_POSTGRES:
+        if USING_POSTGRES:
             return self.postgres_bulk_set(keys_values, save)
-        elif USING_REDIS:
-            return self.redis_bulk_set(keys_values, save)
         else:
             for k, v in keys_values.items():
                 self.set(k, v, save=save, persistent=persistent)
@@ -428,22 +351,11 @@ class Client:
         """
         t = time.time()
 
-        if USING_ZOOKEEPER:
-            self.zk.delete(ZOOKEEPER_PATH + '/temp', recursive=True)  # (f'{ZOOKEEPER_PATH}/temp', recursive=True)
-            self.zk.ensure_path(ZOOKEEPER_PATH + '/temp')  # (f'{ZOOKEEPER_PATH}/temp')
-            base_path = ZOOKEEPER_PATH + '/temp'  # f'{ZOOKEEPER_PATH}/temp'
-            for child in self.zk.get_children(base_path):
-                path = ZOOKEEPER_PATH + '/temp/' + child  # f'{ZOOKEEPER_PATH}/temp/{child}'
-                data, config = self.zk.get(path)
-                if (t - (config.mtime / 1000)) > object_lifetime:
-                    self.zk.delete(path)
-        elif USING_POSTGRES:
+        if USING_POSTGRES:
             with self.db.connect() as conn:
                 cur = conn.cursor()
                 cur.execute(f'DELETE FROM {POSTGRES_TABLE} WHERE epoch < {t - object_lifetime} and key not like \'{PERSISTENT_PATH}%\';')
                 conn.commit()
-        elif USING_REDIS:
-            pass
         # else:
         #     for root, dirs, files in os.walk(save_path, topdown=True):
         #         dirs[:] = [d for d in dirs if d != PERSISTENT_PATH]
@@ -471,72 +383,6 @@ class Client:
             #     cur.execute(f'INSERT INTO {POSTGRES_TABLE} (key,data, epoch) VALUES (%s, %s, %s) '
             #                  'ON CONFLICT (key) DO UPDATE SET (data, epoch) = (EXCLUDED.data, EXCLUDED.epoch)', (k, v, time.time()))
             conn.commit()
-
-    @redis_secure_connection
-    def redis_bulk_set(self, keys_values: dict, save: bool = False):
-        """
-        Set multiple key-value pairs in Redis.
-
-        Args:
-            keys_values (dict): A dictionary of key-value pairs to set.
-            save (bool, optional): Whether to save the data to disk. Defaults to False.
-        """
-        self.redis_client.mset(keys_values)
-
-        if save:
-            self.redis_client.save()
-
-        for k in keys_values:
-            self.redis_client.expire(k, 60*60*24*7)
-
-    @redis_secure_connection
-    def redis_set(self, key: str, data: bytes, save: bool = False, expiration: int | None = None) -> None:
-        """
-        Set data for a given key in Redis.
-
-        Args:
-            key (str): The key to associate with the data.
-            data (bytes): The data to store.
-            save (bool, optional): Whether to save the data to disk. Defaults to False.
-            expiration (int, optional): The expiration time for the key in seconds. Negative value will ensure no expiration. Defaults to either environment variable `REDIS_EXPIRATION` or 60 * 60 * 24 * 7 (1 week).
-        """
-        if not isinstance(expiration, int):
-            expiration = REDIS_EXPIRATION
-        else:
-            if expiration < 0:
-                expiration = None
-
-        self.redis_client.set(key, data, ex=expiration)
-
-        if save:
-            self.redis_client.save()
-
-    @redis_secure_connection
-    def redis_get(self, key: str) -> bytes | None:
-        """
-        Retrieve data for a given key from Redis.
-
-        Args:
-            key (str): The key to retrieve data for.
-
-        Returns:
-            bytes or None: The retrieved data, or None if the key doesn't exist.
-        """
-        data = self.redis_client.get(key)
-        if data is None:
-            return None
-        return data
-
-    @redis_secure_connection
-    def redis_delete(self, key: str) -> None:
-        """
-        Delete data for a given key from Redis.
-
-        Args:
-            key (str): The key to delete data for.
-        """
-        # self.redis_client.delete(key)
-        self.redis_client.delete(key)
 
 
 def check_file_directory(path: str) -> None:
@@ -720,14 +566,6 @@ def cleanup(slow=True):
         #     cur.execute(f'DELETE FROM {POSTGRES_TABLE} WHERE epoch + {60 * 60 * 24 * 2} > {time.time()}')
         #     conn.commit()
         return
-
-    # if USING_REDIS:
-    #     redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB)
-    #     redis_client.delete(*[
-    #         k for k in
-    #         redis_client.scan_iter(match='*')
-    #         if float(redis_client.get(k)) + 60 * 60 * 24 * 2 > time.time()
-    #     ])
 
     for root, dirs, files in os.walk(save_path, topdown=True):
         dirs[:] = [d for d in dirs if d != PERSISTENT_PATH]

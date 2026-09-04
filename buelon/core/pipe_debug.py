@@ -5,10 +5,15 @@ import sqlite3
 import time
 
 import buelon.helpers.sqlite3_helper
-import buelon.helpers.postgres
 
 DEBUG_TABLE = 'debug'
 
+# `buelon.helpers.postgres` used to be imported here for the commented-out `pg`
+# below. It is on the worker path via `core/execution.py` and nothing in this
+# module actually uses it, so the import is gone rather than made lazy --
+# uncomment both together if the Postgres-backed debug store comes back.
+# BUGS.md #58.
+# import buelon.helpers.postgres
 # pg = buelon.helpers.postgres.get_postgres_from_env()
 
 
