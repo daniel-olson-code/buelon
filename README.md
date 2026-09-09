@@ -1,7 +1,7 @@
 # Buelon
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/daniel-olson-code/buelon/refs/heads/main/buelon/static/logo.png" alt="Buelon logo" width="50%">
+  <img src="https://raw.githubusercontent.com/daniel-olson-code/buelon/refs/heads/main/buelon/static/cow-glass.jpg" alt="Buelon logo" width="50%">
 </p>
 
 Buelon is a Python orchestration system with a small scripting language (a DML) for
