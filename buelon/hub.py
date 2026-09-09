@@ -207,6 +207,27 @@ UPLOAD_RESPONSE_TIMEOUT = 300.0
 UPLOAD_STAGING_TIMEOUT = 900.0
 UPLOAD_STAGING_SWEEP_INTERVAL = 60.0
 
+# Ids whose in-flight result must be discarded when it comes back -- BUGS.md #4.
+#
+# Cancelling a job that a worker is *already running* cannot un-run it. Every cancel
+# path clears the hub's dicts, but the worker finishes anyway and `bi_on_release` writes
+# the result into `db` and puts the job through `handle_step` -- which re-creates the
+# `ALL_STEPS` entry, files it under `done`, and promotes its children back onto the
+# dispatch queue. The pipeline you just cancelled carries on from where it was.
+#
+# So a cancel records the ids it could not actually stop, and `bi_on_release` drops
+# their results instead of resurrecting the DAG. Only ids that were genuinely checked
+# out are recorded (`tombstone_held_ids`), which bounds this to in-flight work rather
+# than to the size of the cancelled DAG, and each entry is consumed by the release it
+# is waiting for. `TOMBSTONE_TTL` only covers the worker that dies without ever
+# releasing; ids are `uuid1`-based (`pipe_util.get_id`), so a stale entry can never
+# collide with a later pipeline.
+#
+# Not persisted by `auto_save`: a hub restart drops `holds_v2` as well, so there is no
+# in-flight job for a restored tombstone to match.
+tombstones: dict[str, float] = {}
+TOMBSTONE_TTL: float = 3600.0
+
 # Exponential back-off between a job's retries -- BUGS.md #35.
 #
 # #14 made `!retries` work, but a failed job went straight back on the dispatch queue at
@@ -503,8 +524,15 @@ def handle_step(step:  buelon.core.step.Job, status: buelon.core.step.StepStatus
                 ALL_STEPS[step.id] = [status.value, step]
                 upload_step(step)
         elif status == buelon.core.step.StepStatus.cancel:
-            for step_id in get_all_ids(step):
-                remove_id(step_id)
+            # `remove_id` alone clears `queued` / `errors` / `done` / `db` / `ALL_STEPS`
+            # and nothing else, so before #4 a cancelled DAG kept running: a sibling
+            # still on the dispatch queue was handed out anyway (a fan-out DAG --
+            # `pipe2(v)` and `pipe3(v)` off one parent -- puts both children in `STEPS`
+            # at once), and a sibling already checked out came back through
+            # `bi_on_release` and re-created the state the cancel had just removed.
+            # `cancel_ids` is the whole cancel, and is what `cancel-errors` and
+            # `delete-all` use too.
+            cancel_ids(get_all_ids(step))
         elif status == buelon.core.step.StepStatus.error:
             # `!retries` used to be parsed and then never read by anything -- BUGS.md
             # #14. A failed job goes back on the dispatch queue until it has burned
@@ -2029,6 +2057,16 @@ def bi_on_release(request: ServerRequest, data):
 
     with lock:
         for step, status, result in zip(steps, statuses, results):
+            # Cancelled while this worker was running it. Dropping the result is the
+            # whole point: `db[step.id] = result` and `handle_step` are between them
+            # every dict a cancel just cleared, and the `success` branch would push the
+            # job's children back onto the dispatch queue. BUGS.md #4.
+            if consume_tombstone(step.id):
+                print(f'discarding result for cancelled job {step.id} ({step.name}) '
+                      f'-- it was already running on worker {request.client_id} when '
+                      f'the cancel arrived')
+                continue
+
             db[step.id] = result
             handle_step(step, status)
 
@@ -2286,6 +2324,80 @@ def remove_ids_from_holds(step_ids: set[str]) -> int:
         return removed
 
 
+def tombstone_held_ids(step_ids: set[str]) -> int:
+    """Record the ids in `step_ids` that a worker is currently running. BUGS.md #4.
+
+    Call this *before* `remove_ids_from_holds`, which is what makes the set small: only
+    jobs that are actually checked out can produce a release, so only those need an
+    entry. Returns how many were recorded.
+    """
+    with lock:
+        now = time.time()
+        held = {step_id
+                for client_holds in holds_v2.values()
+                for step_id in step_ids & set(client_holds)}
+
+        for step_id in held:
+            tombstones[step_id] = now
+
+        return len(held)
+
+
+def consume_tombstone(step_id: str) -> bool:
+    """True if `step_id` was cancelled while in flight -- and forget it. BUGS.md #4.
+
+    Consumed rather than kept: the tombstone exists to drop exactly one release, and a
+    job whose id somehow came round again would be a different job (ids are `uuid1`).
+    """
+    with lock:
+        return tombstones.pop(step_id, None) is not None
+
+
+def sweep_tombstones(now: float | None = None) -> int:
+    """Drop tombstones older than `TOMBSTONE_TTL`. BUGS.md #4.
+
+    A tombstone is normally consumed by the release it is waiting for. This covers the
+    worker that is killed mid-job and never sends one, whose entry would otherwise sit
+    in the dict for the life of the hub. Returns the number dropped.
+    """
+    now = time.time() if now is None else now
+
+    with lock:
+        stale = [step_id for step_id, at in tombstones.items()
+                 if now - at >= TOMBSTONE_TTL]
+
+        for step_id in stale:
+            del tombstones[step_id]
+
+        return len(stale)
+
+
+def cancel_ids(step_ids: set[str]) -> int:
+    """Cancel `step_ids` everywhere the hub could still act on them. BUGS.md #4.
+
+    The four dicts `remove_id` clears are only the jobs that are sitting still. A job is
+    also cancellable from two places it can still *run* from, and both were missed:
+
+      `STEPS`     waiting for a worker to ask. `remove_id` cannot reach it -- there is
+                  no `job_id -> (scope, priority)` index -- so the queues are scanned.
+      `holds_v2`  already checked out. Nothing can stop it finishing, so its release is
+                  tombstoned and dropped instead.
+
+    Returns the number of ids that were still in flight, i.e. cancelled but not stopped.
+    """
+    with lock:
+        # Before `remove_ids_from_holds` -- it is the holds that say what is in flight.
+        in_flight = tombstone_held_ids(step_ids)
+
+        for step_id in step_ids:
+            remove_id(step_id)
+
+        remove_ids_from_steps(step_ids)
+        remove_ids_from_holds(step_ids)
+
+        return in_flight
+
+
 def cancel_errored_jobs() -> tuple[int, int]:
     """Remove every job belonging to a pipeline that contains an error.
 
@@ -2300,11 +2412,9 @@ def cancel_errored_jobs() -> tuple[int, int]:
         for step in list(errors.values()):
             ids |= get_all_ids(step)
 
-        for step_id in ids:
-            remove_id(step_id)
-
-        remove_ids_from_steps(ids)
-        remove_ids_from_holds(ids)
+        # Was `remove_id` + the two sweeps inline; `cancel_ids` is those three plus the
+        # tombstone that stops an in-flight job resurrecting its DAG on release (#4).
+        cancel_ids(ids)
 
         return len(ids), pipelines
 
@@ -2313,6 +2423,13 @@ def delete_all_jobs() -> int:
     """Wipe all job state on the hub. Returns the number of jobs removed."""
     with lock:
         count = len(ALL_STEPS)
+
+        # Before the dicts are emptied, while `holds_v2` still says what is running:
+        # otherwise the jobs in flight during a `bue delete` release into the wiped hub
+        # and re-create their DAGs one job at a time. BUGS.md #4.
+        tombstone_held_ids({step_id
+                            for client_holds in holds_v2.values()
+                            for step_id in client_holds})
 
         ALL_STEPS.clear()
         STEPS.clear()
@@ -2503,10 +2620,11 @@ _staging_stop = threading.Event()
 
 
 def upload_staging_reaper_task():
-    """Daemon loop: reap abandoned staged uploads -- BUGS.md #32."""
+    """Daemon loop: reap abandoned staged uploads (#32) and stale tombstones (#4)."""
     while not _staging_stop.wait(UPLOAD_STAGING_SWEEP_INTERVAL):
         try:
             sweep_stale_uploads()
+            sweep_tombstones()
         except Exception:
             traceback.print_exc()
 
