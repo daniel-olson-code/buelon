@@ -11,6 +11,7 @@ as a standalone key/value store, reachable on its own via ``bue bucket``.
 """
 from buelon.settings import settings
 from buelon.bucket_v1 import *
+import buelon.bucket_v1
 
 
 # Environment variables for client and server configuration
@@ -35,9 +36,25 @@ database_keys_in_order = []
 # MAX_DATABASE_SIZE: int = min(1024 * 1024 * 1024 * 1, int(psutil.virtual_memory().total / 8))
 MAX_DATABASE_SIZE: int = 50 * 1024 * 1024
 
-if not USING_POSTGRES:
-    if not os.path.exists(save_path):
-        os.makedirs(save_path)
+
+def ensure_save_path() -> None:
+    """Create the bucket's storage directory, if the file backend is in use.
+
+    This used to run at module scope, which meant a bare ``import buelon`` created
+    ``.boo/bucket`` in whatever directory it happened to run from -- the last of the
+    import-time ``os.makedirs`` calls #55 removed elsewhere. `save_path` has no other
+    reader in this module, so the creation belongs next to the server that writes
+    there. BUGS.md #62.
+    """
+    if USING_POSTGRES:
+        return
+    os.makedirs(save_path, exist_ok=True)
+
+
+def main() -> None:
+    """Run the bucket server (`bue bucket`), creating its storage directory first."""
+    ensure_save_path()
+    buelon.bucket_v1.main()
 
 
 if __name__ == '__main__':
