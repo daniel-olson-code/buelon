@@ -9,32 +9,16 @@ its state (jobs, results, holds) in memory and workers talk only to the hub, so 
 in ``buelon.hub``, ``buelon.worker`` or ``buelon.core`` imports this module. It is kept
 as a standalone key/value store, reachable on its own via ``bue bucket``.
 """
-from buelon.settings import settings
 from buelon.bucket_v1 import *
 import buelon.bucket_v1
 
 
-# Environment variables for client and server configuration
-USING_POSTGRES: bool = settings.bucket.postgres.use  # os.environ.get('USING_POSTGRES_BUCKET', 'false') == 'true'
-POSTGRES_TABLE: str = settings.bucket.postgres.table  # os.environ.get('POSTGRES_TABLE', 'buelon_bucket')
-
-BUCKET_CLIENT_HOST: str = settings.bucket.client.host  # os.environ.get('BUCKET_CLIENT_HOST', 'localhost')
-BUCKET_CLIENT_PORT: int = settings.bucket.client.port  # int(os.environ.get('BUCKET_CLIENT_PORT', 61535))
-
-BUCKET_SERVER_HOST: str = settings.bucket.server.host  # os.environ.get('BUCKET_SERVER_HOST', '0.0.0.0')
-BUCKET_SERVER_PORT: int = settings.bucket.server.port  # int(os.environ.get('BUCKET_SERVER_PORT', 61535))
-
-PERSISTENT_PATH: str = settings.bucket.postgres.persistent_path  # f"{os.environ.get('PERSISTENT_PATH', '__PERSISTENT__')}"
-
-BUCKET_END_TOKEN = b'[-_-]'
-BUCKET_SPLIT_TOKEN = b'[*BUCKET_SPLIT_TOKEN*]'
-
-save_path = settings.bucket.server.path  # os.path.join('.bue', 'bucket')
-
-database: dict[str, bytes] = {}
-database_keys_in_order = []
-# MAX_DATABASE_SIZE: int = min(1024 * 1024 * 1024 * 1, int(psutil.virtual_memory().total / 8))
-MAX_DATABASE_SIZE: int = 50 * 1024 * 1024
+# `bucket_v1` reads `buelon.settings` directly, so everything this module used to
+# rebind from `settings` -- `USING_POSTGRES`, `POSTGRES_TABLE`, `BUCKET_CLIENT_HOST/PORT`,
+# `BUCKET_SERVER_HOST/PORT`, `PERSISTENT_PATH`, `save_path` -- now arrives through the
+# star import above with the settings already applied. The rebindings are gone: they
+# shadowed `bucket_v1`'s copies rather than replacing them, and it is `bucket_v1`'s that
+# `Client`, `Server` and the `server_*` functions actually resolve. BUGS.md #63.
 
 
 def ensure_save_path() -> None:
@@ -45,10 +29,14 @@ def ensure_save_path() -> None:
     import-time ``os.makedirs`` calls #55 removed elsewhere. `save_path` has no other
     reader in this module, so the creation belongs next to the server that writes
     there. BUGS.md #62.
+
+    Both values are read off ``buelon.bucket_v1`` rather than off this module's
+    star-imported copies, so the directory made here is the one ``handle_client``
+    writes to even if something rebinds them at runtime. BUGS.md #63.
     """
-    if USING_POSTGRES:
+    if buelon.bucket_v1.USING_POSTGRES:
         return
-    os.makedirs(save_path, exist_ok=True)
+    os.makedirs(buelon.bucket_v1.save_path, exist_ok=True)
 
 
 def main() -> None:

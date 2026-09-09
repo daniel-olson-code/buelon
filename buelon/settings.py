@@ -75,25 +75,29 @@ DEFAULT_SETTINGS = {
             'name': 'Worker',
         }
     },
+    # The bucket's defaults are the environment variables above rather than literals,
+    # so the precedence is settings.yaml > environment > built-in default. `bucket_v1`
+    # used to read `os.environ` itself, which is why it ignored settings.yaml entirely
+    # (BUGS.md #63); it now reads these, and the env vars keep working through here.
     'bucket': {
         'server': {
             'use': True,
             'path': os.path.join(DIR_PATH, 'bucket'),
-            'host': '0.0.0.0',
-            'port': 61535
+            'host': BUCKET_SERVER_HOST,
+            'port': BUCKET_SERVER_PORT
             # 'max_size': 1024 * 1024 * 1024 * 1024,  # 1 TB
         },
         'client': {
             'use': True,
-            'host': 'localhost',
-            'port': 61535,
+            'host': BUCKET_CLIENT_HOST,
+            'port': BUCKET_CLIENT_PORT,
             # 'timeout': 60,
             # 'max_size': 1024 * 1024 * 1024 * 1024,  # 1 TB
         },
         'postgres': {
-            'use': False,
-            'table': 'buelon_bucket',
-            'persistent_path': '__PERSISTENT__',
+            'use': USING_POSTGRES,
+            'table': POSTGRES_TABLE,
+            'persistent_path': PERSISTENT_PATH,
         },
     },
     'postgres': {

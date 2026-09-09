@@ -31,22 +31,32 @@ try:
 except ModuleNotFoundError:
     pass
 
-# Environment variables for client and server configuration
-USING_POSTGRES: bool = os.environ.get('USING_POSTGRES_BUCKET', 'false') == 'true'
-POSTGRES_TABLE: str = os.environ.get('POSTGRES_TABLE', 'buelon_bucket')
+# Configuration for the client and the server. These come from `buelon.settings`, whose
+# own defaults are the `USING_POSTGRES_BUCKET` / `BUCKET_*` / `POSTGRES_TABLE` /
+# `PERSISTENT_PATH` environment variables -- so settings.yaml wins, the environment is
+# the fallback, and the built-in default is the last resort.
+#
+# They used to be read from `os.environ` here while `bucket.py` rebound its own
+# settings-derived copies. Those rebindings landed in `bucket.py`'s namespace only, and
+# every function and class that reads them (`Client`, `Server`, `handle_client`,
+# `server_get/set/delete`, `cleanup`) lives here and resolves them against *this*
+# module -- so settings.yaml configured the bucket only where a setting happened to
+# equal its env default. BUGS.md #63.
+USING_POSTGRES: bool = buelon.settings.settings.bucket.postgres.use
+POSTGRES_TABLE: str = buelon.settings.settings.bucket.postgres.table
 
-BUCKET_CLIENT_HOST: str = os.environ.get('BUCKET_CLIENT_HOST', 'localhost')
-BUCKET_CLIENT_PORT: int = int(os.environ.get('BUCKET_CLIENT_PORT', 61535))
+BUCKET_CLIENT_HOST: str = buelon.settings.settings.bucket.client.host
+BUCKET_CLIENT_PORT: int = buelon.settings.settings.bucket.client.port
 
-BUCKET_SERVER_HOST: str = os.environ.get('BUCKET_SERVER_HOST', '0.0.0.0')
-BUCKET_SERVER_PORT: int = int(os.environ.get('BUCKET_SERVER_PORT', 61535))
+BUCKET_SERVER_HOST: str = buelon.settings.settings.bucket.server.host
+BUCKET_SERVER_PORT: int = buelon.settings.settings.bucket.server.port
 
-PERSISTENT_PATH: str = f"{os.environ.get('PERSISTENT_PATH', '__PERSISTENT__')}"
+PERSISTENT_PATH: str = buelon.settings.settings.bucket.postgres.persistent_path
 
 BUCKET_END_TOKEN = b'[-_-]'
 BUCKET_SPLIT_TOKEN = b'[*BUCKET_SPLIT_TOKEN*]'
 
-save_path = os.path.join(buelon.settings.DIR_PATH, 'bucket')
+save_path = buelon.settings.settings.bucket.server.path
 
 database: dict[str, bytes] = {}
 database_keys_in_order = []
