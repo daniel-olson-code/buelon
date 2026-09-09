@@ -228,10 +228,11 @@ RETRY_BACKOFF_MAX: float = float(os.environ.get('BUELON_RETRY_BACKOFF_MAX', 300.
 # otherwise-idle hub came back in milliseconds: the README's "poll a slow API without
 # holding a worker slot" was a hot loop, hammering the API and burning a dispatch slot per
 # turn. It reuses #35's `not_before` mechanism, but the delay is a *constant*, not that
-# exponential back-off: a poll is not a failure, and a job waiting on a report that takes
-# ten minutes should keep asking at a steady cadence rather than drifting out to the
-# five-minute cap. `BUELON_HANDBACK_DELAY=0` restores the pre-#50 immediate requeue.
-HANDBACK_DELAY: float = float(os.environ.get('BUELON_HANDBACK_DELAY', 5.0))
+# exponential back-off -- see `buelon.core.step.HANDBACK_DELAY`, which is where the value
+# and the reasoning now live so the `bue run -f` local runner can hold to the same rule
+# without importing the hub (#59). Rebinding `hub.HANDBACK_DELAY` still only affects the
+# hub, which is what the tests do.
+HANDBACK_DELAY: float = buelon.core.step.HANDBACK_DELAY
 
 # endregion
 
@@ -395,34 +396,11 @@ def add_step_to_steps(step: buelon.core.step.Job, jobs: list[buelon.core.step.Jo
     jobs.append(step)
 
 
-def job_int_field(job: buelon.core.step.Job, field: str, default: int = 0) -> int:
-    """Read an integer job field, repairing the job in place if it is not one.
-
-    BUGS.md #42. The parser used to hand back the *string* `'0'` for a file-level
-    `!priority` / `!retries`, and a string priority is uniquely nasty: `upload_step`
-    happily keys `STEPS[scope]['0']`, `get_steps_v2` only walks the int priorities in
-    `preset_priorities`, and the job is counted by `bue status` forever while no
-    worker is ever offered it. Nothing errors, so there is nothing to notice.
-
-    That is fixed at the source, but the hub also accepts jobs from clients it does
-    not control -- an older `bue upload`, or a snapshot written before the fix -- so
-    normalise here too rather than trusting the wire. Repairing in place keeps the
-    job self-consistent for the snapshot and the web UI, not just for the dict key.
-    """
-    value = getattr(job, field, default)
-
-    if isinstance(value, int) and not isinstance(value, bool):
-        return value
-
-    try:
-        coerced = int(value)
-    except (TypeError, ValueError):
-        print(f'job {getattr(job, "name", "?")!r} ({getattr(job, "id", "?")}) has a '
-              f'non-numeric {field} {value!r}; treating it as {default}')
-        coerced = default
-
-    setattr(job, field, coerced)
-    return coerced
+# Moved to `buelon.core.step` by #59, which needed the same `!max_handbacks`
+# normalisation in the local runner and could not import the hub to get it. Kept as a
+# name here because the hub reads it a dozen times and `hub.job_int_field` is what the
+# #42 tests call. See `buelon.core.step.job_int_field` for the why.
+job_int_field = buelon.core.step.job_int_field
 
 
 def job_not_before(job: buelon.core.step.Job) -> float:
@@ -568,7 +546,27 @@ def handle_step(step:  buelon.core.step.Job, status: buelon.core.step.StepStatus
             # DAG's initial state, so a job with parents goes back to blocked-on-parent
             # and a root goes back on the dispatch queue -- exactly what
             # `_register_uploaded_steps` does at upload time. Do not collapse them.
-            for job in get_all_steps(step).values():
+            dag = get_all_steps(step)
+            # `remove_id` clears `queued`, `errors`, `done` and `db` but deliberately
+            # not `STEPS` -- there is no `job_id -> (scope, priority)` index, so it
+            # cannot find a job there cheaply (#4). On the terminal-cleanup path it
+            # was written for that is fine -- `STEPS` no longer holds the id. Here it
+            # is not: `reset` re-uploads the *whole* DAG, including jobs that never left
+            # the dispatch queue, and the queue is a plain list -- so every one of
+            # those ended up in `STEPS` twice and `get_steps_v2` handed it out twice.
+            # BUGS.md #61.
+            #
+            # Reachable from the `temp_handle_step_args` backstop, which fires exactly
+            # when part of a DAG is still queued: a sibling root on another scope's
+            # queue, one cut off by the dispatch `limit`, or one serving out a retry
+            # back-off. This also stops a job that goes back to `queued` from keeping a
+            # stale `STEPS` entry -- blocked on a parent and dispatchable at once.
+            #
+            # One scan for the whole DAG rather than a `remove_ids_from_steps` per job:
+            # that call walks every queue, so per-job it would be O(DAG x queues).
+            remove_ids_from_steps(set(dag))
+
+            for job in dag.values():
                 remove_id(job.id, True)
                 # `reset` is an operator saying "run this now". A job halfway through a
                 # retry back-off would otherwise go back on the queue still carrying a

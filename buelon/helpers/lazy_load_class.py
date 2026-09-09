@@ -218,10 +218,26 @@ class LazyMap:
                         os.unlink(file_path)
                     except FileNotFoundError:
                         pass
+        # Closed before the unlink, and its siblings swept after: this connection
+        # runs in WAL mode, and sqlite only removes its own `-wal` / `-shm` on a
+        # clean close of the last connection. Deleting the `.db` out from under an
+        # open connection left the pair behind for good -- the same leak
+        # `PipelineParser` had (BUGS.md #60).
         try:
-            os.unlink(self.__db_path)
-        except FileNotFoundError:
+            self.__conn.close()
+        except sqlite3.Error:
             pass
+
+        for path in (self.__db_path, self.__db_path + '-shm', self.__db_path + '-wal'):
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+        # `__exit__` calls this explicitly and the collector calls it again, and
+        # now that the connection is really closed the second pass would raise on
+        # the `SELECT` above. There is nothing left to delete anyway.
+        self.__can_delete = False
 
     # def __contains__(self, item):
     #     return item in self.__items or f'{LAZY_LOAD_PREFIX}{item}' in self.__items

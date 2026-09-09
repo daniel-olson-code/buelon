@@ -181,7 +181,7 @@ bisocket's `secure` default if that is unset too.
 | `BUELON_AUTO_SAVE_INTERVAL` | `600` | Seconds between snapshots. |
 | `BUELON_RETRY_BACKOFF_BASE` | `5` | Seconds before a job's first retry. Each further attempt doubles it. `0` retries immediately. Read by the hub. |
 | `BUELON_RETRY_BACKOFF_MAX` | `300` | Ceiling on that doubling, in seconds. |
-| `BUELON_HANDBACK_DELAY` | `5` | Seconds a job that returns `pending` waits before it is offered again. Constant, not doubling — a poll is not a failure. `0` re-queues immediately. Read by the hub. |
+| `BUELON_HANDBACK_DELAY` | `5` | Seconds a job that returns `pending` waits before it is offered again. Constant, not doubling — a poll is not a failure. `0` re-queues immediately. Read by the hub and by `bue run -f`. |
 | `BOO_WEB_HOST` / `BOO_WEB_PORT` | `localhost` / `11011` | Where `bue web` listens. |
 | `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DATABASE` | localhost/5432/… | Connection used by `postgres` **jobs** (see [Supported Languages](#supported-languages)). Read by workers, not by the hub. |
 | `ENV_PATH` | `.env` | A `.env` file at this path is loaded, if `python-dotenv` is installed. Only the variables in this table have any effect. |
@@ -280,7 +280,9 @@ return Result(status=StepStatus.cancel)    # drop this chain
 for the whole wait. The hub holds the job back for `BUELON_HANDBACK_DELAY` seconds (5 by
 default) before offering it again, so the poll is a poll rather than a hot loop, and counts
 the hand-backs — `bue status` reports them as `handed back`, and the web UI as *Handed
-Back*. There is no limit unless you set `!max_handbacks`.
+Back*. There is no limit unless you set `!max_handbacks`. `bue run -f` applies the same
+delay and the same ceiling, so a polling pipeline behaves locally the way it will on the
+cluster; it steps over a waiting job and runs the rest of the pipeline meanwhile.
 
 Those three are the whole list. The other `StepStatus` members — `queued`, `working`,
 `success`, `error`, `unknown` — are hub bookkeeping, not things a job returns. `queued` in
@@ -399,7 +401,7 @@ def upload_to_db(table: list[dict]) -> None:
   a rate limit or a failover has time to clear. `bue status` counts the jobs currently
   waiting as `delayed`. Tune it with `BUELON_RETRY_BACKOFF_BASE` / `_MAX` on the hub.
 - `!max_handbacks N` caps how many times a job may return `StepStatus.pending` before the
-  hub gives up and records it as an error. It defaults to `0`, meaning unlimited, because
+  hub gives up and records it as an error (`bue run -f` fails the job instead). It defaults to `0`, meaning unlimited, because
   a poll loop genuinely does not know how many turns it needs — set it only on a job that
   should not poll forever. It is a separate budget from `!retries`, which counts failures.
 - `!timeout` takes an arithmetic expression in seconds (`20 * 60`, `60**2 * 5`), but it must

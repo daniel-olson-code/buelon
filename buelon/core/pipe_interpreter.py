@@ -12,6 +12,7 @@ Constants:
 import os
 import sys
 import inspect
+import time
 import string
 import sqlite3
 import json
@@ -241,6 +242,23 @@ allowed_chars = string.ascii_letters + string.digits + '_- '
 # priority = 0
 
 
+def remove_temp_siblings(path: str) -> None:
+    """Remove the sibling files a temp path grows that nothing else deletes.
+
+    `NamedTemporaryFile` unlinks exactly the name it made, but two things here
+    write next to that name: sqlite in WAL mode leaves a `-wal` / `-shm` pair,
+    which it only cleans up on a clean `close()` of the last connection, and
+    `JsonlPersistentQueue` keeps its cursor in a `.pos` alongside the `.jsonl`.
+    Both are per-run random names nothing ever reads again, so left behind they
+    are pure accumulation in the state directory (BUGS.md #60).
+    """
+    for suffix in ('.pos', '-shm', '-wal', '-journal'):
+        try:
+            os.unlink(path + suffix)
+        except OSError:
+            pass
+
+
 class BuelonSyntaxError(Exception):
     pass
 
@@ -310,6 +328,8 @@ class PipelineParser:
     conn = None
     tab = '    '
     _build_index = 0
+    _db_path: str | None = None
+    _queue_path: str | None = None
 
     def __init__(self, scope: str = 'default', priority: int = 0):
         self.scope = scope
@@ -322,10 +342,36 @@ class PipelineParser:
             'max_handbacks': 0
         }
 
+    def close(self) -> None:
+        """Close the build database and remove the temp files it left behind.
+
+        Idempotent, and safe on a parser that never built anything. sqlite only
+        deletes its own `-wal` / `-shm` on a clean `close()` of the last
+        connection, and `build` never closed one -- so every local run and every
+        `bue upload` left a pair in the state directory. The explicit sweep after
+        the `close()` is a backstop: by the time we get here the `.db` itself has
+        already been unlinked by `NamedTemporaryFile`, and sqlite's own cleanup is
+        not something to lean on in that state (BUGS.md #60).
+        """
+        if self.conn is not None:
+            self.conn.close()
+            self.conn = None
+
+        for path in (self._db_path, self._queue_path):
+            if path:
+                remove_temp_siblings(path)
+
+        self._db_path = None
+        self._queue_path = None
+
     def build(self, prepared_content: str):
         os.makedirs(buelon.settings.DIR_PATH, exist_ok=True)
         with tempfile.NamedTemporaryFile(mode='w', dir=buelon.settings.DIR_PATH, suffix='.db') as temp_file:
             self.conn = sqlite3.connect(temp_file.name)  # (':memory:')
+            # Remembered for `close`, which cannot happen here: this is a
+            # generator, and `self.conn` has to outlive it -- `run` reads jobs
+            # back out of it for the whole drain loop (BUGS.md #60).
+            self._db_path = temp_file.name
             self.conn.execute('PRAGMA journal_mode=WAL')
             self.conn.execute('PRAGMA synchronous=NORMAL')
             self.conn.execute('DROP table if exists jobs;')
@@ -378,7 +424,18 @@ class PipelineParser:
             # print(f'{time.time() - t:0.2f} sec(s)')
             # yield '', ''
 
-    def run(self, prepared_content: str):
+    def run(self, prepared_content: str) -> None:
+        """Run a pipeline in this process, then clean up after it.
+
+        The work is in `_run`; this only guarantees `close` happens, including on
+        the `LocalRunError` that `_run` raises when a job failed (BUGS.md #60).
+        """
+        try:
+            self._run(prepared_content)
+        finally:
+            self.close()
+
+    def _run(self, prepared_content: str):
         """Run a whole pipeline in this process -- the `bue run -f FILE` path.
 
         This is a second scheduler alongside the hub's, and the point of it is that a
@@ -398,16 +455,36 @@ class PipelineParser:
             Each is now reported; failures are collected and raised as a
             `LocalRunError` once the rest of the pipeline has finished, so one bad
             branch does not hide the others.
+
+        A third, same shape (BUGS.md #59): a job returning `pending` ("not ready, try
+        me again later") was put straight back on a queue drained by a tight
+        `while q.qsize()` loop, so a job polling a slow API was re-run as fast as the
+        process could run it and one that never became ready never terminated. It now
+        counts hand-backs and holds them off for `step.HANDBACK_DELAY` exactly as the
+        hub's `handle_step` does since #50, and treats exceeding `!max_handbacks` as a
+        failure -- reported through the mechanism the first two fixes built.
+
+        The counters are dicts keyed by job id rather than fields on the job, because
+        `_get_job` deserializes a *fresh* `Job` out of sqlite on every turn of the
+        drain loop; anything written to the object is gone by the next one. The hub can
+        keep them on the job because there they ride along in `STEPS`.
         """
         os.makedirs(buelon.settings.DIR_PATH, exist_ok=True)
         with tempfile.NamedTemporaryFile(mode='w', dir=buelon.settings.DIR_PATH, suffix='.jsonl') as temp_file:
             q = buelon.helpers.persistqueue.JsonPersistentQueue(temp_file.name)
+            # The queue writes a sibling `.jsonl.pos` that the temp file's own
+            # cleanup knows nothing about; `close` removes it (BUGS.md #60).
+            self._queue_path = temp_file.name
             data = {}  # buelon.helpers.lazy_load_class.LazyMap()
             # The local stand-in for the hub's `done` dict: job ids that actually
             # succeeded. `data` cannot answer that question -- a `pending` or `error`
             # result is written there too, carrying a placeholder (see #33, #51).
             succeeded: set[str] = set()
             failures: list[str] = []
+            # See the docstring: a fresh `Job` comes out of sqlite each turn, so the
+            # hub's `job.handbacks` / `job.not_before` have to live out here (#59).
+            handbacks: dict[str, int] = {}
+            not_before: dict[str, float] = {}
 
             def run(job: buelon.core.step.Job):
                 # job = self._get_job(job_id)
@@ -427,7 +504,36 @@ class PipelineParser:
                             continue
                         q.put(child_id)
                 elif r.status == buelon.core.step.StepStatus.pending:
-                    q.put(job_id)
+                    # "Not ready, try me again later" -- a poll, not a failure, which
+                    # is why this counts `handbacks` rather than spending the `!retries`
+                    # error budget. Same split the hub makes in `handle_step` (#50).
+                    handbacks[job_id] = handbacks.get(job_id, 0) + 1
+                    # Normalised for the same reason the hub normalises it: the value
+                    # comes from a `.bue` file's `!max_handbacks` and a string here
+                    # would raise on the comparison (BUGS.md #42).
+                    max_handbacks = buelon.core.step.job_int_field(
+                        job, 'max_handbacks', 0)
+
+                    if max_handbacks and handbacks[job_id] > max_handbacks:
+                        # Opt-in only: 0 is the default and means unlimited, so the
+                        # documented poll pattern keeps working for anyone who never
+                        # set a ceiling.
+                        print(f'job {job.name!r} ({job_id}) returned `pending` '
+                              f'{handbacks[job_id]:,} times, over its '
+                              f'!max_handbacks {max_handbacks:,} -- stopping this '
+                              f'branch, {len(job.children):,} child job(s) will '
+                              f'not run')
+                        failures.append(
+                            f'{job.name!r} ({job_id}) returned `pending` '
+                            f'{handbacks[job_id]:,} times, exceeding its '
+                            f'`!max_handbacks {max_handbacks}`')
+                    else:
+                        # Held off rather than requeued at once, so the poll is a poll
+                        # and not a hot loop. The drain loop below steps over the job
+                        # until this passes, and only sleeps if nothing else is ready.
+                        not_before[job_id] = (
+                            time.time() + buelon.core.step.HANDBACK_DELAY)
+                        q.put(job_id)
                 elif r.status == buelon.core.step.StepStatus.reset:
                     parents = job.parents.copy()
                     rewound = {job_id}
@@ -466,8 +572,33 @@ class PipelineParser:
                 if not job.parents:
                     q.put(job.id)
 
+            # A held-back job is stepped over rather than waited on, the way
+            # `get_steps_v2` steps over one whose `not_before` has not passed: other
+            # branches of the pipeline keep running while a poll waits its turn. Only
+            # when a full rotation of the queue finds nothing ready is there actually
+            # nothing to do, and then this sleeps out the wait instead of spinning
+            # (BUGS.md #59).
+            rotated = 0
+
             while q.qsize():
                 job_id = q.get()
+                wait = not_before.get(job_id, 0.0) - time.time()
+
+                if wait > 0:
+                    q.put(job_id)
+                    rotated += 1
+
+                    if rotated < q.qsize():
+                        continue
+
+                    # Every job left is waiting. Sleep out the shortest wait we know
+                    # of -- this one's, bounded by `HANDBACK_DELAY` -- and start the
+                    # rotation over.
+                    time.sleep(wait)
+                    rotated = 0
+                    continue
+
+                rotated = 0
                 job = self._get_job(job_id)
                 run(job)
 
@@ -1512,10 +1643,18 @@ def generate_steps_from_code(code: str) -> Generator[step.Job, None, None]:
     #         # print(j)
     #         del j
 
-    for job in PipelineParser().build(PipelineParser().prepare(code)):
-        # print(j)
-        yield job
-        del job
+    # The parser is kept in a name rather than built inline so it can be closed:
+    # `build` leaves its sqlite connection open, so every `bue upload` used to
+    # drop a `-wal` / `-shm` pair in the state directory (BUGS.md #60).
+    pipeline_parser = PipelineParser()
+
+    try:
+        for job in pipeline_parser.build(pipeline_parser.prepare(code)):
+            # print(j)
+            yield job
+            del job
+    finally:
+        pipeline_parser.close()
 
 
 def run_code(code: str):

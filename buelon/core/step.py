@@ -177,6 +177,53 @@ def all_parents_complete(parents: Iterable[str], completed: Container[str]) -> b
     return all(parent in completed for parent in parents)
 
 
+# How long a job that hands itself back as `pending` waits before it is offered again.
+#
+# BUGS.md #50 put this on the hub and #59 gave the `bue run -f` local runner the same
+# rule, so it lives here rather than in `hub.py` -- `core` must not import the hub, and
+# two schedulers disagreeing about what `pending` means is exactly the class of bug #52
+# and #59 exist to close.
+#
+# A constant, not #35's exponential retry back-off: a poll is not a failure, and a job
+# waiting on a report that takes ten minutes should keep asking at a steady cadence
+# rather than drifting out to the five-minute cap. `BUELON_HANDBACK_DELAY=0` restores
+# the pre-#50 immediate requeue.
+HANDBACK_DELAY: float = float(os.environ.get('BUELON_HANDBACK_DELAY', 5.0))
+
+
+def job_int_field(job: 'Job', field: str, default: int = 0) -> int:
+    """Read an integer job field, repairing the job in place if it is not one.
+
+    BUGS.md #42. The parser used to hand back the *string* `'0'` for a file-level
+    `!priority` / `!retries`, and a string priority is uniquely nasty: `upload_step`
+    happily keys `STEPS[scope]['0']`, `get_steps_v2` only walks the int priorities in
+    `preset_priorities`, and the job is counted by `bue status` forever while no
+    worker is ever offered it. Nothing errors, so there is nothing to notice.
+
+    That is fixed at the source, but the hub also accepts jobs from clients it does
+    not control -- an older `bue upload`, or a snapshot written before the fix -- so
+    normalise here too rather than trusting the wire. Repairing in place keeps the
+    job self-consistent for the snapshot and the web UI, not just for the dict key.
+
+    Lives here rather than in `hub.py` since #59, which needed the same `!max_handbacks`
+    normalisation in the local runner; `hub.job_int_field` is now this function.
+    """
+    value = getattr(job, field, default)
+
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+
+    try:
+        coerced = int(value)
+    except (TypeError, ValueError):
+        print(f'job {getattr(job, "name", "?")!r} ({getattr(job, "id", "?")}) has a '
+              f'non-numeric {field} {value!r}; treating it as {default}')
+        coerced = default
+
+    setattr(job, field, coerced)
+    return coerced
+
+
 class Step(pipe_util.PipeObject):
     """Represents a step in the execution pipeline.
 
