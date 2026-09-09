@@ -93,6 +93,15 @@ ten minutes, plus once more on a clean shutdown (including `SIGTERM`, so `docker
 `BUELON_AUTO_SAVE=false` turns both halves off; `BUELON_AUTO_SAVE=load-only` restores a
 snapshot without writing one back.
 
+Note that `.auto_save/` is a **sibling** of the state directory, not inside it, so it is
+untouched by anything you do to `.boo/`. A hub started in a directory holding an old
+snapshot adopts the jobs in it. On every load the hub prints how long ago the snapshot was
+written, and warns loudly past a week — a restored job re-enters the pipeline carrying the
+payload it was built with, and a loop job re-runs the arguments frozen into it at build
+time. A snapshot whose format version this hub does not recognise is refused outright and
+moved aside rather than partly restored. `BUELON_MAX_SNAPSHOT_AGE` makes the age a hard
+limit as well; `bue status` reports the age of the oldest job still in play.
+
 ### Scopes and priority
 
 Every job has a **scope** (a free-form name) and a **priority** (any integer; 0-100 is the
@@ -182,6 +191,8 @@ bisocket's `secure` default if that is unset too.
 | `BUELON_RETRY_BACKOFF_BASE` | `5` | Seconds before a job's first retry. Each further attempt doubles it. `0` retries immediately. Read by the hub. |
 | `BUELON_RETRY_BACKOFF_MAX` | `300` | Ceiling on that doubling, in seconds. |
 | `BUELON_HANDBACK_DELAY` | `5` | Seconds a job that returns `pending` waits before it is offered again. Constant, not doubling — a poll is not a failure. `0` re-queues immediately. Read by the hub and by `bue run -f`. |
+| `BUELON_MAX_JOB_AGE` | `0` (off) | Seconds a job may be old — measured from when it was *built* — and still be dispatched. An older one is recorded as an error instead of run. Off by default; a job's age says nothing on its own about whether running it is correct. |
+| `BUELON_MAX_SNAPSHOT_AGE` | `0` (off) | Seconds a hub snapshot may be old and still be loaded on startup. An older one is moved aside to `snapshot.rejected-<time>` and the hub starts empty. Off by default; the age is printed on every load either way. |
 | `BOO_WEB_HOST` / `BOO_WEB_PORT` | `localhost` / `11011` | Where `bue web` listens. |
 | `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DATABASE` | localhost/5432/… | Connection used by `postgres` **jobs** (see [Supported Languages](#supported-languages)). Read by workers, not by the hub. |
 | `ENV_PATH` | `.env` | A `.env` file at this path is loaded, if `python-dotenv` is installed. Only the variables in this table have any effect. |

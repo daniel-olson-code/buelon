@@ -255,9 +255,71 @@ RETRY_BACKOFF_MAX: float = float(os.environ.get('BUELON_RETRY_BACKOFF_MAX', 300.
 # hub, which is what the tests do.
 HANDBACK_DELAY: float = buelon.core.step.HANDBACK_DELAY
 
+# Opt-in ceiling on how old a job may be and still be dispatched -- BUGS.md #64.
+#
+# Off by default (`0`), and it has to be: a job's age says nothing about whether running
+# it is correct. A poll loop legitimately built weeks ago and still handing itself back
+# is doing exactly what `pending` documents, and a default cut-off would kill it. What
+# went wrong in the incident behind #64 was not that an old job existed -- it was that a
+# year-old one re-entered the pipeline with nobody able to see that it had.
+#
+# So the default is *visibility*: `bue status` reports the oldest live job's age and the
+# #56 reset line names the age of the DAG it is restarting, whether or not this is set.
+# Set `BUELON_MAX_JOB_AGE` (seconds) on a cluster whose jobs are only ever meaningful
+# fresh -- a daily report DAG, say -- and an over-age job is recorded as an error
+# instead, which is recoverable (`bue reset-errors`) and, unlike a silent re-run, visible.
+#
+# Enforced at dispatch rather than by a reaper thread: the moment that matters is the one
+# where a stale job would be handed to a worker, and checking there means a job cannot
+# slip out between sweeps. Age is measured from `created`, so a job with no build
+# timestamp (`unknown`) is never expired -- see `job_created`.
+MAX_JOB_AGE: float = float(os.environ.get('BUELON_MAX_JOB_AGE', 0.0))
+
 # endregion
 
 # region handling steps
+
+def expire_if_too_old(job: buelon.core.step.Job, now: float | None = None) -> bool:
+    """Retire a job that is older than `MAX_JOB_AGE` instead of dispatching it -- #64.
+
+    Returns True when the job was expired, in which case the caller must drop it: it has
+    already been moved into `errors` and given a `db` entry explaining itself, exactly as
+    #50's `!max_handbacks` ceiling does. An error is the right terminal state rather than
+    a silent delete -- it shows up in `bue status`, in `bue errors`, and `bue reset-errors`
+    can put it back if the operator disagrees with the cut-off.
+
+    Three ways this returns False without looking at the clock: the feature is off (the
+    default), the job has no build timestamp so its age is unknown (`job_age` -> `None`),
+    or it is simply young enough. An unknown age is never expired -- guessing that an
+    undated job is ancient would delete work on no evidence, and the loud snapshot
+    warning in `auto_load` is what covers that case instead.
+    """
+    if MAX_JOB_AGE <= 0:
+        return False
+
+    age = buelon.core.step.job_age(job, now)
+
+    if age is None or age <= MAX_JOB_AGE:
+        return False
+
+    with lock:
+        print(f'job {job.id} ({job.name}) was built '
+              f'{buelon.core.step.format_age(age)} ago, over the '
+              f'{buelon.core.step.format_age(MAX_JOB_AGE)} BUELON_MAX_JOB_AGE -- '
+              f'expiring it instead of dispatching a payload that old')
+        job.not_before = 0.0
+        ALL_STEPS[job.id] = [buelon.core.step.StepStatus.error.value, job]
+        errors[job.id] = job
+        db[job.id] = {
+            'error': f'Job {job.name!r} ({job.id}) was built '
+                     f'{buelon.core.step.format_age(age)} ago, exceeding '
+                     f'`BUELON_MAX_JOB_AGE` '
+                     f'({buelon.core.step.format_age(MAX_JOB_AGE)}).',
+            'trace': '',
+        }
+
+    return True
+
 
 def get_steps_v2(scopes: list[str], limit: int = 100, reverse: bool = False, single_step: str | None = None):
     with lock:
@@ -316,6 +378,14 @@ def get_steps_v2(scopes: list[str], limit: int = 100, reverse: bool = False, sin
             taken, remaining = [], []
 
             for job in STEPS[scope][priority]:
+                # Checked before the back-off and the limit, so an over-age job is
+                # retired whether or not this scan had room for it -- otherwise a busy
+                # scope would keep pushing the expiry to the next poll. Never fires
+                # when `MAX_JOB_AGE` is 0 (the default) or the job's age is unknown.
+                # BUGS.md #64.
+                if expire_if_too_old(job, now):
+                    continue
+
                 if len(taken) < sl and job_not_before(job) <= now:
                     taken.append(job)
                 else:
@@ -395,6 +465,47 @@ def count_handbacks() -> tuple[int, int]:
             worst = max(worst, count)
 
         return jobs_seen, worst
+
+
+def count_job_ages() -> tuple[float | None, int]:
+    """Age of the oldest live job, and how many live jobs have no build date -- #64.
+
+    `(None, n)` when nothing live carries a `created` stamp, which is what a cluster
+    restored from a pre-#64 snapshot looks like until its jobs turn over. The unknown
+    count is reported rather than hidden: "oldest: 3d" is a very different statement
+    when 4 of the 5 live jobs are undated, and an operator chasing a stale payload needs
+    to know the number is a floor, not a fact.
+
+    Scoped to jobs still in play -- `STEPS` plus `holds_v2` -- for the same reason
+    `count_handbacks` is: this runs on every status refresh, and the age of a job that
+    finished last week is history. Same single-pass shape and cost.
+    """
+    with lock:
+        live = itertools.chain(
+            (job
+             for priorities in STEPS.values()
+             for jobs in priorities.values()
+             for job in jobs),
+            (job
+             for client_holds in holds_v2.values()
+             for job in client_holds.values()),
+        )
+
+        now = time.time()
+        oldest: float | None = None
+        unknown = 0
+
+        for job in live:
+            age = buelon.core.step.job_age(job, now)
+
+            if age is None:
+                unknown += 1
+                continue
+
+            if oldest is None or age > oldest:
+                oldest = age
+
+        return oldest, unknown
 
 
 def count_staged_jobs() -> tuple[int, int]:
@@ -1126,6 +1237,7 @@ def display_text():
         staged_len, staged_uploads = count_staged_jobs()
         # Also a subset of `pending` + `holds`, not a state -- BUGS.md #50.
         handback_jobs, worst_handbacks = count_handbacks()
+        oldest_age, undated_jobs = count_job_ages()
 
     total = steps_len + holds_len + done_len + queue_len + error_len
     remaining = total - done_len
@@ -1158,7 +1270,16 @@ def display_text():
             # offender's count. Not part of `total` -- these are live jobs already
             # counted under `pending`/`holds`. Without it a job polling forever is
             # indistinguishable from one waiting its turn. BUGS.md #50.
-            f', handed back: {handback_jobs:,} (max {worst_handbacks:,})')
+            f', handed back: {handback_jobs:,} (max {worst_handbacks:,})'
+            # Age of the oldest job still in play. Not part of `total` -- it is a
+            # property of the jobs already counted above, not a bucket of its own.
+            # Here because nothing in this line used to distinguish a queue that
+            # turns over every hour from one holding a DAG built last year, which is
+            # what let a year-old snapshot go unnoticed until its payload came out
+            # the far end. `unknown` is a job with no `created` stamp -- a pre-#64
+            # snapshot, or an upload from an older client. BUGS.md #64.
+            f', oldest: {buelon.core.step.format_age(oldest_age)}'
+            + (f' ({undated_jobs:,} undated)' if undated_jobs else ''))
 
     return text
 
@@ -1215,11 +1336,28 @@ def temp_handle_step_args(step: buelon.core.step.Job):
                 # gone wrong (a snapshot with a hole in it, `bue run-job` on a blocked
                 # job, a result removed while a child could still be dispatched).
                 missing_from = 'done' if parent not in done else 'db'
-                affected = len(get_all_steps(step))
+                dag = get_all_steps(step)
+                affected = len(dag)
+                # The age of the DAG about to be restarted, added by #64. A reset
+                # re-runs jobs exactly as they were built, and a loop job's payload
+                # was frozen into its `code` at build time
+                # (`PipelineParser.job_for_loop`), so an old DAG does not just re-run
+                # late -- it re-injects the data it was built with. Without this the
+                # line above says a pipeline restarted but not that it restarted with
+                # a year-old payload, which is the whole of what went wrong in #64.
+                # Oldest, not newest: it is the floor on how stale this data can be.
+                now = time.time()
+                # `.values()`: `get_all_steps` returns an `{id: job}` dict, and the
+                # bare iteration would hand `job_age` a string id.
+                ages = [age for age in (buelon.core.step.job_age(job, now)
+                                        for job in dag.values())
+                        if age is not None]
+                oldest = max(ages) if ages else None
                 print(f'job {step.id} ({step.name}) reached dispatch but its parent '
                       f'{parent} is missing from `{missing_from}` -- resetting the '
                       f'whole DAG: {affected:,} job(s) go back to queued/pending and '
-                      f'the pipeline restarts from its roots')
+                      f'the pipeline restarts from its roots, re-running work built '
+                      f'{buelon.core.step.format_age(oldest)} ago')
                 handle_step(step, buelon.core.step.StepStatus.reset)
                 # has_none, tmp_ids = temp_get_all_ids(step)
                 # if has_none.get('has_none', False):
@@ -1311,6 +1449,25 @@ AUTO_SAVE_ENABLED, AUTO_LOAD_ENABLED = _parse_auto_save_mode(
 
 SNAPSHOT_NAME = 'snapshot'
 SNAPSHOT_VERSION = 1
+
+# Refuse a snapshot older than this many seconds. Off by default (`0`) -- BUGS.md #64.
+#
+# `version` and `saved_at` have been written into every snapshot since #15 and, until
+# #64, neither was ever read back. A hub restarted in a directory holding a year-old
+# `.auto_save/snapshot` adopted it in silence: same format, so nothing complained, and
+# the only trace was a job count in the startup line that nobody had a reason to
+# question. `.auto_save` is a *sibling* of the state directory, not inside it, so it
+# also survives anything done to `.boo/` -- see `migration.py`.
+#
+# Default off because a legitimately long-lived cluster's snapshot is legitimately old,
+# and refusing to load one would strand jobs rather than protect them. What is on by
+# default is the age being *printed* on every load, loudly past a week. Set this on a
+# cluster where a stale snapshot is always a mistake.
+SNAPSHOT_MAX_AGE: float = float(os.environ.get('BUELON_MAX_SNAPSHOT_AGE', 0.0))
+
+# Age past which a loaded snapshot is called out even when it is accepted. Not
+# configurable: it is the threshold for a warning, not for behaviour.
+SNAPSHOT_STALE_WARNING_AGE: float = 7 * 86400
 
 # Names of the pre-#15 per-dict files. Still read by `auto_load` so an existing
 # `.auto_save/` directory is not silently ignored; never written any more.
@@ -1439,18 +1596,39 @@ def _snapshot_orphans() -> list[buelon.core.step.Job]:
         return out
 
 
-def _restore_snapshot(payload: dict) -> None:
-    """Rebuild every state dict from `payload`. No `handle_step` replay -- see above."""
+def _restore_snapshot(payload: dict) -> int:
+    """Rebuild every state dict from `payload`. No `handle_step` replay -- see above.
+
+    Returns how many jobs had their `created` stamp backfilled from `saved_at`.
+    """
     jobs: dict[str, buelon.core.step.Job] = {}
+    # Every job in a snapshot written before #64 arrives with no build timestamp, which
+    # is precisely the population whose age an operator most needs. `saved_at` is a
+    # sound *lower bound* -- the snapshot cannot have been written before the jobs in it
+    # were built -- so an undated job is dated from it rather than left unknown. It
+    # under-states the age, never over-states it, which is the safe direction: a job is
+    # only ever expired by `MAX_JOB_AGE` for an age it has definitely reached.
+    saved_at = payload.get('saved_at') or 0.0
+    backfilled = 0
+
+    def restore_job(job_json: dict) -> buelon.core.step.Job:
+        nonlocal backfilled
+        job = buelon.core.step.Job().from_json(job_json)
+
+        if saved_at and not buelon.core.step.job_created(job):
+            job.created = saved_at
+            backfilled += 1
+
+        return job
 
     with lock:
         for status, job_json in payload.get('all_steps', []):
-            job = buelon.core.step.Job().from_json(job_json)
+            job = restore_job(job_json)
             jobs[job.id] = job
             ALL_STEPS[job.id] = [status, job]
 
         for job_json in payload.get('orphans', []):
-            job = buelon.core.step.Job().from_json(job_json)
+            job = restore_job(job_json)
             jobs.setdefault(job.id, job)
 
         for name, target in (('queued', queued), ('done', done), ('errors', errors)):
@@ -1469,6 +1647,8 @@ def _restore_snapshot(payload: dict) -> None:
                 upload_step(jobs[job_id])
 
         db.update(payload.get('db', {}))
+
+    return backfilled
 
 
 def _load_legacy_snapshot(directory: str) -> bool:
@@ -1566,20 +1746,103 @@ def _install_sigterm_shutdown():
     return restore
 
 
+def _quarantine_snapshot(path: str, reason: str) -> None:
+    """Move a rejected snapshot aside so the next start does not trip over it again.
+
+    Renamed, never deleted: a refused snapshot is still the only copy of that state, and
+    the operator may well decide the hub was wrong to refuse it -- point
+    `BUELON_AUTO_SAVE_PATH` at the saved copy, or rename it back. A failure to move it is
+    not fatal; the hub has already declined to load it, which is the part that matters.
+    """
+    target = f'{path}.rejected-{int(time.time())}'
+
+    try:
+        os.replace(path, target)
+        print(f'auto_load: {reason}; moved it to {target!r} and started with empty '
+              f'state. Rename it back, or point BUELON_AUTO_SAVE_PATH at it, to load '
+              f'it deliberately')
+    except OSError:
+        print(f'auto_load: {reason}; refused to load it (and could not move it aside). '
+              f'Starting with empty state')
+
+
+def _reject_snapshot_reason(payload: dict, age: float | None) -> str | None:
+    """Why this snapshot must not be loaded, or `None` to accept it -- BUGS.md #64.
+
+    Two gates, and they are deliberately different in kind:
+
+    * **Version.** Written since #15, never once read. A `version` this hub does not know
+      is a payload whose shape it cannot reason about, so it is refused outright rather
+      than half-restored -- there is no partial-credit reading of an unknown format. A
+      snapshot with no `version` key at all predates the field and is accepted, because
+      that is the format `SNAPSHOT_VERSION = 1` describes.
+    * **Age.** Opt-in (`SNAPSHOT_MAX_AGE`, default off), because an old snapshot is not
+      malformed -- it is just old, and on a slow cluster that is normal. A default
+      cut-off here would throw away live state.
+    """
+    version = payload.get('version', SNAPSHOT_VERSION)
+
+    if version != SNAPSHOT_VERSION:
+        return (f'snapshot is version {version!r}, but this buelon writes and reads '
+                f'version {SNAPSHOT_VERSION!r}')
+
+    if SNAPSHOT_MAX_AGE > 0 and age is not None and age > SNAPSHOT_MAX_AGE:
+        return (f'snapshot was written {buelon.core.step.format_age(age)} ago, over the '
+                f'{buelon.core.step.format_age(SNAPSHOT_MAX_AGE)} '
+                f'BUELON_MAX_SNAPSHOT_AGE')
+
+    return None
+
+
+def _snapshot_age(payload: dict, path: str) -> float | None:
+    """How long ago this snapshot was written, or `None` if it cannot be told.
+
+    `saved_at` is authoritative; the file's mtime is the fallback for a snapshot written
+    before that key existed. mtime is only a fallback because it tracks the last *write*
+    to the file rather than the state in it -- close enough for a warning, which is all
+    it is ever used for on that path.
+    """
+    saved_at = payload.get('saved_at')
+
+    if isinstance(saved_at, (int, float)) and not isinstance(saved_at, bool) and saved_at > 0:
+        return max(0.0, time.time() - float(saved_at))
+
+    try:
+        return max(0.0, time.time() - os.path.getmtime(path))
+    except OSError:
+        return None
+
+
 def auto_load():
     """Restore hub state written by `auto_save`. A missing or unreadable snapshot is
     not fatal -- the hub starts empty, which is what it did before #15.
 
-    `BUELON_AUTO_SAVE=false` disables restoring as well as writing (BUGS.md #48)."""
+    `BUELON_AUTO_SAVE=false` disables restoring as well as writing (BUGS.md #48).
+
+    Since #64 the snapshot's own `version` and `saved_at` are checked before any of it
+    is believed, and its age is always printed. A hub that silently adopts a year-old
+    snapshot is indistinguishable from one starting clean, and that is how a DAG built a
+    year earlier walked back into a live pipeline carrying a year-old payload."""
     if not AUTO_LOAD_ENABLED:
         return
 
     path = snapshot_path()
+    age: float | None = None
+    backfilled = 0
+
     try:
         if os.path.exists(path):
             with open(path, 'rb') as f:
                 payload = orjson.loads(f.read())
-            _restore_snapshot(payload)
+
+            age = _snapshot_age(payload, path)
+            reason = _reject_snapshot_reason(payload, age)
+
+            if reason:
+                _quarantine_snapshot(path, reason)
+                return
+
+            backfilled = _restore_snapshot(payload)
         elif not _load_legacy_snapshot(AUTO_SAVE_PATH):
             return
     except Exception:
@@ -1592,6 +1855,23 @@ def auto_load():
         print(f'auto_load: restored {len(ALL_STEPS):,} job(s) -- {n_steps:,} queued for '
               f'dispatch, {len(queued):,} waiting on a parent, {len(done):,} done, '
               f'{len(errors):,} errored, {len(db):,} result(s)')
+
+    # Second line rather than more fields on the first: this is the one an operator has
+    # to actually read, and burying "written 412d ago" at the end of a counts line is
+    # how it goes unread. Printed on every load, not only the stale ones -- a number
+    # that only appears when something is wrong is a number nobody learns to expect.
+    written = (f'written {buelon.core.step.format_age(age)} ago'
+               if age is not None else 'written at an unknown time')
+    detail = (f' -- {backfilled:,} job(s) had no build date and were dated from the '
+              f'snapshot, so their reported age is a lower bound' if backfilled else '')
+
+    if age is not None and age > SNAPSHOT_STALE_WARNING_AGE:
+        print(f'auto_load: WARNING -- this snapshot was {written}. Every job in it '
+              f're-enters the pipeline carrying the payload it was built with; a loop '
+              f'job re-runs its frozen arguments. Check `bue status` before letting '
+              f'workers connect{detail}')
+    else:
+        print(f'auto_load: snapshot {written}{detail}')
 
 
 # endregion

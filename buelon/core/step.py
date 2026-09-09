@@ -7,6 +7,7 @@ their results, and associated utilities in a pipeline structure.
 from __future__ import annotations
 import enum
 import os
+import time
 import asyncio
 import inspect
 from typing import Any, Container, Iterable, List
@@ -224,6 +225,71 @@ def job_int_field(job: 'Job', field: str, default: int = 0) -> int:
     return coerced
 
 
+def job_created(job: 'Job') -> float:
+    """The job's build timestamp, or `0.0` when it does not have a usable one.
+
+    Read-only, unlike `job_int_field`: a job whose `created` is missing or junk is a job
+    whose age is genuinely unknown, and writing a fresh timestamp into it would turn
+    "I do not know how old this is" into "it is new". Junk is possible for the same
+    reason it is for `priority` -- the hub takes jobs from clients it does not control
+    (BUGS.md #42) -- so a non-number is treated as unknown rather than raising on the
+    subtraction in `job_age`.
+    """
+    value = getattr(job, 'created', 0.0)
+
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0.0
+
+    return float(value) if value > 0 else 0.0
+
+
+def job_age(job: 'Job', now: float | None = None) -> float | None:
+    """Seconds since the job was built, or `None` if it has no build timestamp.
+
+    `None` rather than `0.0`, so a caller cannot accidentally sort or compare an unknown
+    age as though it were the youngest job on the cluster. Pass `now` to age a batch of
+    jobs against one clock reading, the way `get_steps_v2` does for `not_before`.
+
+    Clamped at zero: a job built on a machine whose clock is ahead of the hub's would
+    otherwise report a negative age, and "this job is from the future" helps nobody.
+    """
+    created = job_created(job)
+
+    if not created:
+        return None
+
+    return max(0.0, (time.time() if now is None else now) - created)
+
+
+def format_age(seconds: float | None) -> str:
+    """`93600` -> `'1d2h'`; `None` -> `'unknown'`. For log lines and `bue status`.
+
+    Two units at most, largest first, because this goes in the middle of a sentence and
+    a full breakdown reads worse than the rounding costs. Companion to `format_bytes` in
+    `hub.py`, which lives there because nothing in `core` prints bytes.
+    """
+    if seconds is None:
+        return 'unknown'
+
+    seconds = max(0.0, float(seconds))
+
+    if seconds < 1:
+        return '0s'
+
+    units = (('d', 86400), ('h', 3600), ('m', 60), ('s', 1))
+    parts = []
+
+    for label, size in units:
+        if seconds >= size:
+            count, seconds = divmod(int(seconds), size)
+            parts.append(f'{count}{label}')
+
+            if len(parts) == 2:
+                break
+
+    return ''.join(parts)
+
+
 class Step(pipe_util.PipeObject):
     """Represents a step in the execution pipeline.
 
@@ -282,6 +348,20 @@ class Step(pipe_util.PipeObject):
     # idea how many attempts it needs. Set `!max_handbacks N` on a job that should give
     # up rather than spin forever. BUGS.md #50.
     max_handbacks: int = 0
+    # Wall-clock time the job was *built*, set once by
+    # `PipelineParser.job_from_definition` and never touched again -- BUGS.md #64.
+    #
+    # `0.0` means "unknown", not "just now", and the difference matters: every job in a
+    # snapshot written before this field existed arrives without it, and stamping those
+    # with the load time would erase exactly the age an operator needs to see. Read it
+    # through `job_created` / `job_age`, which keep the unknown case a `None` rather
+    # than a plausible-looking zero-second age.
+    #
+    # Deliberately not reset by a retry, a `pending` hand-back or a `reset`: those all
+    # re-run *this* job, and its payload is as old as the day it was built. That is the
+    # whole point -- a `reset` can put a year-old DAG back on the dispatch queue, and
+    # #56's log line can only say so if the job remembers when it was made.
+    created: float = 0.0
 
     parents: list[str] = None
     children: List[str] = None

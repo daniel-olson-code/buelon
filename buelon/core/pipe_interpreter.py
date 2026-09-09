@@ -879,6 +879,12 @@ class PipelineParser:
         # `max_handbacks` key in its args, and 0 (unlimited) is the old behaviour.
         job.max_handbacks = definition['args'].get('max_handbacks', 0)
         job.kwargs = definition['args']
+        # The one place a job's age is established -- BUGS.md #64. Build time, not
+        # upload time: a `.bue` built by `bue submit` and uploaded days later, or a
+        # loop job whose payload was frozen into its `code` here (see
+        # `job_for_loop`), is as old as the data baked into it, not as old as the
+        # connection that delivered it.
+        job.created = time.time()
         return job
 
     def prepare(self, content: str):
