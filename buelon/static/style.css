@@ -36,7 +36,8 @@
      --term-bg  --term-bar  --term-fg  --term-dim  --term-border
      --term-error / -warn / -ok / -meta   (log line tones)
    COLOR — misc
-     --gradient  (brand wordmark only)   --eye-white / --eye-pupil (loader)
+     --wordmark  (the "Buelon" wordmark)  --gradient (clickable card top rule)
+     --eye-white / --eye-pupil (loader)
      --brand-ring / --brand-ring-inner   the two hairlines framing the logo
                           photograph (#18): outer sits it on the header, inner
                           gives the crop a defined edge.
@@ -161,6 +162,10 @@
     --syntax-meta: #be185d;
 
     --gradient: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
+    /* The wordmark is the cow's own colouring: a Holstein is black and white,
+       so ink here and near-white in dark. The purple gradient it used to wear
+       belonged to no part of the brand photograph. */
+    --wordmark: #101826;
     --eye-white: #ffffff;
     --eye-pupil: #10151d;
 
@@ -296,6 +301,8 @@
     --syntax-meta: #f79ac0;
 
     --gradient: linear-gradient(135deg, #8b8cf7 0%, #c084fc 100%);
+    /* Not pure #fff: a full-white wordmark glares against a dark header. */
+    --wordmark: #f2f5f9;
     --eye-pupil: #05080c;
 
     /* Dark: the outer ring lightens instead of darkening (a dark ring on a dark
@@ -449,10 +456,7 @@ header {
     font-size: var(--fs-600);
     font-weight: var(--fw-bold);
     letter-spacing: -0.01em;
-    background: var(--gradient);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    background-clip: text;
+    color: var(--wordmark);
 }
 
 .nav-controls {

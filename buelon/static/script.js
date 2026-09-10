@@ -2210,6 +2210,31 @@ function historyValue(sample, key) {
     return Number.isFinite(n) ? n : null;
 }
 
+// The reading that comes AFTER a sample is the reference its delta uses.
+// Stepping back from live, that is the figure the operator just left -- with
+// the older neighbour instead, the first thing they see is a change measured
+// against a sample they never looked at, which reads as wrong even when the
+// arithmetic is right.
+//
+// For the newest recorded sample the newer reading is the LIVE one. That is the
+// one place this feature touches live data on purpose: it is a labelled
+// reference point, never a figure shown as if it were historical.
+function liveSampleRef() {
+    if (!currentData || !currentData.counts || lastSuccess === null) return null;
+    return {ts: lastSuccess / 1000, counts: currentData.counts, live: true};
+}
+
+// The sample one step newer than `index`, or the live reading past the end.
+function historyNextRef(index) {
+    return historySamples[index + 1] || liveSampleRef();
+}
+
+// "by 09:43 AM" / "by the live reading" -- what a delta is measured to.
+function refClock(ref) {
+    if (!ref) return '';
+    return ref.live ? 'the live reading' : historyClock(ref.ts);
+}
+
 // --- Moving through the series ----------------------------------------------
 function gotoHistory(index) {
     if (index === null || index === undefined) return exitHistory();
@@ -2333,6 +2358,10 @@ function paintHistoryClock() {
         'auto-refresh paused',
     ];
     if (gap) parts.unshift('the server was unavailable');
+    // Name the reference the deltas are measured to. Without it the only way
+    // to learn what a "-552" is against was to hover it.
+    const next = historyNextRef(historyIndex);
+    if (!gap && next && next.counts) parts.splice(1, 0, `changes to ${refClock(next)}`);
     const metaText = parts.join('  ·  ');
     if (meta.textContent !== metaText) meta.textContent = metaText;
 
@@ -2362,7 +2391,7 @@ function renderHistoryView() {
     paintHistoryClock();
 
     const container = document.getElementById('ledger');
-    const prev = historySample(historyIndex - 1);
+    const next = historyNextRef(historyIndex);
 
     if (!sample.counts) {
         // A failed sample. There are no numbers to show and inventing a zero
@@ -2388,7 +2417,7 @@ function renderHistoryView() {
         renderLedger(sample.counts, {flash: false});
         // The trend as it stood THEN: the window ends at this sample.
         paintLedgerTrends(container, historyIndex);
-        paintLedgerDeltas(container, sample, prev);
+        paintLedgerDeltas(container, sample, next);
     }
 
     renderHistoryErrors(sample);
@@ -2402,10 +2431,15 @@ function renderHistoryView() {
 
 // The delta is the insight; the absolute number is context. Written into the
 // slot `ledgerRow` always leaves, so nothing shifts when it arrives.
-function paintLedgerDeltas(container, sample, prev) {
+//
+// `next` is the reading one step NEWER than `sample` (the live one at the end
+// of the series), and the delta is `next - sample`: what happened after this
+// point, signed so up is still up. Measuring the other way round would invert
+// every changeTone() verdict -- errors falling would paint as trouble.
+function paintLedgerDeltas(container, sample, next) {
     if (!container) return;
     const cur = sample && sample.counts;
-    const before = prev && prev.counts;
+    const after = next && next.counts;
     container.querySelectorAll('[data-delta-key]').forEach(slot => {
         const key = slot.dataset.deltaKey;
         slot.textContent = '';
@@ -2415,25 +2449,25 @@ function paintLedgerDeltas(container, sample, prev) {
         slot.removeAttribute('role');
         if (!cur) return;
 
-        if (!before) {
-            // Either the oldest sample we hold, or the one after a gap. Say
+        if (!after) {
+            // Either the newest reading we hold, or the one before a gap. Say
             // which -- a blank cell looks like "no change".
             slot.classList.add('is-none');
-            slot.textContent = prev ? 'after gap' : 'first';
-            slot.dataset.tip = prev
-                ? 'The previous sample is a gap, so there is nothing to compare against.'
-                : 'The oldest sample in the record: nothing before it to compare against.';
+            slot.textContent = next ? 'before gap' : 'latest';
+            slot.dataset.tip = next
+                ? 'The next sample is a gap, so there is nothing to compare against.'
+                : 'The newest reading in the record: nothing after it to compare against yet.';
             return;
         }
 
-        const delta = (Number(cur[key]) || 0) - (Number(before[key]) || 0);
+        const delta = (Number(after[key]) || 0) - (Number(cur[key]) || 0);
         if (!delta) return;
         const tone = changeTone(key, delta);
         slot.classList.add(tone > 0 ? 'is-good' : tone < 0 ? 'is-bad' : 'is-flat');
         slot.textContent = signed(delta);
         const label = (METRIC_BY_KEY[key] && METRIC_BY_KEY[key].label) || key;
         const sentence = `${label} ${delta > 0 ? 'up' : 'down'} ${num(Math.abs(delta))}`
-            + ` since ${historyClock(prev.ts)}`;
+            + ` to ${num(Number(after[key]) || 0)} by ${refClock(next)}`;
         slot.dataset.tip = sentence;
         slot.setAttribute('role', 'img');
         slot.setAttribute('aria-label', sentence);
@@ -2539,9 +2573,12 @@ function historyTint(delta, max) {
 function historyMaxChange() {
     const max = {};
     HISTORY_COLUMNS.forEach(col => { max[col.key] = 0; });
-    for (let i = 1; i < historySamples.length; i++) {
-        const cur = historySamples[i];
-        const prev = historySamples[i - 1];
+    // Adjacent pairs, plus the newest-to-live pair, because that pair is now
+    // shown as a delta too and a tint scale has to know about it.
+    const series = historySamples.concat(liveSampleRef() ? [liveSampleRef()] : []);
+    for (let i = 1; i < series.length; i++) {
+        const cur = series[i];
+        const prev = series[i - 1];
         if (!cur.counts || !prev.counts) continue;
         HISTORY_COLUMNS.forEach(col => {
             const a = historyValue(cur, col.key);
@@ -2553,13 +2590,16 @@ function historyMaxChange() {
     return max;
 }
 
-function historyCell(sample, prev, col, max) {
+// `next` is the reading one step newer -- the row ABOVE this one, since the
+// table is newest-first -- so a cell's delta is what changed after it, the same
+// convention the ledger's time travel uses.
+function historyCell(sample, next, col, max) {
     const value = historyValue(sample, col.key);
     if (value === null) {
         return `<td class="hist-cell is-blank">—</td>`;
     }
-    const before = prev ? historyValue(prev, col.key) : null;
-    const delta = before === null ? 0 : value - before;
+    const after = next ? historyValue(next, col.key) : null;
+    const delta = after === null ? 0 : after - value;
     const tone = changeTone(col.key, delta);
     // Only columns where a direction MEANS something get a tint. Total and
     // Holds moving is not news -- a grey wash down those columns reads as
@@ -2569,7 +2609,8 @@ function historyCell(sample, prev, col, max) {
     if (delta) cls.push(tone > 0 ? 'is-good' : tone < 0 ? 'is-bad' : 'is-flat');
     const tip = delta
         ? ` data-tip="${attr(`${col.label} ${delta > 0 ? 'up' : 'down'} `
-            + `${num(Math.abs(delta))} from ${num(before)} — ${historyStamp(sample.ts)}`)}"`
+            + `${num(Math.abs(delta))} to ${num(after)} by ${refClock(next)}`
+            + ` — sampled ${historyStamp(sample.ts)}`)}"`
         : '';
     return `<td class="${cls.join(' ')}" style="--tint:${tint.toFixed(3)}"${tip}>
         <span class="hist-value">${num(value)}</span>
@@ -2579,7 +2620,7 @@ function historyCell(sample, prev, col, max) {
 
 function historyRow(index, max) {
     const sample = historySamples[index];
-    const prev = historySamples[index - 1] || null;
+    const next = historyNextRef(index);
     const current = inHistory() && historyIndex === index;
     // The row is clickable for the mouse; the time cell is a real button so it
     // is one tab stop with a real accessible name, rather than a div pretending.
@@ -2607,7 +2648,7 @@ function historyRow(index, max) {
     return `<tr class="hist-row${current ? ' is-current' : ''}"
                 data-action="history-goto" data-index="${attr(index)}">
         ${head}
-        ${HISTORY_COLUMNS.map(col => historyCell(sample, prev, col, max)).join('')}
+        ${HISTORY_COLUMNS.map(col => historyCell(sample, next, col, max)).join('')}
     </tr>`;
 }
 
@@ -2626,7 +2667,9 @@ function historyTable() {
              aria-label="Recorded status samples, newest first">
             <table class="hist-table">
                 <caption class="sr-only">Recorded status samples, newest first.
-                    Cells are tinted by how much the figure moved from the sample below.</caption>
+                    Each cell carries what changed after it was recorded, measured to
+                    the row above -- the newest row to the live reading -- and is tinted
+                    by the size of that change.</caption>
                 <thead>
                     <tr>
                         <th scope="col">Time</th>
@@ -2961,8 +3004,9 @@ function ledgerRow(row) {
                  arrive 30s in without moving a figure (#18). -->
             <span class="ledger-spark"${row.spark ? ` data-spark="${attr(row.key)}"` : ''}></span>
             <!-- Empty in live mode, and empty costs no layout. #20 fills it
-                 with the change from the previous sample while time
-                 travelling, which is the actual insight up there. -->
+                 while time travelling with the change measured to the NEXT
+                 reading (live, at the end of the series) -- what happened
+                 after this sample, which is the actual insight up there. -->
             <span class="ledger-delta" data-delta-key="${attr(row.key)}"></span>
             <span class="ledger-num" data-num-key="${attr(row.key)}" data-label="${attr(row.label)}"
                   data-value="${attr(value)}">${num(value)}</span>
