@@ -11,6 +11,14 @@ from buelon.settings import DIR_PATH
 TEMP_FILE_DIR = os.path.join(DIR_PATH, 'persist_queues')
 
 
+class QueueCursorError(Exception):
+    """The `.pos` cursor is missing or unparseable for a queue that has data.
+
+    Raised instead of silently resuming from position 0, which would re-consume every
+    already-consumed item.
+    """
+
+
 def _ensure_dir(folder: str) -> None:
     """Create a queue's folder on first use rather than at import -- see
     `created_cache._ensure_dir`: a bare `import buelon` must not create state dirs.
@@ -20,7 +28,26 @@ def _ensure_dir(folder: str) -> None:
 
 
 class JsonlPersistentQueue:
-    def __init__(self, path=None, max_size=1000, temp_dir=None, delete_on_close=None):
+    """A queue backed by a JSONL file plus a sibling `.pos` cursor file.
+
+    Durability contract:
+
+    - State lives in two files that must be moved, copied or removed *together*:
+      `<path>` holds the items, `<path>.pos` holds how far into it we have read.
+      Losing the `.pos` alone means replaying consumed items, so it is an error
+      (`QueueCursorError`), not a silent rewind.
+    - By default that pair goes under `<DIR_PATH>/persist_queues`, never the OS temp
+      dir: the state is meant to outlive the handle, and `/tmp` is the one directory
+      the OS reclaims out from under a running process. Pass `path` to place it on a
+      specific volume.
+    - The cursor is authoritative *in memory* for a live object and flushed to disk on
+      every mutation, so one path belongs to one live object at a time. A second
+      object on the same path resumes from the last flush; two concurrent objects on
+      one path will diverge.
+    """
+
+    def __init__(self, path=None, max_size=1000, temp_dir=None, delete_on_close=None,
+                 flush_every=1):
         """
         Args:
             path: file to back the queue. When omitted, a file is created inside
@@ -30,11 +57,21 @@ class JsonlPersistentQueue:
             delete_on_close: whether `close()`/`__exit__`/garbage collection removes
                 the files. Defaults to True for a generated file and False for a
                 caller-supplied `path` -- a named path is the caller's to keep.
+            flush_every: how many mutations to buffer before writing the cursor to
+                disk. 1 (the default) flushes every put/get, so a hard kill loses
+                nothing. N > 1 trades durability for throughput: the cursor write is
+                the dominant per-item cost, but a process killed between flushes
+                resumes up to N-1 items early and re-consumes them. `close()` always
+                flushes, so only an unclean exit can replay. Use it for a queue that
+                is filled and drained inside one process (where a crash discards the
+                whole queue anyway), not for one meant to survive a restart.
         """
         # A generated file has no owner but this object, so it is ours to delete.
         self._owns_file = not path
         self.delete_on_close = self._owns_file if delete_on_close is None else delete_on_close
         self.temp_dir = temp_dir or TEMP_FILE_DIR
+        self.flush_every = max(1, int(flush_every))
+        self._unflushed = 0
 
         if not path:
             _ensure_dir(self.temp_dir)
@@ -48,24 +85,95 @@ class JsonlPersistentQueue:
 
         _ensure_dir(os.path.dirname(path))
 
-        # Create or load position and size
-        if not os.path.exists(self._position_file):
-            self._write_state({"position": 0, "size": 0})
+        # The cursor is read off disk exactly once, here, and kept in memory after
+        # that. Re-reading it per operation was both two file opens per put/get and
+        # the mechanism of the silent-rewind bug: a `.pos` that vanished or was
+        # half-written mid-run degraded to position 0 on the very next call.
+        self._state = self._load_state()
 
         if not os.path.exists(path):
             with open(path, 'w') as f:
                 f.write('')
 
-    def _write_state(self, state):
-        with open(self._position_file, 'w') as f:
-            json.dump(state, f)
+    def _load_state(self):
+        """Load the cursor at construction, refusing to guess when it is unusable.
 
-    def _read_state(self):
+        Only one case legitimately starts at zero: no data file, so nothing can have
+        been consumed yet. A missing or corrupt cursor next to a *non-empty* data file
+        means the cursor was lost, and starting over would re-consume every item that
+        was already handled -- silently, which is worse than crashing.
+        """
         try:
             with open(self._position_file, 'r') as f:
-                return json.load(f)
-        except (FileNotFoundError, ValueError):
-            return {"position": 0, "size": 0}
+                state = json.load(f)
+        except FileNotFoundError:
+            state = None
+        except ValueError as e:
+            raise QueueCursorError(
+                f'{self._position_file} is not valid JSON ({e}); the cursor for '
+                f'{self.path} was lost or half-written. Resuming would re-consume '
+                f'already-consumed items. Remove both files to start the queue over.'
+            ) from e
+
+        if state is not None and not (isinstance(state, dict) and 'position' in state):
+            raise QueueCursorError(
+                f'{self._position_file} does not hold a cursor (got {state!r}); '
+                f'refusing to rewind {self.path} to position 0.'
+            )
+
+        if state is None:
+            try:
+                has_data = os.path.getsize(self.path) > 0
+            except OSError:
+                has_data = False
+
+            if has_data:
+                raise QueueCursorError(
+                    f'{self._position_file} is missing but {self.path} has data. The '
+                    f'cursor was deleted or never moved with its data file; resuming '
+                    f'would re-consume already-consumed items. Remove both files to '
+                    f'start the queue over.'
+                )
+
+            state = {"position": 0, "size": 0}
+            self._write_state(state, force=True)
+
+        state.setdefault('size', 0)
+        return state
+
+    def _write_state(self, state, force=False):
+        self._state = state
+
+        # `flush_every > 1` buffers the cursor in memory; the in-memory copy is
+        # authoritative for this object either way, so skipping the write only ever
+        # costs an unclean exit some replay (see `flush_every` in `__init__`).
+        if not force and self.flush_every > 1:
+            self._unflushed += 1
+            if self._unflushed < self.flush_every:
+                return
+        self._unflushed = 0
+
+        # Truncate-in-place left a half-written cursor on disk if the process died
+        # mid-write, and `_load_state` now refuses to guess at one. Write a sibling
+        # and rename instead: `os.replace` is atomic on POSIX, so what is on disk is
+        # always either the whole old cursor or the whole new one.
+        tmp_path = self._position_file + '.tmp'
+        try:
+            with open(tmp_path, 'w') as f:
+                json.dump(state, f)
+            os.replace(tmp_path, self._position_file)
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+
+    def _read_state(self):
+        # In memory, not a file read -- see `_load_state`. Callers mutate the dict they
+        # get back and hand it to `_write_state`, so this returns the live object
+        # rather than a copy.
+        return self._state
 
     def append_line(self, line: str):
         state = self._read_state()
@@ -134,7 +242,7 @@ class JsonlPersistentQueue:
             return json.loads(item)
 
     def delete_file(self):
-        for file_path in (self.path, self._position_file):
+        for file_path in (self.path, self._position_file, self._position_file + '.tmp'):
             try:
                 os.remove(file_path)
             except (OSError, TypeError):
@@ -145,9 +253,15 @@ class JsonlPersistentQueue:
         """Release the queue's files if it owns them. Idempotent."""
         if self._closed:
             return
-        self._closed = True
         if self.delete_on_close:
+            self._closed = True
             self.delete_file()
+            return
+        # Files we are keeping must land with an accurate cursor, or the next object
+        # on this path replays whatever `flush_every` was still holding.
+        if self._unflushed:
+            self._write_state(self._state, force=True)
+        self._closed = True
 
     def __enter__(self):
         return self

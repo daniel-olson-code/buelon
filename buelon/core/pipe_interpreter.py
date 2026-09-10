@@ -248,11 +248,13 @@ def remove_temp_siblings(path: str) -> None:
     `NamedTemporaryFile` unlinks exactly the name it made, but two things here
     write next to that name: sqlite in WAL mode leaves a `-wal` / `-shm` pair,
     which it only cleans up on a clean `close()` of the last connection, and
-    `JsonlPersistentQueue` keeps its cursor in a `.pos` alongside the `.jsonl`.
+    `JsonlPersistentQueue` keeps its cursor in a `.pos` alongside the `.jsonl`
+    (plus a `.pos.tmp` if it died mid-write -- the cursor write renames a sibling
+    into place so a crash cannot leave a half-written cursor).
     Both are per-run random names nothing ever reads again, so left behind they
     are pure accumulation in the state directory (BUGS.md #60).
     """
-    for suffix in ('.pos', '-shm', '-wal', '-journal'):
+    for suffix in ('.pos', '.pos.tmp', '-shm', '-wal', '-journal'):
         try:
             os.unlink(path + suffix)
         except OSError:
