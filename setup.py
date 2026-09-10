@@ -70,11 +70,11 @@ setup(
     packages=find_packages(),
     package_data={
         # Dotted package names, not paths -- setuptools silently ignores a key
-        # that is not an installed package. `bue example` copies example.bue out
+        # that is not an installed package. `bue example` copies example.boo out
         # of the installed package directory, so a wheel that omits it breaks the
         # command outright (BUGS.md #41).
         'buelon.examples': [
-            "example.bue",
+            "example.boo",
         ],
         'buelon.static': [
             "*",

@@ -108,7 +108,7 @@ def setup():
     # import would leave them an unused one.
     import buelon.settings
 
-    pipe_path = os.path.join(os.getcwd(), 'example.bue')
+    pipe_path = os.path.join(os.getcwd(), 'example.boo')
     example_py_path = os.path.join(os.getcwd(), 'example.py')
     demo_py_path = os.path.join(os.getcwd(), 'demo.py')
 
@@ -144,7 +144,7 @@ def setup():
 # remove end
 
 def main():
-    pipe_path = os.path.join(os.getcwd(), 'example.bue')
+    pipe_path = os.path.join(os.getcwd(), 'example.boo')
 
     try:
         db = buelon.helpers.sqlite3_helper.Sqlite3('test.db')

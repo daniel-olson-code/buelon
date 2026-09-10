@@ -1,6 +1,6 @@
 """End-to-end demo of buelon.
 
-Starts a hub and three workers, uploads `example.bue`, waits for the pipeline to
+Starts a hub and three workers, uploads `example.boo`, waits for the pipeline to
 drain, prints what every job ended up as, then shuts everything down.
 
 Run it with `bue demo`, or -- after `bue example` has dropped the files into the
@@ -18,9 +18,9 @@ from buelon.worker import run_worker
 from buelon.hub import run_server as run_hub
 
 
-PIPELINE_FILE = 'example.bue'
+PIPELINE_FILE = 'example.boo'
 
-# `example.bue`'s python jobs name `example.py` as their code, and a job's file is
+# `example.boo`'s python jobs name `example.py` as their code, and a job's file is
 # opened by the *worker*, relative to its cwd. So both files have to sit in the
 # directory the demo runs from.
 REQUIRED_FILES = [PIPELINE_FILE, 'example.py']
@@ -70,7 +70,7 @@ def example_source_dir() -> str:
 
 
 def copy_example_files() -> None:
-    """Put `example.bue` and `example.py` in the cwd if they are not there already.
+    """Put `example.boo` and `example.py` in the cwd if they are not there already.
 
     Existing files are never overwritten -- the point of `bue example` is that you
     can edit them and run the demo against your edits.
@@ -169,7 +169,7 @@ def report(jobs: list, statuses: dict) -> int:
 def main() -> int:
     """Runs the demo pipeline system.
 
-    Starts a hub and `NUMBER_OF_WORKERS` workers, uploads `example.bue`, waits for
+    Starts a hub and `NUMBER_OF_WORKERS` workers, uploads `example.boo`, waits for
     the resulting jobs to finish and prints their statuses. Always tears the
     processes back down.
 
@@ -198,7 +198,7 @@ def main() -> int:
         print(f'started {len(worker_processes)} workers')
 
         # Building the job graph runs the `for` loop's source pipe locally, so this
-        # is also the first thing that would tell us `example.bue` no longer parses.
+        # is also the first thing that would tell us `example.boo` no longer parses.
         jobs = buelon.hub.upload_file_to_server(PIPELINE_FILE, return_jobs=True)
         print(f'uploaded {PIPELINE_FILE}: built {len(jobs)} jobs')
 
