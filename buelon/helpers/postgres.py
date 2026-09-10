@@ -217,14 +217,27 @@ class Postgres:
 
     @contextlib.contextmanager
     def psycopg2_pool_connection(self):
-        with psycopg2.connect(
+        """Yield a connection whose lifetime ends with the `with` block.
+
+        Despite the name this is not a pool -- it opens a fresh connection per
+        call. psycopg2's own connection context manager wraps the *transaction*
+        (its `__exit__` commits or rolls back), not the connection, so without
+        the outer `finally` here every caller leaked a socket until GC. Anything
+        that must outlive the block -- `download_table(stream=True)`'s generator
+        -- has to own its own connection instead of borrowing this one.
+        """
+        conn = psycopg2.connect(
                 host=self.host,
                 port=self.port,
                 user=self.user,
                 password=self.password,
                 database=self.database
-        ) as conn:
-            yield conn
+        )
+        try:
+            with conn:
+                yield conn
+        finally:
+            conn.close()
 
     async def async_connect(self):
         return await asyncpg.connect(
@@ -358,18 +371,7 @@ class Postgres:
         """
         query = (sql or f'select {columns} from {table_name} {suffix};')
 
-        # with psycopg2.connect(
-        #     host=self.host,
-        #     port=self.port,
-        #     user=self.user,
-        #     password=self.password,
-        #     database=self.database
-        # ) as conn:
-        with self.psycopg2_pool_connection() as conn:
-            cur = conn.cursor()
-
-            cur.execute(query)
-
+        def make_row_converter(cur):
             column_names = tuple(col[0] for col in cur.description)
 
             if callable(row_transform):
@@ -379,36 +381,67 @@ class Postgres:
                 def convert_row_to_dict(row):
                     return dict(zip(column_names, self.check_values(row)))
 
-            if not stream and callback is None and not queue:
+            return convert_row_to_dict
+
+        # Connection ownership differs per mode and has to be explicit. `stream`
+        # hands the generator back to the caller, who consumes it after this
+        # method returns, so the generator owns the connection. Every other mode
+        # is fully consumed here, so the `with` block owns it (BUGS.md #66: one
+        # shared `gen()` closed the connection, and psycopg2's context manager
+        # then tried to commit it, raising `InterfaceError: connection already
+        # closed` out of the `with` exit on the queue and callback paths).
+        if stream:
+            conn = self.connect()
+            try:
+                cur = conn.cursor()
+                cur.execute(query)
+                convert_row_to_dict = make_row_converter(cur)
+            except BaseException:
+                conn.close()
+                raise
+
+            def gen():
+                try:
+                    for row in cur:
+                        yield convert_row_to_dict(row)
+                    conn.commit()
+                finally:
+                    conn.close()
+
+            return gen()
+
+        if queue:
+            # The queue is created before the connection so that *any* failure --
+            # including one raised by the `with` exit itself -- unlinks the temp
+            # file instead of leaking it.
+            q = buelon.helpers.persistqueue.JsonlPersistentQueue()
+            try:
+                with self.psycopg2_pool_connection() as conn:
+                    cur = conn.cursor()
+                    cur.execute(query)
+                    convert_row_to_dict = make_row_converter(cur)
+
+                    for row in cur:
+                        q.put(convert_row_to_dict(row))
+            except BaseException:
+                q.delete_file()
+                raise
+
+            return q
+
+        with self.psycopg2_pool_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(query)
+            convert_row_to_dict = make_row_converter(cur)
+
+            if callback is None:
                 return [convert_row_to_dict(row) for row in cur.fetchall()]
-            else:
-                def gen():
-                    try:
-                        for row in cur:
-                            yield convert_row_to_dict(row)
-                    finally:
-                        conn.close()
 
-                if queue:
-                    q = buelon.helpers.persistqueue.JsonlPersistentQueue()
+            if not callable(callback):
+                raise ValueError('batch must be callable')
 
-                    try:
-                        for row in gen():
-                            q.put(row)
-                    except:
-                        q.delete_file()
-                        raise
-
-                    return q
-
-                if stream:
-                    return gen()
-
-                if not callable(callback):
-                    raise ValueError('batch must be callable')
-
-                for row in gen():
-                    callback(row)
+            for row in cur:
+                callback(convert_row_to_dict(row))
 
     @classmethod
     def datetime_to_string(cls, dt: datetime.datetime) -> str:
