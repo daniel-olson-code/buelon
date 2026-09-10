@@ -1196,7 +1196,11 @@ main {
     margin-bottom: var(--sp-8);
 }
 
-.section:last-child {
+/* The errors section sits last and is hidden whenever there are no errors, so
+   the section above it becomes the visual last child and must not keep a
+   trailing margin. */
+.section:last-child,
+.section:has(+ .section[hidden]) {
     margin-bottom: 0;
 }
 
