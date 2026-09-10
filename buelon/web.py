@@ -14,10 +14,48 @@ from pydantic import BaseModel
 
 import buelon
 from buelon.hub import BiWorkerClient, settings, compressed_message_to_steps
+from buelon.web_history import ALLOWED_INTERVALS, HistoryStore
 
 app = FastAPI()
 worker_client: BiWorkerClient | None = None
 settings.worker.info['name'] = f"Web App ({settings.worker.info.get('name', 'Unknown')})"
+
+# `worker_client` is a single shared `BiWorkerClient` over ONE bisocket connection, and
+# every route reaches for it. Two coroutines calling it at once interleave frames on
+# that socket, and the reconnect path is worse still: both race to re-enter
+# `__aenter__` and stomp the global. Harmless-looking while only a browser talked to
+# it; a fact the moment the history sampler started firing on a timer next to live
+# requests. So every use of the client -- routes and sampler alike -- goes through
+# `with_client`, and reconnection happens exactly once, under the lock.
+# Created on first use rather than at import: an `asyncio.Lock` binds to the loop that
+# first awaits it, so an import-time lock would be tied to a loop that `asyncio.run`
+# may already have closed (and raise "bound to a different event loop").
+_client_lock: asyncio.Lock | None = None
+_client_lock_loop = None
+
+history = HistoryStore()
+_sampler_task: asyncio.Task | None = None
+
+
+def client_lock() -> asyncio.Lock:
+    global _client_lock, _client_lock_loop
+    loop = asyncio.get_running_loop()
+    if _client_lock is None or _client_lock_loop is not loop:
+        _client_lock = asyncio.Lock()
+        _client_lock_loop = loop
+    return _client_lock
+
+
+async def with_client(call):
+    """Run `call(client)` under the client lock, reconnecting once if it fails."""
+    global worker_client
+    async with client_lock():
+        assert worker_client is not None
+        try:
+            return await call(worker_client)
+        except Exception:
+            worker_client = await worker_client.__aenter__()
+            return await call(worker_client)
 
 
 def get_static_file(filename: str) -> str:
@@ -51,25 +89,13 @@ async def index():
 
 @app.post("/data")
 async def get_data():
-    global worker_client
-    assert worker_client is not None
-    try:
-        data = await worker_client.get_web_info(True)
-    except:
-        worker_client = await worker_client.__aenter__()
-        data = await worker_client.get_web_info(True)
+    data = await with_client(lambda client: client.get_web_info(True))
     return JSONResponse(content=data)
 
 
 @app.post("/errors")
 async def get_errors():
-    global worker_client
-    assert worker_client is not None
-    try:
-        compressed_jobs, error_info = await worker_client.errors()
-    except:
-        worker_client = await worker_client.__aenter__()
-        compressed_jobs, error_info = await worker_client.errors()
+    compressed_jobs, error_info = await with_client(lambda client: client.errors())
     jobs = compressed_message_to_steps(compressed_jobs)
     json_jobs = [job.to_json() for job in jobs]
     data = {
@@ -81,13 +107,7 @@ async def get_errors():
 
 @app.post('/reset-errors')
 async def reset_errors():
-    global worker_client
-    assert worker_client is not None
-    try:
-        await worker_client.reset_errors()
-    except:
-        worker_client = await worker_client.__aenter__()
-        await worker_client.reset_errors()
+    await with_client(lambda client: client.reset_errors())
     return JSONResponse(content={'status': 'success'})
 
 
@@ -97,20 +117,70 @@ class Job(BaseModel):
 
 @app.post("/job-parents-and-results")
 async def api_job_parents_and_results(job: Job):
-    global worker_client
-    assert worker_client is not None
-    try:
-        data = await worker_client.get_job_parents_and_results(job.id)
-    except:
-        worker_client = await worker_client.__aenter__()
-        data = await worker_client.get_job_parents_and_results(job.id)
+    data = await with_client(
+        lambda client: client.get_job_parents_and_results(job.id)
+    )
     return JSONResponse(content=data)
+
+
+class HistoryQuery(BaseModel):
+    # Both optional, so `POST /history` with no body means "everything you have".
+    limit: int | None = None
+    since: float | None = None
+
+
+class HistoryConfig(BaseModel):
+    interval_minutes: int
+
+
+@app.post("/history")
+async def get_history(query: HistoryQuery | None = None):
+    """The recorded series plus the sampler's config. Additive -- nothing else moved.
+
+    `ts` is unix seconds, deliberately unformatted: the server has no idea what
+    timezone the operator is in. Samples are oldest-first and MAY be unevenly spaced
+    (the interval is changeable), and a sample carrying `error` instead of `counts` is
+    a real gap in the record, not a bug to filter out.
+    """
+    query = query or HistoryQuery()
+    return JSONResponse(content=history.payload(limit=query.limit, since=query.since))
+
+
+@app.post("/history/config")
+async def set_history_config(config: HistoryConfig):
+    """Set the sampling cadence, server-side, for every browser pointed at this server."""
+    try:
+        new_config = history.set_interval(config.interval_minutes)
+    except ValueError as e:
+        return JSONResponse(content={"detail": str(e)}, status_code=400)
+    except OSError as e:
+        return JSONResponse(
+            content={"detail": f"could not persist the interval: {e}"}, status_code=500
+        )
+    return JSONResponse(content={"config": new_config})
+
+
+async def sample_history():
+    """What the sampler records: counts, and how many workers were connected.
+
+    `workers_info=True` costs a worker list the sample throws away, but the worker
+    *count* is the whole reason history can answer "every worker vanished at 3am", and
+    the hub has no cheaper call for it. At one call per interval (10 minutes by
+    default) that is noise next to the dashboard's own 30-second refresh.
+    """
+    return await with_client(lambda client: client.get_web_info(True))
 
 
 async def stream_subprocess_logs(cmd_parts):
     """
     Asynchronously runs a command and streams its stdout and stderr.
     This version uses an asyncio.Queue to correctly merge the two streams.
+
+    Cancellation is real. When the client goes away -- the web console's Stop
+    button aborts the fetch, or the operator simply closes the tab -- ASGI
+    cancels this generator and the `finally` below kills the subprocess.
+    Without it every abandoned run left an orphaned worker process behind,
+    still executing the step against real credentials with nobody watching.
     """
     process = await asyncio.create_subprocess_exec(
         *cmd_parts,
@@ -134,18 +204,30 @@ async def stream_subprocess_logs(cmd_parts):
     stdout_reader = asyncio.create_task(reader_task(process.stdout))
     stderr_reader = asyncio.create_task(reader_task(process.stderr))
 
-    finished_streams = 0
-    while finished_streams < 2:
-        line = await queue.get()
-        if line is None:
-            # A stream has finished.
-            finished_streams += 1
-        else:
-            yield line.decode('utf-8')
+    try:
+        finished_streams = 0
+        while finished_streams < 2:
+            line = await queue.get()
+            if line is None:
+                # A stream has finished.
+                finished_streams += 1
+            else:
+                yield line.decode('utf-8', errors='replace')
 
-    # Wait for the process and reader tasks to complete.
-    await process.wait()
-    await asyncio.gather(stdout_reader, stderr_reader)
+        # Wait for the process and reader tasks to complete.
+        await process.wait()
+        await asyncio.gather(stdout_reader, stderr_reader)
+    finally:
+        # Cleanup must stay synchronous: on GeneratorExit an `await` here
+        # raises "async generator ignored GeneratorExit". Killing is enough --
+        # the event loop's child watcher reaps the process.
+        if process.returncode is None:
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
+        stdout_reader.cancel()
+        stderr_reader.cancel()
 
 
 @app.post("/run-job")
@@ -174,7 +256,7 @@ async def api_run_job(job: Job):
 
 
 async def start_app(open_browser: bool = False):
-    global worker_client
+    global worker_client, _sampler_task
     try:
         port = int(os.environ.get('BOO_WEB_PORT', 11011))
     except:
@@ -195,6 +277,11 @@ async def start_app(open_browser: bool = False):
     worker_client = BiWorkerClient()
     worker_client = await worker_client.__aenter__()
 
+    # History accumulates in this process, not the browser: it has to survive a tab
+    # being closed and a page reload, and be the same series for everyone.
+    history.load()
+    _sampler_task = asyncio.create_task(history.run(sample_history))
+
     try:
         # Start FastAPI with uvicorn
         config = uvicorn.Config(app, host=host, port=port, log_level="info")
@@ -204,6 +291,12 @@ async def start_app(open_browser: bool = False):
         try:
             await worker_client.__aexit__(*sys.exc_info())
         except: pass
+    finally:
+        _sampler_task.cancel()
+        try:
+            await _sampler_task
+        except (asyncio.CancelledError, Exception):
+            pass
 
 
 def run(open_browser: bool = False):

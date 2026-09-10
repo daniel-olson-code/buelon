@@ -8,58 +8,127 @@
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body data-theme="light">
+    <!-- First stop in the tab order (#17). The header carries the live pill,
+         refresh and theme toggle before any content, so keyboard users get a
+         way past them. It is only visible while focused. -->
+    <a class="skip-link" href="#main">Skip to main content</a>
+
     <header>
         <div class="container">
             <div class="header-content">
-                <!--<div class="logo">Boo! 👻 Aaah!</div>-->
                 <div class="brand-logo">
-                    <a class="brand-logo-link" href="/" aria-label="Open Buelon maze">
-                        <img class="brand-logo-image" src="/static/cow-glass.jpg" alt="" width="40" height="40">
+                    <a class="brand-logo-link" href="/" aria-label="Buelon dashboard home">
+                        <img class="brand-logo-image" src="/static/cow-glass.jpg" alt="" width="52" height="40">
                     </a>
                     <div class="logo">Buelon</div>
                 </div>
+
+                <!-- Breadcrumb list is rebuilt by updateBreadcrumbNav(); the crumbs
+                     that navigate are real <button>s, not spans with onclick.
+                     They write the hash (#/ , #/worker/<id>, #/job/<id>) and the
+                     router renders it, so Back walks this trail too (#15). -->
+                <nav class="breadcrumb" id="breadcrumb" aria-label="Breadcrumb">
+                    <ol class="breadcrumb-list">
+                        <li><span class="breadcrumb-current" aria-current="page">Dashboard</span></li>
+                    </ol>
+                </nav>
+
                 <div class="nav-controls">
-                    <div class="breadcrumb" id="breadcrumb">
-                        <span>Dashboard</span>
-                    </div>
-                    <div class="theme-toggle" id="themeToggle"></div>
-                    <button id="reset-errors" class="btn btn-primary" onclick="resetErrors().then(refreshDashboard).catch(e=>{alert('Could not reset errors. Look at your web server logs');})">
-                        Reset Errors
+                    <!-- Live state: the ring counts down to the next poll, the label
+                         says how old the data on screen is, and the whole pill is the
+                         pause toggle. Painted by paintLiveState() in script.js. -->
+                    <button type="button" class="live-pill" id="liveToggle" data-action="toggle-auto"
+                            aria-pressed="false" title="Pause auto-refresh">
+                        <span class="live-ring" aria-hidden="true">
+                            <svg viewBox="0 0 24 24" focusable="false">
+                                <circle class="live-ring-track" cx="12" cy="12" r="9"></circle>
+                                <circle class="live-ring-fill" id="liveRing" cx="12" cy="12" r="9"
+                                        transform="rotate(-90 12 12)"></circle>
+                            </svg>
+                            <span class="live-ring-glyph"></span>
+                        </span>
+                        <span class="live-label" id="liveLabel">connecting…</span>
                     </button>
-                    <button id="dash-refresh" class="btn btn-primary" onclick="refreshDashboard()">
-                        Refresh
+
+                    <!-- aria-label, not just .btn-label: setRefreshBusy() hides the
+                         label and shows the aria-hidden loader, which used to leave
+                         the button nameless mid-refresh (#17). -->
+                    <button type="button" id="dash-refresh" class="btn btn-secondary btn-refresh"
+                            data-action="refresh" aria-label="Refresh">
+                        <span class="btn-label">Refresh</span>
+                        <span class="crazy-eyes-loader" aria-hidden="true" hidden></span>
+                    </button>
+
+                    <button type="button" class="theme-toggle" id="themeToggle" data-action="toggle-theme"
+                            aria-pressed="false" title="Dark theme">
+                        <span class="sr-only">Dark theme</span>
+                        <svg class="theme-icon theme-icon-sun" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                            <circle cx="12" cy="12" r="4.2"></circle>
+                            <path d="M12 2.2v2.4M12 19.4v2.4M2.2 12h2.4M19.4 12h2.4M5.1 5.1l1.7 1.7M17.2 17.2l1.7 1.7M18.9 5.1l-1.7 1.7M6.8 17.2l-1.7 1.7"></path>
+                        </svg>
+                        <svg class="theme-icon theme-icon-moon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                            <path d="M20 14.4A8.4 8.4 0 0 1 9.6 4a8.4 8.4 0 1 0 10.4 10.4z"></path>
+                        </svg>
                     </button>
                 </div>
             </div>
         </div>
+
+        <!-- Connection state (#14): shown while /data is unreachable. The page keeps
+             the last-known data on screen, dimmed, rather than blanking. -->
+        <div class="conn-banner" id="connBanner" role="status" aria-live="polite" hidden>
+            <div class="container conn-banner-inner">
+                <span class="conn-dot" aria-hidden="true"></span>
+                <span class="conn-text" id="connText">Disconnected — retrying…</span>
+                <button type="button" class="btn btn-sm btn-ghost conn-retry" data-action="refresh">Retry now</button>
+            </div>
+        </div>
     </header>
 
-    <main>
+    <main id="main" tabindex="-1">
         <div class="container">
             <div class="page active" id="page1">
-                <div class="stats-grid" id="statsGrid">
-                    <div class="loading">
-                        <div class="spinner"></div>
-                        Loading dashboard...
-                    </div>
-                </div>
+                <h1 class="sr-only">Dashboard</h1>
 
-                <div class="workers-grid" id="workersGrid"></div>
+                <!-- Section headers are mounted from the SECTION_DOCS registry in
+                     script.js: title + one-line description + an (i) button that
+                     opens the long explanation in the generic modal. -->
+                <section class="section" id="statusSection" aria-labelledby="statusSectionTitle">
+                    <div class="section-header" data-section="status"></div>
+                    <!-- Filled by renderLedger(). Until the first /data lands,
+                         showDashboardSkeleton() paints a skeleton in the shape of
+                         the real ledger, so nothing shifts when data arrives (#16). -->
+                    <div class="ledger" id="ledger"></div>
+                </section>
+
+                <!-- Rendered only when counts.errors > 0; script.js toggles [hidden]. -->
+                <section class="section errors-section" id="errorsSection" aria-labelledby="errorsSectionTitle" hidden></section>
+
+                <section class="section" id="workersSection" aria-labelledby="workersSectionTitle">
+                    <div class="section-header" data-section="workers"></div>
+                    <div class="workers-grid" id="workersGrid"></div>
+                </section>
             </div>
 
             <div class="page" id="page2">
-                <button class="btn btn-secondary btn-back" onclick="showPage(1)">
+                <!-- Text is written by renderWorkerJobs()/renderGone() so the
+                     heading names the worker you are actually looking at. -->
+                <h1 class="sr-only" id="workerPageTitle">Worker</h1>
+
+                <!-- Third way back, after the URL and the breadcrumb (#15).
+                     paintBackButtons() keeps the label honest and hides these
+                     on a dangling deep link, which offers its own way out. -->
+                <button class="btn btn-secondary btn-back" data-action="nav-page" data-page="1">
                     ← Back to Dashboard
                 </button>
 
-                <div class="card">
-                    <h2 id="workerTitle">Worker Details</h2>
-                    <div class="jobs-list" id="jobsList"></div>
-                </div>
+                <!-- Header, toolbar, table and pager are built by
+                     renderWorkerJobs() from the SECTION_DOCS "jobs" entry. -->
+                <section class="section" id="jobsSection" aria-labelledby="jobsSectionTitle"></section>
             </div>
 
             <div class="page" id="page3">
-                <button class="btn btn-secondary btn-back" onclick="showPage(2)">
+                <button class="btn btn-secondary btn-back" data-action="nav-page" data-page="2">
                     ← Back to Worker
                 </button>
 
@@ -68,15 +137,14 @@
         </div>
     </main>
 
-    <div class="modal" id="parentTreeModal">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h3 class="modal-title">Job Parent Tree & Results</h3>
-                <button class="close-btn" onclick="closeModal()">&times;</button>
-            </div>
-            <div id="parentTreeContent"></div>
-        </div>
-    </div>
+    <!-- Modals are created on demand by openModal() in script.js. -->
+    <div class="modal-root" id="modalRoot"></div>
+
+    <!-- Outcomes that would otherwise happen off screen: a requeue, a refused
+         copy, a run that ended after you scrolled past the console (#16).
+         Each toast carries its own role, so the region must not be a live
+         region itself or a screen reader hears everything twice. -->
+    <div class="toast-root" id="toastRoot" aria-label="Notifications"></div>
 
     <script src="/static/script.js"></script>
 </body>

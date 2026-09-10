@@ -1,115 +1,454 @@
+/* ==========================================================================
+   Buelon dashboard — design tokens
+   --------------------------------------------------------------------------
+   Every rule below this block consumes tokens. Never hardcode a color in a
+   rule; add a token here (in BOTH `:root` and `[data-theme="dark"]`) instead.
+
+   COLOR — surfaces
+     --surface            page ground
+     --surface-raised     cards, header, anything lifted off the ground
+     --surface-sunken     inset wells: code blocks, list rows, input tracks
+     --surface-overlay    modals, popovers (sits above the scrim)
+     --overlay            modal scrim
+     --border-subtle      default hairline
+     --border-strong      emphasized divider (decorative: dashed frames, table
+                          rules, hover states -- NOT a control's only boundary)
+     --border-control     the boundary that *identifies* an interactive control
+                          when nothing else does (text input, secondary button).
+                          Held at 3:1 against every surface -- WCAG 1.4.11.
+   COLOR — text
+     --text-primary  --text-secondary  --text-tertiary
+   COLOR — accent (interactive)
+     --accent  --accent-hover  --accent-fg (ink ON accent)
+     --accent-bg  --accent-border (tinted surface)
+   COLOR — status ramp, each with -bg / -border companions for tinted surfaces
+     --ok  --warn  --danger  --info  --idle
+     (the bare token is the *ink* color, and #17 pins every one of them at
+      >=4.5:1 as small text over EVERY surface *and* over its own -bg tint.
+      The -bg / -border companions are unchanged -- they are the tint, and the
+      ink above was solved against them, so retinting one means re-solving the
+      other. `tmp/test_web_contrast.py` is the check.)
+     --danger-fg  ink ON a solid --danger fill (destructive buttons)
+   COLOR — history (#20; the time-travel mode, with -bg / -border companions)
+     --history  --history-bg  --history-border
+   COLOR — terminal (the run-job console, #13; deliberately dark in BOTH themes
+     — a terminal should look like a terminal, so the light values are dark too)
+     --term-bg  --term-bar  --term-fg  --term-dim  --term-border
+     --term-error / -warn / -ok / -meta   (log line tones)
+   COLOR — misc
+     --gradient  (brand wordmark only)   --eye-white / --eye-pupil (loader)
+     --brand-ring / --brand-ring-inner   the two hairlines framing the logo
+                          photograph (#18): outer sits it on the header, inner
+                          gives the crop a defined edge.
+     --syntax-keyword / -string / -comment / -number / -constant / -meta
+       (the job code listing's highlighter, #11; -string / -number / -constant
+        are reused by the parent tree's JSON viewer, #12)
+
+   TYPE
+     --font-sans  --font-mono  --font-numeric
+     --fs-100 11  --fs-200 12  --fs-300 13  --fs-400 14  (base)
+     --fs-500 16  --fs-600 20  --fs-700 28  --fs-800 40
+     --lh-tight 1.2  --lh-snug 1.4  --lh-normal 1.55
+     --fw-regular 400  --fw-medium 500  --fw-semibold 600  --fw-bold 700
+     --tracking-label 0.08em  (uppercase micro-labels)
+
+   SPACE — 4px base
+     --sp-1 4  --sp-2 8  --sp-3 12  --sp-4 16  --sp-5 20  --sp-6 24
+     --sp-8 32  --sp-10 40  --sp-12 48  --sp-16 64
+
+   SHAPE
+     --radius-xs 4  --radius-sm 6  --radius-md 10  --radius-lg 14  --radius-full
+     --bw 1px  (hairline width)
+
+   ELEVATION — 3 levels, no more. Near-invisible in dark; separate with borders.
+     --shadow-1 resting  --shadow-2 hover/raised  --shadow-3 modal
+
+   FOCUS
+     --ring  --ring-width  --ring-offset
+
+   MOTION
+     --dur-fast 120ms  --dur 200ms  --dur-slow 320ms  --ease  --ease-out
+     All of these collapse to 0 under `prefers-reduced-motion: reduce`.
+
+   UTILITIES
+     .tnum     tabular figures (already on by default via body)
+     .sr-only  screen-reader-only text (the #liveStatus copy announcements)
+     .copy-btn the id copy button (#9): .is-done / .is-fail flash its state
+     .twisty   a disclosure chevron (#12): a button carrying aria-expanded
+     .btn-ghost / .btn-sm  quiet + compact button variants
+     .console  the run-job terminal (#13): .console-bar / -scroll / -line
+     .live-pill  header live-state control (#14): .is-paused / .is-stale / .is-down
+     .conn-banner  the disconnected banner (#14); `body.is-disconnected` dims main
+     .skel     a loading shape (#16). `.is-skeleton` marks its inert host.
+     .blank    the empty/failed state (#16), told apart by [data-kind];
+               [data-frame] adds the dashed frame for a section-filling one.
+     .toast    an action's outcome (#16). [data-tone=ok|info|warn|danger].
+     .history-bar  the "you are not looking at now" bar (#20); `body.is-history`
+               marks the whole mode. .ledger-delta is the per-row change, and
+               .hist-table the series as a table.
+   ========================================================================== */
+
+:root {
+    /* Surfaces */
+    --surface: #f7f9fc;
+    --surface-raised: #ffffff;
+    --surface-sunken: #eef2f7;
+    --surface-overlay: #ffffff;
+    --overlay: rgb(15 23 42 / 0.45);
+    --header-bg: rgb(255 255 255 / 0.82);
+    --border-subtle: #e3e8ef;
+    --border-strong: #cbd5e1;
+    --border-control: #708cad;
+
+    /* Text */
+    --text-primary: #16202f;
+    --text-secondary: #465363;
+    --text-tertiary: #606e81;
+
+    /* Accent */
+    --accent: #1759ea;
+    --accent-hover: #1d4ed8;
+    --accent-fg: #ffffff;
+    --accent-bg: rgb(37 99 235 / 0.08);
+    --accent-border: rgb(37 99 235 / 0.22);
+
+    /* Status ramp */
+    --ok: #0b7451;
+    --ok-bg: rgb(15 155 108 / 0.10);
+    --ok-border: rgb(15 155 108 / 0.24);
+    --warn: #925700;
+    --warn-bg: rgb(217 119 6 / 0.12);
+    --warn-border: rgb(217 119 6 / 0.26);
+    --danger: #be271c;
+    --danger-bg: rgb(217 45 32 / 0.10);
+    --danger-border: rgb(217 45 32 / 0.24);
+    --danger-fg: #ffffff;
+    --info: #0a63bc;
+    --info-bg: rgb(11 107 203 / 0.10);
+    --info-border: rgb(11 107 203 / 0.24);
+    --idle: #58667a;
+    --idle-bg: rgb(100 116 139 / 0.10);
+    --idle-border: rgb(100 116 139 / 0.22);
+
+    /* History (#20). A sixth hue, deliberately outside the status ramp: it
+       does not report the hub's health, it reports that you are not looking at
+       the hub's health *now*. Held to the same 4.5:1 as the ramp so the bar's
+       copy is readable, and checked in tmp/test_web_contrast.py. */
+    --history: #6d3fb8;
+    --history-bg: rgb(124 77 208 / 0.10);
+    --history-border: rgb(124 77 208 / 0.30);
+
+    /* Terminal (#13). Dark on purpose in the light theme: the console is a
+       window onto a process, not a panel of the page. */
+    --term-bg: #101720;
+    --term-bar: #18212c;
+    --term-fg: #dfe6f0;
+    --term-dim: #8b9bb0;
+    --term-border: #26313e;
+    --term-error: #ff9a90;
+    --term-warn: #f3c46b;
+    --term-ok: #6fe0a8;
+    --term-meta: #8fb8ff;
+
+    /* Misc color */
+    /* Syntax hint for the job code listing (#11). Four hues, all readable on
+       --surface-sunken; the highlighter is a hint, not a parser. */
+    --syntax-keyword: #7c3aed;
+    --syntax-string: #0f766e;
+    --syntax-comment: #606e81;
+    --syntax-number: #b15109;
+    --syntax-constant: #1d4ed8;
+    --syntax-meta: #be185d;
+
+    --gradient: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
+    --eye-white: #ffffff;
+    --eye-pupil: #10151d;
+
+    /* The logo is a photograph, not a flat mark (#18). Two hairlines frame it:
+       one inside the crop so the picture ends on a defined edge, one outside so
+       it sits on the header instead of floating on it. */
+    --brand-ring: rgb(15 23 42 / 0.14);
+    --brand-ring-inner: rgb(255 255 255 / 0.55);
+
+    /* Type */
+    --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+        Helvetica, Arial, sans-serif;
+    --font-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas,
+        'Liberation Mono', monospace;
+    --font-numeric: tabular-nums;
+    --fs-100: 0.6875rem;
+    --fs-200: 0.75rem;
+    --fs-300: 0.8125rem;
+    --fs-400: 0.875rem;
+    --fs-500: 1rem;
+    --fs-600: 1.25rem;
+    --fs-700: 1.75rem;
+    --fs-800: 2.5rem;
+    --lh-tight: 1.2;
+    --lh-snug: 1.4;
+    --lh-normal: 1.55;
+    --fw-regular: 400;
+    --fw-medium: 500;
+    --fw-semibold: 600;
+    --fw-bold: 700;
+    --tracking-label: 0.08em;
+
+    /* Space */
+    --sp-1: 0.25rem;
+    --sp-2: 0.5rem;
+    --sp-3: 0.75rem;
+    --sp-4: 1rem;
+    --sp-5: 1.25rem;
+    --sp-6: 1.5rem;
+    --sp-8: 2rem;
+    --sp-10: 2.5rem;
+    --sp-12: 3rem;
+    --sp-16: 4rem;
+
+    /* Shape */
+    --radius-xs: 4px;
+    --radius-sm: 6px;
+    --radius-md: 10px;
+    --radius-lg: 14px;
+    --radius-full: 999px;
+    --bw: 1px;
+
+    /* Elevation */
+    --shadow-1: 0 1px 2px rgb(15 23 42 / 0.06), 0 1px 1px rgb(15 23 42 / 0.04);
+    --shadow-2: 0 6px 16px -4px rgb(15 23 42 / 0.12), 0 2px 4px rgb(15 23 42 / 0.05);
+    --shadow-3: 0 28px 56px -20px rgb(15 23 42 / 0.32), 0 8px 16px -8px rgb(15 23 42 / 0.16);
+
+    /* Focus */
+    --ring: #1759ea;
+    --ring-width: 2px;
+    --ring-offset: 2px;
+
+    /* Motion */
+    --dur-fast: 120ms;
+    --dur: 200ms;
+    --dur-slow: 320ms;
+    --ease: cubic-bezier(0.2, 0.7, 0.3, 1);
+    --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+[data-theme="dark"] {
+    /* Real dark surfaces -- not light-with-inverted-grays, and no pure black. */
+    --surface: #0c1117;
+    --surface-raised: #131a24;
+    --surface-sunken: #0e141c;
+    --surface-overlay: #171f2b;
+    --overlay: rgb(0 0 0 / 0.62);
+    --header-bg: rgb(19 26 36 / 0.86);
+    --border-subtle: #202a37;
+    --border-strong: #33414f;
+    --border-control: #566d85;
+
+    /* No pure white text. */
+    --text-primary: #e4e9f0;
+    --text-secondary: #9aa7b8;
+    --text-tertiary: #7b8899;
+
+    /* Dimmer accent, dark ink on top of it. */
+    --accent: #6da2f8;
+    --accent-hover: #8ab4fa;
+    --accent-fg: #0a1220;
+    --accent-bg: rgb(109 162 248 / 0.14);
+    --accent-border: rgb(109 162 248 / 0.30);
+
+    --ok: #43c99a;
+    --ok-bg: rgb(67 201 154 / 0.14);
+    --ok-border: rgb(67 201 154 / 0.30);
+    --warn: #e0a33a;
+    --warn-bg: rgb(224 163 58 / 0.14);
+    --warn-border: rgb(224 163 58 / 0.30);
+    --danger: #f87171;
+    --danger-bg: rgb(248 113 113 / 0.14);
+    --danger-border: rgb(248 113 113 / 0.30);
+    --danger-fg: #2a0d0d;
+    --info: #7fb3f5;
+    --info-bg: rgb(127 179 245 / 0.14);
+    --info-border: rgb(127 179 245 / 0.30);
+    --idle: #8b98aa;
+    --idle-bg: rgb(133 147 165 / 0.14);
+    --idle-border: rgb(133 147 165 / 0.28);
+
+    --history: #c3a6f8;
+    --history-bg: rgb(167 139 250 / 0.16);
+    --history-border: rgb(167 139 250 / 0.34);
+
+    /* A shade deeper than the light theme's, so the console still reads as a
+       recess rather than merging with --surface-raised. */
+    --term-bg: #080c12;
+    --term-bar: #111823;
+    --term-fg: #d7dee9;
+    --term-dim: #7b8899;
+    --term-border: #1e2733;
+    --term-error: #f9938a;
+    --term-warn: #e6bd68;
+    --term-ok: #5fd69d;
+    --term-meta: #86aef5;
+
+    --syntax-keyword: #c4a2fb;
+    --syntax-string: #62d0b6;
+    --syntax-comment: #7b8899;
+    --syntax-number: #f0b566;
+    --syntax-constant: #8ab4fa;
+    --syntax-meta: #f79ac0;
+
+    --gradient: linear-gradient(135deg, #8b8cf7 0%, #c084fc 100%);
+    --eye-pupil: #05080c;
+
+    /* Dark: the outer ring lightens instead of darkening (a dark ring on a dark
+       header is invisible), and the inner one stops just short of white. */
+    --brand-ring: rgb(255 255 255 / 0.16);
+    --brand-ring-inner: rgb(255 255 255 / 0.30);
+
+    /* Shadows barely register on dark surfaces -- borders do the separating. */
+    --shadow-1: 0 1px 2px rgb(0 0 0 / 0.30);
+    --shadow-2: 0 8px 20px -8px rgb(0 0 0 / 0.55);
+    --shadow-3: 0 32px 64px -24px rgb(0 0 0 / 0.75);
+
+    --ring: #8ab4fa;
+}
+
 * {
     margin: 0;
     padding: 0;
     box-sizing: border-box;
 }
 
-:root {
-    --bg-primary: #f8fafc;
-    --bg-secondary: #ffffff;
-    --bg-tertiary: #f1f5f9;
-    --text-primary: #1e293b;
-    --text-secondary: #64748b;
-    --text-accent: #3b82f6;
-    --border: #e2e8f0;
-    --shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);
-    --shadow-lg: 0 25px 50px -12px rgb(0 0 0 / 0.25);
-    --accent: #3b82f6;
-    --accent-hover: #2563eb;
-    --success: #10b981;
-    --warning: #f59e0b;
-    --danger: #ef4444;
-    --gradient: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-}
-
-[data-theme="dark"] {
-    --bg-primary: #0f172a;
-    --bg-secondary: #1e293b;
-    --bg-tertiary: #334155;
-    --text-primary: #f1f5f9;
-    --text-secondary: #94a3b8;
-    --text-accent: #60a5fa;
-    --border: #334155;
-    --shadow: 0 4px 6px -1px rgb(0 0 0 / 0.3);
-    --shadow-lg: 0 25px 50px -12px rgb(0 0 0 / 0.5);
-    --accent: #60a5fa;
-    --accent-hover: #3b82f6;
-    --gradient: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
+/* Reserve the scrollbar's width for good. Opening a modal locks page scroll
+   (`body.modal-open`), and without a stable gutter the whole layout jumps
+   sideways by the scrollbar width as it locks and again as it unlocks. */
+html {
+    scrollbar-gutter: stable;
 }
 
 body {
-    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-    background: var(--bg-primary);
+    font-family: var(--font-sans);
+    font-size: var(--fs-400);
+    line-height: var(--lh-normal);
+    /* Tabular figures everywhere: this is a metrics UI, numbers must not jitter. */
+    font-variant-numeric: var(--font-numeric);
+    background: var(--surface);
     color: var(--text-primary);
-    line-height: 1.6;
-    transition: all 0.3s ease;
+    -webkit-font-smoothing: antialiased;
+}
+
+.tnum {
+    font-variant-numeric: var(--font-numeric);
+}
+
+/* `hidden` must win over any display: rule a component sets on itself -- the
+   header swaps the refresh label and the crazy-eyes loader with it (#14). */
+[hidden] {
+    display: none !important;
+}
+
+/* One focus ring for the whole app, legible on both themes. */
+:focus-visible {
+    outline: var(--ring-width) solid var(--ring);
+    outline-offset: var(--ring-offset);
+    border-radius: var(--radius-xs);
 }
 
 .container {
     max-width: 1200px;
     margin: 0 auto;
-    padding: 0 1rem;
+    padding: 0 var(--sp-4);
 }
 
 /* Header */
 header {
-    background: var(--bg-secondary);
-    border-bottom: 1px solid var(--border);
-    box-shadow: var(--shadow);
+    background: var(--header-bg);
+    border-bottom: var(--bw) solid var(--border-subtle);
+    box-shadow: var(--shadow-1);
     position: sticky;
     top: 0;
     z-index: 100;
-    backdrop-filter: blur(10px);
+    backdrop-filter: blur(12px) saturate(1.4);
 }
 
+/* brand | breadcrumb ......... toolbar */
 .header-content {
     display: flex;
-    justify-content: space-between;
     align-items: center;
-    padding: 1rem 0;
+    gap: var(--sp-4);
+    padding: var(--sp-3) 0;
+    min-height: 56px;
 }
 
 .brand-logo {
     display: inline-flex;
     align-items: center;
-    gap: 1rem;
-    line-height: 1;
+    gap: var(--sp-4);
+    line-height: var(--lh-tight);
 }
 
+/* The mark is a photo of a cow sticker on a glass, and it is landscape: a 40px
+   circle crops it to the animal's belly, which reads as a smudge. A 52x40
+   rounded rectangle fits the whole cow, head included, and a rectangle is the
+   honest shape for a photograph anyway (#18). The double hairline is what makes
+   it sit on the header rather than float there; the mask never moves on hover,
+   the picture inside it does. */
 .brand-logo-link {
     display: block;
-    flex: 0 0 2.5rem;
+    position: relative;
+    flex: 0 0 52px;
+    width: 52px;
+    height: var(--sp-10);
     text-decoration: none;
-    border-radius: 50%;
+    border-radius: var(--radius-md);
     overflow: hidden;
     line-height: 0;
-    transition: box-shadow 0.2s ease, transform 0.2s ease;
+    box-shadow: 0 0 0 var(--bw) var(--brand-ring), var(--shadow-1);
+    transition: box-shadow var(--dur) var(--ease);
+}
+
+/* An inset ring drawn over the photo: `box-shadow: inset` on the link itself
+   would be painted under the image, and a border would eat into the crop. */
+.brand-logo-link::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    box-shadow: inset 0 0 0 var(--bw) var(--brand-ring-inner);
+    pointer-events: none;
 }
 
 .brand-logo-image {
     display: block;
-    width: 2.5rem;
-    height: 2.5rem;
-    max-width: 2.5rem;
-    max-height: 2.5rem;
+    width: 100%;
+    height: 100%;
     object-fit: cover;
+    /* The sticker sits low in the frame; bias the crop down off dead centre so
+       the blurred background at the top is what gets trimmed. */
+    object-position: 50% 58%;
+    transition: transform var(--dur) var(--ease-out);
 }
 
 .brand-logo-link:hover,
 .brand-logo-link:focus-visible {
-    box-shadow: 0 10px 20px -8px rgb(0 0 0 / 0.45);
-    transform: translateY(-1px);
+    box-shadow: 0 0 0 var(--bw) var(--accent-border), var(--shadow-2);
+}
+
+.brand-logo-link:hover .brand-logo-image {
+    transform: scale(1.06);
+}
+
+.brand-logo-link:active .brand-logo-image {
+    transform: scale(1.02);
 }
 
 .brand-logo-link:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 4px;
-    border-radius: 999px;
+    outline-offset: var(--ring-offset);
+    border-radius: var(--radius-full);
 }
 
 .logo {
-    font-size: 1.5rem;
-    font-weight: 700;
+    font-size: var(--fs-600);
+    font-weight: var(--fw-bold);
+    letter-spacing: -0.01em;
     background: var(--gradient);
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
@@ -118,78 +457,401 @@ header {
 
 .nav-controls {
     display: flex;
-    gap: 1rem;
+    gap: var(--sp-2);
     align-items: center;
+    flex: none;
+    margin-left: auto;
 }
 
+/* The last crumb is a job name, which is untrusted text of any length: a
+   90-character dotted name pushed the whole page sideways at 400px until the
+   crumbs learned to shrink (found while building #12's lineage scenario).
+   Crumbs that navigate are real <button>s (#14); the last one is a <span>
+   carrying aria-current. */
 .breadcrumb {
+    flex: 0 1 auto;
+    min-width: 0;
+    font-size: var(--fs-300);
+}
+
+.breadcrumb-list {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
+    gap: var(--sp-2);
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    min-width: 0;
+}
+
+.breadcrumb-list > li {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    min-width: 0;
+}
+
+.breadcrumb-current,
+.breadcrumb-link {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.breadcrumb-current {
     color: var(--text-secondary);
-    font-size: 0.9rem;
+    font-weight: var(--fw-medium);
 }
 
 .breadcrumb-separator {
-    opacity: 0.5;
+    flex: none;
+    color: var(--text-tertiary);
 }
 
-.theme-toggle {
-    background: var(--bg-tertiary);
-    border: 1px solid var(--border);
-    border-radius: 50px;
-    width: 3rem;
-    height: 1.5rem;
-    position: relative;
+.breadcrumb-link {
+    appearance: none;
+    background: none;
+    border: 0;
+    padding: 0;
+    font: inherit;
+    color: var(--accent);
     cursor: pointer;
-    transition: all 0.3s ease;
+    border-radius: var(--radius-xs);
+    transition: color var(--dur-fast) var(--ease);
 }
 
-.theme-toggle::before {
-    content: '';
+.breadcrumb-link:hover {
+    color: var(--accent-hover);
+    text-decoration: underline;
+}
+
+/* Shown where a list renders nothing -- e.g. a connected worker with no jobs
+   checked out, which the hub reports by omitting the `jobs` key entirely. */
+.empty-state {
+    padding: var(--sp-8) var(--sp-4);
+    text-align: center;
+    color: var(--text-tertiary);
+    font-size: var(--fs-300);
+}
+
+/* ==========================================================================
+   Live state (#14) -- the pill, the countdown ring, the connection banner
+   --------------------------------------------------------------------------
+   The pill is one control doing two jobs: it reports how old the data is and
+   it pauses the poll. States: default (counting down), .is-paused (ring full,
+   pause bars in the middle), .is-stale (amber, data older than 90s),
+   .is-down (danger, hub unreachable).
+   ========================================================================== */
+.live-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-2);
+    padding: var(--sp-1) var(--sp-3) var(--sp-1) var(--sp-2);
+    background: var(--surface-sunken);
+    border: var(--bw) solid var(--border-subtle);
+    border-radius: var(--radius-full);
+    color: var(--text-secondary);
+    font: inherit;
+    font-size: var(--fs-200);
+    font-variant-numeric: tabular-nums;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease),
+        border-color var(--dur-fast) var(--ease);
+}
+
+.live-pill:hover {
+    background: var(--surface-raised);
+    border-color: var(--border-strong);
+    color: var(--text-primary);
+}
+
+.live-ring {
+    position: relative;
+    display: block;
+    flex: none;
+    width: 18px;
+    height: 18px;
+}
+
+.live-ring svg {
+    display: block;
+    width: 18px;
+    height: 18px;
+}
+
+.live-ring-track,
+.live-ring-fill {
+    fill: none;
+    stroke-width: 2.6;
+}
+
+.live-ring-track {
+    stroke: var(--border-strong);
+    opacity: 0.55;
+}
+
+.live-ring-fill {
+    stroke: var(--accent);
+    stroke-linecap: round;
+    /* The 250ms tick moves the arc in visible steps; smooth the gaps. */
+    transition: stroke-dashoffset var(--dur) linear, stroke var(--dur) var(--ease);
+}
+
+/* Paused: a full, quiet ring with two bars in the middle. */
+.live-ring-glyph {
     position: absolute;
-    top: 2px;
-    left: 2px;
-    width: 1.25rem;
-    height: 1.25rem;
-    background: var(--accent);
-    border-radius: 50%;
-    transition: all 0.3s ease;
-    transform: translateX(0);
+    inset: 0;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
 }
 
-[data-theme="dark"] .theme-toggle::before {
-    transform: translateX(1.5rem);
+.live-ring-glyph::before,
+.live-ring-glyph::after {
+    content: '';
+    width: 2px;
+    height: 7px;
+    border-radius: 1px;
+    background: currentColor;
+}
+
+.live-pill.is-paused {
+    color: var(--text-tertiary);
+}
+
+.live-pill.is-paused .live-ring-glyph {
+    display: flex;
+}
+
+.live-pill.is-paused .live-ring-fill {
+    stroke: var(--border-strong);
+}
+
+.live-pill.is-stale {
+    background: var(--warn-bg);
+    border-color: var(--warn-border);
+    color: var(--warn);
+}
+
+.live-pill.is-stale .live-ring-fill {
+    stroke: var(--warn);
+}
+
+.live-pill.is-down {
+    background: var(--danger-bg);
+    border-color: var(--danger-border);
+    color: var(--danger);
+}
+
+.live-pill.is-down .live-ring-track {
+    stroke: var(--danger-border);
+}
+
+.live-pill.is-down .live-ring-fill {
+    stroke: var(--danger);
+    /* Never resting: something is being attempted. */
+    animation: live-spin 1.1s linear infinite;
+    transform-origin: 12px 12px;
+    stroke-dasharray: 14 44 !important;
+}
+
+@keyframes live-spin {
+    to { transform: rotate(360deg); }
+}
+
+/* The refresh button holds its width while the crazy eyes replace the label,
+   so pressing it does not shuffle the toolbar. */
+.btn-refresh {
+    justify-content: center;
+    min-width: 96px;
+}
+
+.btn-refresh[aria-busy="true"] {
+    cursor: progress;
+}
+
+/* Connection banner: sits under the header bar, spans full width, persists
+   while /data is unreachable. The data below stays on screen, dimmed. */
+.conn-banner {
+    background: var(--danger-bg);
+    border-top: var(--bw) solid var(--danger-border);
+    border-bottom: var(--bw) solid var(--danger-border);
+    color: var(--danger);
+    font-size: var(--fs-200);
+    animation: conn-in var(--dur) var(--ease-out);
+}
+
+.conn-banner-inner {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-3);
+    padding: var(--sp-2) var(--sp-4);
+}
+
+.conn-text {
+    min-width: 0;
+    flex: 1 1 auto;
+}
+
+.conn-dot {
+    flex: none;
+    width: 8px;
+    height: 8px;
+    border-radius: var(--radius-full);
+    background: var(--danger);
+    animation: conn-pulse 1.4s var(--ease) infinite;
+}
+
+.conn-retry {
+    flex: none;
+    color: var(--danger);
+    border-color: var(--danger-border);
+}
+
+.conn-retry:hover:not(:disabled) {
+    background: var(--danger-bg);
+    border-color: var(--danger);
+    color: var(--danger);
+}
+
+@keyframes conn-in {
+    from { opacity: 0; transform: translateY(-4px); }
+    to { opacity: 1; transform: none; }
+}
+
+@keyframes conn-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.35; }
+}
+
+/* Last-known data, clearly not live. Dimmed, not hidden: stale data marked
+   stale beats an empty page. */
+body.is-disconnected.has-data main {
+    opacity: 0.62;
+    filter: saturate(0.65);
+    transition: opacity var(--dur) var(--ease), filter var(--dur) var(--ease);
+}
+
+/* Theme toggle (#14): a real button with sun/moon icons and aria-pressed,
+   not the unlabelled switch div it used to be. */
+.theme-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    width: var(--sp-8);
+    height: var(--sp-8);
+    padding: 0;
+    background: var(--surface-sunken);
+    border: var(--bw) solid var(--border-subtle);
+    border-radius: var(--radius-full);
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease),
+        border-color var(--dur-fast) var(--ease);
+}
+
+.theme-toggle:hover {
+    background: var(--surface-raised);
+    border-color: var(--border-strong);
+    color: var(--text-primary);
+}
+
+.theme-icon {
+    width: 18px;
+    height: 18px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.7;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    transition: transform var(--dur) var(--ease-out), opacity var(--dur-fast) var(--ease);
+}
+
+.theme-icon-moon {
+    display: none;
+    fill: currentColor;
+    stroke: none;
+}
+
+/* The icon shows the theme that is ON (sun in light, moon in dark), matching
+   aria-pressed; the tooltip and the SR label say what a press will do. */
+[data-theme="dark"] .theme-icon-sun {
+    display: none;
+}
+
+[data-theme="dark"] .theme-icon-moon {
+    display: block;
+}
+
+.theme-toggle:hover .theme-icon {
+    transform: rotate(18deg);
 }
 
 /* Main Content */
 main {
     min-height: calc(100vh - 80px);
-    padding: 2rem 0;
+    padding: var(--sp-8) 0;
 }
 
+/* The three views are display toggles. The entrance used to be an unconditional
+   320ms fade+rise on `.page`, which fired on every showPage() -- including the
+   ones that are a step *back*, where rising up the page reads as arriving
+   somewhere new. showPage() now sets a direction class for one animation and
+   strips it on animationend, so the movement matches the breadcrumb: forward
+   comes in from the right, back from the left (#18). 150ms, because this is
+   navigation and nobody wants to wait for it. */
 .page {
     display: none;
-    animation: fadeIn 0.5s ease-out;
 }
 
 .page.active {
     display: block;
 }
 
-@keyframes fadeIn {
-    from { opacity: 0; transform: translateY(20px); }
-    to { opacity: 1; transform: translateY(0); }
+.page.is-enter-fwd {
+    animation: page-in-fwd 150ms var(--ease-out);
+}
+
+.page.is-enter-back {
+    animation: page-in-back 150ms var(--ease-out);
+}
+
+@keyframes page-in-fwd {
+    from { opacity: 0; transform: translateX(14px); }
+    to   { opacity: 1; transform: none; }
+}
+
+@keyframes page-in-back {
+    from { opacity: 0; transform: translateX(-14px); }
+    to   { opacity: 1; transform: none; }
+}
+
+/* The load entrance. It lives on <main>, not on `.page`: `.page` is
+   display-toggled, so an animation declared there replays on every navigation
+   -- which is the bug this task inherited. <main> is rendered once, so this
+   fires once, and it has no direction to match because nothing was on screen. */
+main {
+    animation: page-in-first var(--dur) var(--ease-out);
+}
+
+@keyframes page-in-first {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: none; }
 }
 
 /* Cards */
 .card {
-    background: var(--bg-secondary);
-    border-radius: 16px;
-    padding: 1.5rem;
-    box-shadow: var(--shadow);
-    border: 1px solid var(--border);
-    transition: all 0.3s ease;
+    background: var(--surface-raised);
+    border-radius: var(--radius-lg);
+    padding: var(--sp-6);
+    box-shadow: var(--shadow-1);
+    border: var(--bw) solid var(--border-subtle);
+    transition: transform var(--dur) var(--ease), box-shadow var(--dur) var(--ease),
+        border-color var(--dur) var(--ease);
     position: relative;
     overflow: hidden;
 }
@@ -203,230 +865,1849 @@ main {
     height: 3px;
     background: var(--gradient);
     opacity: 0;
-    transition: opacity 0.3s ease;
+    transition: opacity var(--dur) var(--ease);
 }
 
-.card:hover {
-    transform: translateY(-4px);
-    box-shadow: var(--shadow-lg);
+/* Hover is a promise that something will happen when you press. The ledger and
+   the job-detail panels are cards too, and lifting them on hover was promising
+   an interaction that does not exist -- so the lift, the shadow and the
+   gradient bar belong to the clickable ones only (#18). */
+.card-clickable:hover {
+    transform: translateY(-3px);
+    box-shadow: var(--shadow-2);
+    border-color: var(--border-strong);
 }
 
-.card:hover::before {
+.card-clickable:hover::before,
+.card-clickable:focus-visible::before {
     opacity: 1;
+}
+
+/* Press: the card goes back to the page it lifted off. */
+.card-clickable:active {
+    transform: translateY(0);
+    box-shadow: var(--shadow-1);
 }
 
 .card-clickable {
     cursor: pointer;
 }
 
-/* Stats Grid */
-.stats-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-    gap: 1.5rem;
-    margin-bottom: 2rem;
+/* ==========================================================================
+   Status ledger  (#4 -- replaced the 12-card stats grid)
+   The five components of `total` are rendered as a real sum (`+` rows closed
+   by a `Σ Total` rule); subsets and non-job counts sit in a subordinate aside
+   so they can never be misread as additive. Row tone == bar segment tone.
+   ========================================================================== */
+.ledger {
+    margin-bottom: var(--sp-8);
 }
 
-.stat-card {
-    text-align: center;
-}
-
-.stat-value {
-    font-size: 2.5rem;
-    font-weight: 700;
-    color: var(--accent);
-    margin-bottom: 0.5rem;
-}
-
-.stat-label {
-    color: var(--text-secondary);
-    text-transform: uppercase;
-    font-size: 0.8rem;
-    font-weight: 600;
-    letter-spacing: 0.1em;
-}
-
-/* Secondary figure inside a stat label -- the estimated byte size next to
-   "Results Held" (BUGS.md #36). Not uppercased, so it reads as a value. */
-.stat-sub {
-    text-transform: none;
-    font-weight: 500;
-    letter-spacing: 0;
-    opacity: 0.75;
-}
-
-/* Workers Grid */
-.workers-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-    gap: 1.5rem;
-}
-
-.worker-card {
-    position: relative;
-}
-
-.worker-header {
+.ledger-card {
     display: flex;
-    justify-content: between;
-    align-items: center;
-    margin-bottom: 1rem;
+    flex-direction: column;
+    gap: var(--sp-4);
 }
 
-.worker-name {
-    font-size: 1.25rem;
-    font-weight: 600;
-}
-
-.worker-id {
-    color: var(--text-secondary);
-    font-size: 0.8rem;
-    font-family: 'Courier New', monospace;
-}
-
-.worker-stats {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 1rem;
-}
-
-.worker-stat {
-    text-align: center;
-}
-
-.worker-stat-value {
-    font-size: 1.5rem;
-    font-weight: 600;
-    color: var(--success);
-}
-
-.worker-stat-value-error {
-    font-size: 1.5rem;
-    font-weight: 600;
-    color: var(--danger);
-}
-
-.worker-stat-label {
-    color: var(--text-secondary);
-    font-size: 0.8rem;
-}
-
-/* Jobs List */
-.jobs-list {
-    display: grid;
-    gap: 1rem;
-}
-
-.job-item {
+/* --- Headline: question 1, "is everything OK?", answered without reading --- */
+.ledger-headline {
     display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
     justify-content: space-between;
-    align-items: center;
-    padding: 1rem;
-    background: var(--bg-tertiary);
-    border-radius: 8px;
-    cursor: pointer;
-    transition: all 0.2s ease;
+    gap: var(--sp-3) var(--sp-6);
+    border-radius: var(--radius-sm);
 }
 
-.job-item:hover {
-    background: var(--accent);
-    color: white;
-    transform: translateX(4px);
-}
-
-.job-info {
-    flex: 1;
-}
-
-.job-name {
-    font-weight: 600;
-    margin-bottom: 0.25rem;
-}
-
-.job-id {
-    font-size: 0.8rem;
-    color: var(--text-secondary);
-    font-family: 'Courier New', monospace;
-}
-
-.job-item:hover .job-id {
-    color: rgba(255, 255, 255, 0.8);
-}
-
-.job-meta {
+.ledger-headline-main {
     display: flex;
-    gap: 1rem;
+    align-items: baseline;
+    gap: var(--sp-3);
+    min-width: 0;
+}
+
+.ledger-headline-label {
+    font-size: var(--fs-200);
+    font-weight: var(--fw-semibold);
+    letter-spacing: var(--tracking-label);
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+}
+
+.ledger-headline-value {
+    font-size: var(--fs-800);
+    font-weight: var(--fw-bold);
+    line-height: var(--lh-tight);
+    letter-spacing: -0.02em;
+    color: var(--text-primary);
+}
+
+.ledger-headline-meta {
+    display: flex;
+    /* Two big figures and two uppercase labels: without wrap this cluster is
+       one unbreakable unit at 400px (#17). */
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--sp-2) var(--sp-5);
+}
+
+.ledger-meta-item {
+    display: flex;
+    align-items: baseline;
+    gap: var(--sp-2);
+}
+
+.ledger-meta-value {
+    font-size: var(--fs-600);
+    font-weight: var(--fw-semibold);
+    color: var(--text-primary);
+}
+
+.ledger-meta-label {
+    font-size: var(--fs-200);
+    font-weight: var(--fw-medium);
+    letter-spacing: var(--tracking-label);
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+}
+
+/* --- Stacked proportion bar --- */
+.ledger-bar {
+    display: flex;
+    height: 8px;
+    border-radius: var(--radius-full);
+    overflow: hidden;
+    background: var(--surface-sunken);
+    box-shadow: inset 0 0 0 var(--bw) var(--border-subtle);
+}
+
+.ledger-bar.is-empty {
+    opacity: 0.6;
+}
+
+.ledger-seg {
+    display: block;
+    height: 100%;
+    min-width: 2px;
+    transition: width var(--dur-slow) var(--ease-out);
+}
+
+/* --- Body: the sum on the left, everything subordinate on the right --- */
+.ledger-body {
+    display: grid;
+    grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+    gap: var(--sp-4) var(--sp-8);
+    align-items: start;
+}
+
+.ledger-rows {
+    display: flex;
+    flex-direction: column;
+}
+
+.ledger-row {
+    display: grid;
+    /* op | dot | label | sub | spark | delta | num  (#18 added the spark
+       track and #20 the delta; both are `auto` and usually empty, so a row
+       with neither is unchanged). */
+    grid-template-columns: 0.75rem 0.5rem minmax(0, 1fr) auto auto auto auto;
     align-items: center;
-    font-size: 0.8rem;
+    gap: var(--sp-2);
+    padding: var(--sp-2) var(--sp-2);
+    border-bottom: var(--bw) solid var(--border-subtle);
+    border-radius: var(--radius-xs);
+    font-size: var(--fs-400);
+    transition: background-color var(--dur) var(--ease-out),
+                opacity var(--dur) var(--ease-out);
 }
 
-.job-type {
-    background: var(--accent);
-    color: white;
-    padding: 0.25rem 0.5rem;
-    border-radius: 4px;
-    font-size: 0.7rem;
+.ledger-rows .ledger-row:last-child {
+    border-bottom: none;
 }
 
-.job-priority {
+/* A quiet hub should look quiet -- a zero row recedes almost entirely. */
+.ledger-row.is-zero {
+    opacity: 0.42;
+}
+
+/* The only alarm affordance up here: a tint on rows that mean trouble when
+   they are non-zero. Errors read danger, everything else reads caution. */
+.ledger-row.is-alarm {
+    background: var(--warn-bg);
+    box-shadow: inset 2px 0 0 var(--warn);
+}
+
+.ledger-row.is-alarm.tone-danger {
+    background: var(--danger-bg);
+    box-shadow: inset 2px 0 0 var(--danger);
+}
+
+.ledger-op {
+    font-family: var(--font-mono);
+    font-size: var(--fs-200);
+    color: var(--text-tertiary);
+    text-align: center;
+}
+
+.ledger-dot {
+    width: 0.5rem;
+    height: 0.5rem;
+    border-radius: var(--radius-full);
+    background: var(--idle);
+}
+
+.ledger-label {
+    color: var(--text-secondary);
+    font-weight: var(--fw-medium);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.ledger-sub {
+    /* `auto` grid track + nowrap + no ellipsis is how a row pushes its own
+       grid wider than the card. min-width:0 lets the track collapse and the
+       ellipsis absorbs whatever is left over (#17). Below 560px it stops
+       competing for the row entirely -- see the phone block. */
+    min-width: 0;
+    overflow: hidden;
+    font-size: var(--fs-200);
+    color: var(--text-tertiary);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.ledger-num {
+    min-width: 4.5ch;
+    font-size: var(--fs-500);
+    font-weight: var(--fw-semibold);
+    color: var(--text-primary);
+    text-align: right;
+    white-space: nowrap;
+}
+
+/* Σ Total: ruled above, the way a column of figures is totalled. */
+.ledger-row.is-total {
+    margin-top: var(--sp-1);
+    padding-top: var(--sp-3);
+    border-top: 2px solid var(--border-strong);
+    border-bottom: none;
+    border-radius: 0;
+}
+
+.ledger-row.is-total .ledger-op,
+.ledger-row.is-total .ledger-label {
+    color: var(--text-primary);
+    font-weight: var(--fw-semibold);
+}
+
+.ledger-row.is-total .ledger-num {
+    font-size: var(--fs-600);
+    font-weight: var(--fw-bold);
+}
+
+.ledger-row.is-total .ledger-dot {
+    background: none;
+}
+
+/* --- Aside: subsets of the sum, and things that are not jobs --- */
+.ledger-aside {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-4);
+    padding-left: var(--sp-4);
+    border-left: var(--bw) solid var(--border-subtle);
+}
+
+.ledger-aside .ledger-row {
+    padding-block: var(--sp-1);
+    border-bottom: none;
+    font-size: var(--fs-300);
+}
+
+.ledger-aside .ledger-num {
+    font-size: var(--fs-400);
     color: var(--text-secondary);
 }
 
-/* Job Detail */
-.job-detail {
-    display: grid;
-    gap: 1.5rem;
+.ledger-aside-title {
+    font-size: var(--fs-100);
+    font-weight: var(--fw-semibold);
+    letter-spacing: var(--tracking-label);
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+    margin-bottom: var(--sp-1);
 }
 
-.detail-section {
-    background: var(--bg-secondary);
-    border-radius: 12px;
-    padding: 1.5rem;
-    border: 1px solid var(--border);
+/* --- Explainable rows (#7): hover/focus tooltip, click opens the doc --- */
+.ledger-row.is-explainable {
+    cursor: pointer;
+}
+
+/* Hovering a muted zero row brings it back -- if you are pointing at it, you
+   are reading it. The alarm tint is never painted over. */
+.ledger-row.is-explainable:hover,
+.ledger-row.is-explainable:focus-visible {
+    opacity: 1;
+}
+
+.ledger-row.is-explainable:hover:not(.is-alarm),
+.ledger-row.is-explainable:focus-visible:not(.is-alarm) {
+    background: var(--surface-sunken);
+}
+
+/* The "there is a definition here" idiom, only on the affordance itself. */
+.ledger-row.is-explainable:hover .ledger-label,
+.ledger-row.is-explainable:focus-visible .ledger-label {
+    color: var(--text-primary);
+    text-decoration: underline dotted;
+    text-underline-offset: 3px;
+}
+
+/* --- Tones: dots and bar segments share one ramp --- */
+.tone-ok .ledger-dot, .ledger-seg.tone-ok { background: var(--ok); }
+.tone-warn .ledger-dot, .ledger-seg.tone-warn { background: var(--warn); }
+.tone-danger .ledger-dot, .ledger-seg.tone-danger { background: var(--danger); }
+.tone-info .ledger-dot, .ledger-seg.tone-info { background: var(--info); }
+.tone-idle .ledger-dot, .ledger-seg.tone-idle { background: var(--idle); }
+.tone-accent .ledger-dot { background: var(--accent); }
+
+/* --- A row that moved since the last refresh flashes once --- */
+@keyframes ledger-flash {
+    from { background-color: var(--accent-bg); }
+    to { background-color: transparent; }
+}
+
+.ledger-row.is-changed,
+.ledger-headline.is-changed {
+    animation: ledger-flash var(--dur-slow) var(--ease-out);
+}
+
+/* ==========================================================================
+   Section header  (#6)
+   --------------------------------------------------------------------------
+   The app's "explain without being text heavy" component: title (+ inline
+   count), one line of description, and an (i) button whose long copy lives in
+   SECTION_DOCS in script.js and opens in the generic modal. Used by the
+   status, errors and workers sections; `.section-icon` and `.section-actions`
+   are optional slots.
+   ========================================================================== */
+.section {
+    margin-bottom: var(--sp-8);
+}
+
+.section:last-child {
+    margin-bottom: 0;
+}
+
+.section-header {
+    margin-bottom: var(--sp-4);
+}
+
+.section-heading {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--sp-3);
+    flex-wrap: wrap;
+}
+
+.section-icon {
+    display: inline-flex;
+    flex: none;
+    margin-top: 1px;
+}
+
+.section-heading-text {
+    flex: 1 1 240px;
+    min-width: 0;
 }
 
 .section-title {
-    font-size: 1.1rem;
-    font-weight: 600;
-    margin-bottom: 1rem;
+    display: flex;
+    align-items: baseline;
+    gap: var(--sp-2);
+    flex-wrap: wrap;
+    font-size: var(--fs-500);
+    font-weight: var(--fw-semibold);
+    line-height: var(--lh-snug);
+    color: var(--text-primary);
+}
+
+/* Inline count/status. Subordinate to the title, never a second heading. */
+.section-meta {
+    font-size: var(--fs-200);
+    font-weight: var(--fw-regular);
+    color: var(--text-tertiary);
+}
+
+.section-description {
+    margin-top: 2px;
+    font-size: var(--fs-300);
+    line-height: var(--lh-snug);
+    color: var(--text-secondary);
+}
+
+.section-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    flex: none;
+    margin-left: auto;
+}
+
+.section-info {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    flex: none;
+    padding: 0;
+    background: none;
+    border: var(--bw) solid var(--border-subtle);
+    border-radius: var(--radius-full);
+    color: var(--text-tertiary);
+    cursor: pointer;
+    transition: color var(--dur-fast) var(--ease),
+                border-color var(--dur-fast) var(--ease),
+                background var(--dur-fast) var(--ease);
+}
+
+.section-info:hover {
+    background: var(--surface-raised);
+    border-color: var(--accent-border);
     color: var(--accent);
 }
 
-.detail-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-    gap: 1rem;
+/* ==========================================================================
+   Errors section  (#5 -- was a synthetic `buelon_errors` worker card)
+   Exists in the DOM only while `counts.errors > 0`; script.js toggles
+   [hidden]. Reads as an alert without shouting: one danger rule down the
+   left, a tinted ground, and no color anywhere else in the section.
+   ========================================================================== */
+.errors-section {
+    margin-bottom: var(--sp-8);
+    background: var(--danger-bg);
+    border: var(--bw) solid var(--danger-border);
+    border-left: 3px solid var(--danger);
+    border-radius: var(--radius-lg);
+    padding: var(--sp-5) var(--sp-6);
 }
 
-.detail-item {
+.errors-section[hidden] {
+    display: none;
+}
+
+.error-icon {
+    color: var(--danger);
+}
+
+/* Inside the tinted section the header needs no extra ground of its own. */
+.errors-section .section-header {
+    margin-bottom: var(--sp-4);
+}
+
+/* --- Reset control: arm -> confirm -> busy, never a bare alert() --- */
+.error-reset {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    flex: none;
+}
+
+.error-reset-ask {
+    font-size: var(--fs-300);
+    color: var(--text-secondary);
+}
+
+.btn-danger {
+    background: var(--danger);
+    color: var(--danger-fg);
+}
+
+.btn-danger:hover:not(:disabled) {
+    filter: brightness(1.08);
+    transform: translateY(-1px);
+}
+
+.spinner-inline {
+    width: var(--sp-4);
+    height: var(--sp-4);
+    margin-right: 0;
+}
+
+/* --- The list: one row per distinct message, expandable in place --- */
+.error-list {
+    margin-top: var(--sp-4);
     display: flex;
     flex-direction: column;
-    gap: 0.25rem;
+    gap: var(--bw);
+    background: var(--border-subtle);
+    border: var(--bw) solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    overflow: hidden;
 }
 
-.detail-label {
-    font-size: 0.8rem;
-    color: var(--text-secondary);
+.error-group {
+    background: var(--surface-raised);
+}
+
+.error-row {
+    width: 100%;
+    display: flex;
+    align-items: flex-start;
+    gap: var(--sp-3);
+    padding: var(--sp-3) var(--sp-4);
+    background: none;
+    border: none;
+    font: inherit;
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
+    transition: background var(--dur-fast) var(--ease);
+}
+
+.error-row:hover {
+    background: var(--surface-sunken);
+}
+
+.error-chevron {
+    color: var(--text-tertiary);
+    line-height: var(--lh-normal);
+    transition: transform var(--dur-fast) var(--ease);
+    flex: none;
+}
+
+.error-group.is-open .error-chevron {
+    transform: rotate(90deg);
+}
+
+.error-row-main {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.error-row-name {
+    font-size: var(--fs-300);
+    font-weight: var(--fw-semibold);
+    color: var(--text-primary);
+    overflow-wrap: anywhere;
+}
+
+/* The line an operator actually reads. One line, clipped -- the full text is
+   one click below. */
+/* A group's other jobs, named in the expanded panel. */
+.error-row-more {
+    margin-left: var(--sp-2);
+    font-weight: var(--fw-regular);
+    font-size: var(--fs-200);
+    color: var(--text-tertiary);
+}
+
+.error-row-message {
+    font-family: var(--font-mono);
+    font-size: var(--fs-200);
+    color: var(--danger);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.error-row-meta {
+    font-size: var(--fs-100);
+    color: var(--text-tertiary);
+    overflow-wrap: anywhere;
+}
+
+/* `× 47`: one bug hitting many jobs is one problem. */
+.error-count {
+    flex: none;
+    align-self: center;
+    padding: 2px var(--sp-2);
+    border-radius: var(--radius-full);
+    background: var(--danger-bg);
+    border: var(--bw) solid var(--danger-border);
+    color: var(--danger);
+    font-size: var(--fs-200);
+    font-weight: var(--fw-semibold);
+}
+
+.error-panel {
+    border-top: var(--bw) solid var(--border-subtle);
+    background: var(--surface-raised);
+}
+
+.error-panel-inner {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-4);
+    padding: var(--sp-4);
+}
+
+.error-panel-label {
+    font-size: var(--fs-100);
+    font-weight: var(--fw-semibold);
+    letter-spacing: var(--tracking-label);
     text-transform: uppercase;
-    font-weight: 600;
-    letter-spacing: 0.1em;
+    color: var(--text-tertiary);
+    margin-bottom: var(--sp-2);
 }
 
-.detail-value {
-    font-family: 'Courier New', monospace;
-    background: var(--bg-tertiary);
-    padding: 0.5rem;
-    border-radius: 4px;
-    font-size: 0.9rem;
-    word-break: break-all;
+.error-job-links {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--sp-2);
 }
 
+.error-job-link {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: var(--sp-2) var(--sp-3);
+    background: var(--surface-sunken);
+    border: var(--bw) solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    font: inherit;
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
+    max-width: 100%;
+    transition: border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+}
+
+.error-job-link:hover {
+    background: var(--surface-raised);
+    border-color: var(--accent-border);
+}
+
+.error-job-name {
+    font-size: var(--fs-300);
+    color: var(--accent);
+    overflow-wrap: anywhere;
+}
+
+.error-job-id {
+    font-family: var(--font-mono);
+    font-size: var(--fs-100);
+    color: var(--text-tertiary);
+    overflow-wrap: anywhere;
+}
+
+.error-more {
+    margin-top: var(--sp-3);
+    width: 100%;
+    padding: var(--sp-2);
+    background: none;
+    border: var(--bw) dashed var(--danger-border);
+    border-radius: var(--radius-sm);
+    color: var(--text-secondary);
+    font: inherit;
+    font-size: var(--fs-300);
+    cursor: pointer;
+    transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+
+.error-more:hover {
+    background: var(--surface-raised);
+    color: var(--text-primary);
+}
+
+/* ==========================================================================
+   Workers section  (#8)
+   --------------------------------------------------------------------------
+   The grid stays -- a connected worker is genuinely card-shaped data -- but a
+   card is now a real <button> (keyboard activation for free) and reads as:
+   identity + Live/Idle, holds and the worker's share of the fleet's held
+   work, then the scopes it is actually running.
+   Tones match the ledger: On Hold is `--warn` there, so holds are warn here.
+   ========================================================================== */
+.workers-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: var(--sp-4);
+}
+
+.worker-card {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--sp-3);
+    padding: var(--sp-4) var(--sp-5);
+    width: 100%;
+    font: inherit;
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+/* Calmer than the generic card lift: these sit in a grid of up to 200. */
+.worker-card:hover {
+    transform: translateY(-2px);
+}
+
+.worker-card:active {
+    transform: translateY(0);
+    box-shadow: var(--shadow-1);
+}
+
+.worker-card[hidden],
+.worker-card [hidden] {
+    display: none;
+}
+
+/* --- Identity + state --- */
+.worker-top {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--sp-3);
+}
+
+/* min-width: 0 is what lets the long names actually clip instead of
+   stretching the card past its grid track. */
+.worker-ident {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+
+.worker-name,
+.worker-id {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.worker-name {
+    font-size: var(--fs-400);
+    font-weight: var(--fw-semibold);
+    line-height: var(--lh-snug);
+}
+
+.worker-id {
+    font-family: var(--font-mono);
+    font-size: var(--fs-100);
+    color: var(--text-tertiary);
+}
+
+.worker-state {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-2);
+    flex: none;
+    padding: 2px var(--sp-2);
+    border-radius: var(--radius-full);
+    border: var(--bw) solid var(--idle-border);
+    background: var(--idle-bg);
+    color: var(--text-secondary);
+    font-size: var(--fs-100);
+    font-weight: var(--fw-medium);
+    letter-spacing: var(--tracking-label);
+    text-transform: uppercase;
+}
+
+.worker-state.tone-ok {
+    border-color: var(--ok-border);
+    background: var(--ok-bg);
+    color: var(--ok);
+}
+
+.worker-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: var(--radius-full);
+    background: currentColor;
+    flex: none;
+}
+
+/* A live worker breathes; an idle one does not. Killed by the global
+   prefers-reduced-motion block. */
+@keyframes worker-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.35; }
+}
+
+.worker-card.is-live .worker-dot {
+    animation: worker-pulse 2.4s var(--ease) infinite;
+}
+
+/* --- Holds + share of the fleet --- */
+.worker-metrics {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--sp-3);
+}
+
+.worker-holds {
+    display: flex;
+    align-items: baseline;
+    gap: var(--sp-1);
+    flex: none;
+}
+
+.worker-holds-value {
+    font-size: var(--fs-600);
+    font-weight: var(--fw-semibold);
+    line-height: var(--lh-tight);
+    color: var(--text-tertiary);
+}
+
+.worker-card.is-live .worker-holds-value {
+    color: var(--warn);
+}
+
+.worker-holds-label {
+    font-size: var(--fs-200);
+    color: var(--text-secondary);
+}
+
+/* Full width, directly under the count it belongs to -- pulled up out of the
+   card's own gap so it reads as part of that line, not a separate row. */
+.worker-share-bar {
+    display: block;
+    height: 4px;
+    margin-top: calc(var(--sp-1) * -1);
+    border-radius: var(--radius-full);
+    background: var(--surface-sunken);
+    overflow: hidden;
+}
+
+.worker-share-fill {
+    display: block;
+    height: 100%;
+    min-width: 2px;
+    border-radius: inherit;
+    background: var(--border-strong);
+    transition: width var(--dur) var(--ease);
+}
+
+.worker-card.is-live .worker-share-fill {
+    background: var(--warn);
+}
+
+.worker-share-text,
+.worker-note {
+    font-size: var(--fs-100);
+    color: var(--text-tertiary);
+}
+
+.worker-share-text {
+    flex: none;
+    white-space: nowrap;
+}
+
+/* --- Scopes: what this worker is running, derived from its holds --- */
+.worker-scopes {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--sp-1);
+}
+
+.worker-scopes-label {
+    font-size: var(--fs-100);
+    letter-spacing: var(--tracking-label);
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+    margin-right: 2px;
+}
+
+.worker-scope {
+    max-width: 100%;
+    padding: 2px var(--sp-2);
+    border-radius: var(--radius-xs);
+    border: var(--bw) solid var(--border-subtle);
+    background: var(--surface-sunken);
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+    font-size: var(--fs-100);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.worker-scope.is-more,
+.worker-scope.is-none {
+    font-family: var(--font-sans);
+    color: var(--text-tertiary);
+}
+
+/* Holding jobs but reporting no scope: an oddity worth naming rather than an
+   empty row (#16). */
+.worker-scope.is-none {
+    border-style: dashed;
+    background: none;
+    font-style: italic;
+}
+
+/* --- 200 workers is a wall of cards; show the busiest and offer the rest --- */
+.workers-more {
+    grid-column: 1 / -1;
+    padding: var(--sp-3);
+    background: none;
+    border: var(--bw) dashed var(--border-strong);
+    border-radius: var(--radius-md);
+    color: var(--text-secondary);
+    font: inherit;
+    font-size: var(--fs-300);
+    cursor: pointer;
+    transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+
+.workers-more:hover {
+    background: var(--surface-raised);
+    color: var(--text-primary);
+}
+
+/* ==========================================================================
+   Worker jobs table  (#9 -- replaced the `.job-item` flat list)
+   A dense, sortable, filterable table of what one worker is holding. Zebra
+   stripes are replaced by hairlines; the header row sticks to the top of its
+   own scroll box (not the page), so it needs no knowledge of the site header.
+   ========================================================================== */
+
+/* Screen-reader-only live region (copy confirmations). */
+/* Skip link (#17): off-canvas until focused, then a real button pinned to the
+   top-left. `position: fixed` so it does not shift the header when it appears. */
+.skip-link {
+    position: fixed;
+    top: var(--sp-2);
+    left: var(--sp-2);
+    z-index: 1400;
+    padding: var(--sp-2) var(--sp-4);
+    background: var(--surface-overlay);
+    border: var(--bw) solid var(--border-control);
+    border-radius: var(--radius-sm);
+    box-shadow: var(--shadow-2);
+    color: var(--text-primary);
+    font-size: var(--fs-300);
+    font-weight: var(--fw-medium);
+    text-decoration: none;
+    /* -100% minus a gap left the box off screen but its --shadow-2 blur
+       (offset +8, spread -8) still bled a grey smudge across the top edge of
+       every page. -200% clears the shadow too (#18). */
+    transform: translateY(-200%);
+    transition: transform var(--dur) var(--ease-out);
+}
+
+/* `:focus`, not `:focus-visible`. A skip link is reached by keyboard and by
+   nothing else, so the heuristic buys nothing -- and it costs: focus moved
+   programmatically (or by a browser with a stricter heuristic) leaves the link
+   focused but still translated off screen, which is a focus ring on an
+   invisible element. Caught by tmp/a11y_check.mjs. */
+.skip-link:focus {
+    transform: translateY(0);
+}
+
+/* The skip target itself must never draw a ring: it is focused programmatically
+   by the browser after the jump, and a 1200px-wide outline reads as a fault. */
+main:focus,
+main:focus-visible {
+    outline: none;
+}
+
+.sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
+}
+
+/* --- Copy button: ids are for pasting into a log grep --- */
+.copy-btn {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--sp-5);
+    height: var(--sp-5);
+    padding: 0;
+    border: var(--bw) solid transparent;
+    border-radius: var(--radius-xs);
+    background: transparent;
+    color: var(--text-tertiary);
+    cursor: pointer;
+    opacity: 0.55;
+    transition: opacity var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease),
+        background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+}
+
+.copy-btn:hover,
+.copy-btn:focus-visible,
+.jobs-row:hover .copy-btn,
+.jobs-row:focus-within .copy-btn {
+    opacity: 1;
+}
+
+.copy-btn:hover {
+    background: var(--surface-sunken);
+    border-color: var(--border-subtle);
+    color: var(--text-primary);
+}
+
+.copy-btn.is-done {
+    opacity: 1;
+    color: var(--ok);
+    border-color: var(--ok-border);
+    background: var(--ok-bg);
+}
+
+.copy-btn.is-fail {
+    opacity: 1;
+    color: var(--danger);
+    border-color: var(--danger-border);
+    background: var(--danger-bg);
+}
+
+/* Two icons, one slot: the check replaces the clipboard for a beat. */
+.copy-btn .copy-done-icon,
+.copy-btn.is-done .copy-icon {
+    display: none;
+}
+
+.copy-btn.is-done .copy-done-icon {
+    display: block;
+}
+
+/* --- Identity of the machine, under the section title --- */
+.jobs-ident {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    margin-bottom: var(--sp-4);
+    font-size: var(--fs-200);
+}
+
+.jobs-ident-label {
+    color: var(--text-tertiary);
+    text-transform: uppercase;
+    letter-spacing: var(--tracking-label);
+    font-size: var(--fs-100);
+}
+
+.jobs-ident-id {
+    max-width: 22rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: var(--font-mono);
+    color: var(--text-secondary);
+}
+
+/* Holds disagreeing with the reported job list is normal for a refresh or
+   two -- say which number to trust rather than looking broken. */
+.jobs-note {
+    margin-bottom: var(--sp-4);
+    padding: var(--sp-2) var(--sp-3);
+    border: var(--bw) solid var(--warn-border);
+    border-radius: var(--radius-sm);
+    background: var(--warn-bg);
+    color: var(--text-secondary);
+    font-size: var(--fs-300);
+    max-width: 78ch;
+}
+
+/* --- Toolbar: filter on the left, what you are looking at on the right --- */
+.jobs-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: var(--sp-3);
+    margin-bottom: var(--sp-3);
+}
+
+.jobs-filter {
+    position: relative;
+    flex: 1 1 15rem;
+    max-width: 22rem;
+    display: flex;
+    align-items: center;
+}
+
+.jobs-filter svg {
+    position: absolute;
+    left: var(--sp-3);
+    color: var(--text-tertiary);
+    pointer-events: none;
+}
+
+.jobs-filter-input {
+    width: 100%;
+    padding: var(--sp-2) var(--sp-3) var(--sp-2) var(--sp-8);
+    border: var(--bw) solid var(--border-control);
+    border-radius: var(--radius-sm);
+    background: var(--surface-raised);
+    color: var(--text-primary);
+    font-family: inherit;
+    font-size: var(--fs-300);
+    appearance: none;
+    transition: border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+}
+
+.jobs-filter-input::placeholder {
+    color: var(--text-tertiary);
+}
+
+.jobs-filter-input:hover {
+    border-color: var(--accent-border);
+}
+
+.jobs-filter-input:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+/* Safari's search decorations do not follow the token colors. */
+.jobs-filter-input::-webkit-search-decoration,
+.jobs-filter-input::-webkit-search-results-button {
+    appearance: none;
+}
+
+.jobs-count {
+    font-size: var(--fs-200);
+    color: var(--text-secondary);
+    font-variant-numeric: var(--font-numeric);
+}
+
+/* --- The table --- */
+.jobs-table-wrap {
+    /* Both axes: vertical so the sticky header has a box to stick to, and
+       horizontal because seven dense columns do not fit a phone. */
+    overflow: auto;
+    max-height: min(70vh, 44rem);
+    border: var(--bw) solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--surface-raised);
+}
+
+/* The wrap carries tabindex="0" (#17) so the one horizontally-scrolling box in
+   the app can be panned with the arrow keys. Ring it on the inside: an outline
+   on a rounded scroll container clips against its own corners. */
+.jobs-table-wrap:focus-visible {
+    outline: none;
+    box-shadow: inset 0 0 0 var(--ring-width) var(--ring);
+}
+
+.jobs-table {
+    width: 100%;
+    min-width: 52rem;
+    /* `separate` -- `collapse` drops the borders of a sticky <th>. */
+    border-collapse: separate;
+    border-spacing: 0;
+    font-size: var(--fs-300);
+}
+
+/* `thead th`, not `th`: the name cell of every body row is a `th scope="row"`
+   now (#17), and it must not inherit the sticky column header's box. */
+.jobs-table thead th {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    padding: 0;
+    background: var(--surface-sunken);
+    border-bottom: var(--bw) solid var(--border-strong);
+    text-align: left;
+    white-space: nowrap;
+}
+
+.jobs-sort {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-1);
+    width: 100%;
+    padding: var(--sp-2) var(--sp-3);
+    border: 0;
+    background: transparent;
+    color: var(--text-secondary);
+    font-family: inherit;
+    font-size: var(--fs-100);
+    font-weight: var(--fw-semibold);
+    text-transform: uppercase;
+    letter-spacing: var(--tracking-label);
+    cursor: pointer;
+    transition: color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+}
+
+.jobs-sort:hover {
+    background: var(--accent-bg);
+    color: var(--text-primary);
+}
+
+.jobs-table thead th[aria-sort="ascending"] .jobs-sort,
+.jobs-table thead th[aria-sort="descending"] .jobs-sort {
+    color: var(--accent);
+}
+
+/* Inactive columns keep the affordance, dimmed, so it is discoverable
+   without eight arrows competing with the data. */
+.jobs-sort-arrow {
+    opacity: 0.4;
+    font-size: var(--fs-200);
+}
+
+.jobs-table th[aria-sort="ascending"] .jobs-sort-arrow,
+.jobs-table th[aria-sort="descending"] .jobs-sort-arrow {
+    opacity: 1;
+}
+
+.jobs-row {
+    cursor: pointer;
+}
+
+.jobs-row > td,
+.jobs-row > th {
+    padding: var(--sp-2) var(--sp-3);
+    border-bottom: var(--bw) solid var(--border-subtle);
+    font-weight: inherit;
+    text-align: left;
+    vertical-align: middle;
+    transition: background var(--dur-fast) var(--ease);
+}
+
+.jobs-row:last-child > td,
+.jobs-row:last-child > th {
+    border-bottom: 0;
+}
+
+.jobs-row:hover > td,
+.jobs-row:hover > th {
+    background: var(--accent-bg);
+}
+
+/* `:focus-within`, not `:focus-visible`: the row itself is no longer focusable
+   (#17) -- focus lands on the name button inside it, and the whole row still
+   lights up so the ring reads as "this row". Not `:has()`, which would be the
+   more precise selector but takes the whole rule with it where it is missing. */
+.jobs-row:focus-within > td,
+.jobs-row:focus-within > th {
+    background: var(--accent-bg);
+    box-shadow: inset 0 var(--ring-width) 0 var(--accent),
+        inset 0 calc(var(--ring-width) * -1) 0 var(--accent);
+}
+
+/* --- Cells --- */
+.cell-name {
+    font-weight: var(--fw-medium);
+    color: var(--text-primary);
+}
+
+/* The width cap lives here, on the flex row, not on the <td> (`max-width` on a
+   table cell is ignored by the auto layout, and a 90-character job name pushed
+   the Age column off the edge) and not on the name itself (then the handback
+   badge added its width on top instead of taking it from the name). */
+.jobs-name-wrap {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    max-width: 19rem;
+}
+
+/* A real <button> (#17), so it needs the UA button box taken off it. The row
+   is still clickable for the mouse; this is the keyboard's way in. */
+.jobs-name {
+    min-width: 0;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    cursor: pointer;
+}
+
+.jobs-name:hover {
+    text-decoration: underline;
+    text-underline-offset: 3px;
+}
+
+/* A job that keeps answering `pending`: the handback-storm culprit. */
+.jobs-handbacks {
+    flex: none;
+    padding: 0 var(--sp-1);
+    border: var(--bw) solid var(--warn-border);
+    border-radius: var(--radius-xs);
+    background: var(--warn-bg);
+    color: var(--warn);
+    font-size: var(--fs-100);
+    font-variant-numeric: var(--font-numeric);
+}
+
+.cell-id {
+    width: 1%;
+}
+
+.jobs-id {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-1);
+}
+
+.jobs-id-text {
+    max-width: 9rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: var(--font-mono);
+    font-size: var(--fs-200);
+    color: var(--text-secondary);
+}
+
+.jobs-chip {
+    display: inline-block;
+    padding: 1px var(--sp-2);
+    border: var(--bw) solid var(--border-subtle);
+    border-radius: var(--radius-full);
+    background: var(--surface-sunken);
+    color: var(--text-secondary);
+    font-size: var(--fs-100);
+    font-weight: var(--fw-medium);
+    white-space: nowrap;
+}
+
+.cell-text,
+.cell-age {
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+
+.cell-num,
+.cell-secs {
+    text-align: right;
+    white-space: nowrap;
+    font-variant-numeric: var(--font-numeric);
+    color: var(--text-secondary);
+}
+
+.head-num .jobs-sort,
+.head-secs .jobs-sort {
+    justify-content: flex-end;
+}
+
+/* "none", a missing scope: present but not a value. */
+.is-none {
+    color: var(--text-tertiary);
+}
+
+/* --- Filter matched nothing --- */
+.jobs-none td {
+    padding: var(--sp-8) var(--sp-4);
+    text-align: center;
+    color: var(--text-tertiary);
+}
+
+.jobs-none-clear {
+    margin-left: var(--sp-2);
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--accent);
+    font-family: inherit;
+    font-size: inherit;
+    text-decoration: underline;
+    cursor: pointer;
+}
+
+/* --- Pager: 100 rows at a time, so 5,000 jobs stay instant --- */
+.jobs-pager {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: var(--sp-3);
+    margin-top: var(--sp-3);
+}
+
+.jobs-pager-label {
+    font-size: var(--fs-200);
+    color: var(--text-secondary);
+    font-variant-numeric: var(--font-numeric);
+}
+
+.jobs-pager-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.jobs-pager-btn:disabled:hover {
+    background: var(--surface-sunken);
+    border-color: var(--border-strong);
+}
+
+/* ==========================================================================
+   Job detail page  (#11)
+   --------------------------------------------------------------------------
+   Order on the page is the order an operator reads in: identity and state,
+   then the failure (when there is one), then lineage, then code, and the
+   dispatch settings last. `.job-hero` is the only block that is not a #6
+   section header -- it is the page's own <h1>.
+   ========================================================================== */
+.job-detail {
+    display: grid;
+    gap: var(--sp-5);
+}
+
+/* Each block on this page is a card. `.section` itself is only rhythm (#6), so
+   the card treatment and the heading gap live here rather than in the shell. */
+.job-detail > .section {
+    margin-bottom: 0;
+    /* A grid item's min-width is auto, which would let the code listing's
+       max-content width push the whole page sideways instead of scrolling
+       inside `.code-scroll`. Every scroller on this page needs this. */
+    min-width: 0;
+    padding: var(--sp-5) var(--sp-6);
+    background: var(--surface-raised);
+    border: var(--bw) solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-1);
+}
+
+.job-detail > .section > .section-heading {
+    margin-bottom: var(--sp-4);
+}
+
+/* --- Identity -------------------------------------------------------------- */
+.job-hero {
+    display: grid;
+    gap: var(--sp-3);
+}
+
+.job-hero-top {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    flex-wrap: wrap;
+}
+
+.job-hero-spacer {
+    flex: 1 1 auto;
+}
+
+/* The state badge. `tone-*` picks the ramp; the dot carries the color so the
+   label stays at text contrast rather than being tinted ink on tinted fill. */
+.job-state {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-2);
+    padding: var(--sp-1) var(--sp-3);
+    border-radius: var(--radius-full);
+    border: var(--bw) solid var(--border-subtle);
+    background: var(--surface-sunken);
+    font-size: var(--fs-200);
+    font-weight: var(--fw-semibold);
+    letter-spacing: 0.01em;
+    cursor: help;
+}
+
+.job-state-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: var(--radius-full);
+    background: var(--idle);
+}
+
+.job-state.tone-danger { background: var(--danger-bg); border-color: var(--danger-border); color: var(--danger); }
+.job-state.tone-danger .job-state-dot { background: var(--danger); }
+.job-state.tone-warn { background: var(--warn-bg); border-color: var(--warn-border); color: var(--warn); }
+.job-state.tone-warn .job-state-dot { background: var(--warn); }
+.job-state.tone-ok { background: var(--ok-bg); border-color: var(--ok-border); color: var(--ok); }
+.job-state.tone-ok .job-state-dot { background: var(--ok); }
+.job-state.tone-idle { color: var(--text-secondary); }
+
+/* A live job that keeps handing itself back: the same badge as the jobs table,
+   so the signal looks the same wherever you meet it. */
+.job-handbacks {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    padding: 1px var(--sp-2);
+    border-radius: var(--radius-full);
+    background: var(--warn-bg);
+    border: var(--bw) solid var(--warn-border);
+    color: var(--warn);
+    font-size: var(--fs-100);
+    font-weight: var(--fw-semibold);
+    font-variant-numeric: var(--font-numeric);
+    cursor: help;
+}
+
+/* The type comes from the job JSON, so it is untrusted text of any length --
+   a 400-character "type" must not widen the page. Truncate, keep the full
+   value in the title. */
+.job-type-chip {
+    max-width: 12rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.job-hero-name {
+    font-size: var(--fs-700);
+    font-weight: var(--fw-semibold);
+    line-height: var(--lh-tight);
+    letter-spacing: -0.02em;
+    /* Job names are dotted paths that can be 60 characters long. */
+    overflow-wrap: anywhere;
+}
+
+.job-hero-where {
+    font-size: var(--fs-300);
+    color: var(--text-secondary);
+    margin-top: calc(var(--sp-1) * -1);
+}
+
+.job-hero-id {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    min-width: 0;
+}
+
+.job-hero-id-text {
+    font-family: var(--font-mono);
+    font-size: var(--fs-200);
+    color: var(--text-tertiary);
+    overflow-wrap: anywhere;
+}
+
+/* The four facts that are worth a glance. Everything else is demoted to the
+   Configuration grid at the foot of the page. */
+.job-facts {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: var(--sp-2) var(--sp-4);
+    margin-top: var(--sp-2);
+    padding-top: var(--sp-4);
+    border-top: var(--bw) solid var(--border-subtle);
+}
+
+.job-fact dt {
+    font-size: var(--fs-100);
+    text-transform: uppercase;
+    letter-spacing: var(--tracking-label);
+    font-weight: var(--fw-semibold);
+    color: var(--text-tertiary);
+}
+
+.job-fact dd {
+    display: flex;
+    align-items: baseline;
+    gap: var(--sp-2);
+    flex-wrap: wrap;
+    font-size: var(--fs-500);
+    font-weight: var(--fw-semibold);
+    line-height: var(--lh-snug);
+    overflow-wrap: anywhere;
+}
+
+.job-fact-sub {
+    font-size: var(--fs-200);
+    font-weight: var(--fw-regular);
+    color: var(--text-tertiary);
+}
+
+.job-fact.tone-danger dd { color: var(--danger); }
+.job-fact.tone-warn dd { color: var(--warn); }
+
+/* --- Failure --------------------------------------------------------------- */
+/* On a broken job this is the whole reason the page is open, so it sits second
+   -- directly under the identity -- and it is the one block with a tinted edge. */
+.job-fail {
+    border-color: var(--danger-border);
+    box-shadow: var(--shadow-1), inset 3px 0 0 var(--danger);
+}
+
+.job-fail .section-title {
+    color: var(--danger);
+}
+
+.job-fail-message {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--sp-3);
+    padding: var(--sp-4);
+    border-radius: var(--radius-sm);
+    background: var(--danger-bg);
+    border: var(--bw) solid var(--danger-border);
+}
+
+.job-fail-icon {
+    display: flex;
+    color: var(--danger);
+    flex: none;
+    margin-top: 1px;
+}
+
+.job-fail-text {
+    flex: 1 1 auto;
+    min-width: 0;
+    font-family: var(--font-mono);
+    font-size: var(--fs-300);
+    line-height: var(--lh-snug);
+    color: var(--text-primary);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+.job-trace {
+    min-width: 0;
+    margin-top: var(--sp-4);
+    border: var(--bw) solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+    background: var(--surface-sunken);
+}
+
+.job-trace-bar {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-3);
+    padding: var(--sp-2) var(--sp-3);
+    border-bottom: var(--bw) solid var(--border-subtle);
+}
+
+.job-trace-label {
+    font-size: var(--fs-100);
+    text-transform: uppercase;
+    letter-spacing: var(--tracking-label);
+    font-weight: var(--fw-semibold);
+    color: var(--text-secondary);
+}
+
+.job-trace-hint {
+    flex: 1 1 auto;
+    font-size: var(--fs-100);
+    color: var(--text-tertiary);
+}
+
+.job-trace-body {
+    margin: 0;
+    max-width: 100%;
+    padding: var(--sp-3) 0;
+    max-height: 22rem;
+    overflow: auto;
+    font-family: var(--font-mono);
+    font-size: var(--fs-200);
+    line-height: 1.65;
+}
+
+.trace-line {
+    display: block;
+    padding: 0 var(--sp-4);
+    color: var(--text-secondary);
+    white-space: pre;
+}
+
+/* The tail is the last frame and the exception: the two lines anyone reads. */
+.trace-line.is-tail {
+    color: var(--text-primary);
+    background: var(--danger-bg);
+    box-shadow: inset 2px 0 0 var(--danger-border);
+}
+
+.trace-line.is-exception {
+    color: var(--danger);
+    font-weight: var(--fw-semibold);
+    box-shadow: inset 2px 0 0 var(--danger);
+}
+
+/* --- Lineage --------------------------------------------------------------- */
+.job-lineage {
+    min-width: 0;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: var(--sp-5);
+}
+
+.job-lineage-title {
+    font-size: var(--fs-200);
+    font-weight: var(--fw-semibold);
+    text-transform: uppercase;
+    letter-spacing: var(--tracking-label);
+    color: var(--text-tertiary);
+    margin-bottom: var(--sp-3);
+}
+
+.job-lineage-empty {
+    font-size: var(--fs-300);
+    color: var(--text-tertiary);
+}
+
+.job-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--sp-2);
+}
+
+/* A chip navigates when the job is in hand and greys out when it is only an
+   id -- a completed parent has no page, and a dead link is worse than a fact. */
+.job-chip {
+    display: inline-flex;
+    min-width: 0;
+    align-items: center;
+    gap: var(--sp-2);
+    max-width: 100%;
+    padding: var(--sp-1) var(--sp-2) var(--sp-1) var(--sp-3);
+    border-radius: var(--radius-full);
+    border: var(--bw) solid var(--accent-border);
+    background: var(--accent-bg);
+    color: var(--accent);
+    font-family: inherit;
+    font-size: var(--fs-300);
+    font-weight: var(--fw-medium);
+    cursor: pointer;
+    transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease),
+        transform var(--dur-fast) var(--ease);
+}
+
+.job-chip:hover {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--accent-fg);
+    transform: translateY(-1px);
+}
+
+.job-chip-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 16rem;
+}
+
+.job-chip-id {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: var(--font-mono);
+    font-size: var(--fs-100);
+    opacity: 0.75;
+}
+
+.job-chip.is-unresolved {
+    background: var(--surface-sunken);
+    border-color: var(--border-subtle);
+    border-style: dashed;
+    color: var(--text-tertiary);
+    cursor: help;
+    padding-right: var(--sp-1);
+}
+
+.job-chip.is-unresolved:hover {
+    transform: none;
+    background: var(--surface-sunken);
+    border-color: var(--border-strong);
+    color: var(--text-secondary);
+}
+
+/* --- Code ------------------------------------------------------------------ */
+.code-scroll {
+    max-width: 100%;
+    max-height: 28rem;
+    overflow: auto;
+    border: var(--bw) solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    background: var(--surface-sunken);
+}
+
+.code-listing {
+    display: block;
+    min-width: max-content;
+    padding: var(--sp-3) 0;
+    font-family: var(--font-mono);
+    font-size: var(--fs-200);
+    line-height: 1.7;
+}
+
+.code-line {
+    display: flex;
+    gap: var(--sp-4);
+    padding-right: var(--sp-4);
+    white-space: pre;
+}
+
+.code-line:hover {
+    background: var(--surface-raised);
+}
+
+/* The gutter sticks so a long line's number is still there after a sideways
+   scroll. `user-select: none` keeps the numbers out of a text selection. */
+.code-ln {
+    position: sticky;
+    left: 0;
+    flex: none;
+    width: 3.5rem;
+    padding-right: var(--sp-3);
+    text-align: right;
+    color: var(--text-tertiary);
+    background: var(--surface-sunken);
+    border-right: var(--bw) solid var(--border-subtle);
+    user-select: none;
+    font-variant-numeric: var(--font-numeric);
+}
+
+.code-line:hover .code-ln {
+    background: var(--surface-raised);
+    color: var(--text-secondary);
+}
+
+.code-src {
+    flex: 1 1 auto;
+}
+
+.tok-keyword { color: var(--syntax-keyword); font-weight: var(--fw-medium); }
+.tok-string { color: var(--syntax-string); }
+.tok-comment { color: var(--syntax-comment); font-style: italic; }
+.tok-number { color: var(--syntax-number); }
+.tok-constant { color: var(--syntax-constant); }
+.tok-meta { color: var(--syntax-meta); }
+
+/* --- Configuration (demoted) ---------------------------------------------- */
+/* Deliberately quieter than everything above it: same grid, smaller type, no
+   emphasis. It is reference, not news. */
+.job-config {
+    background: transparent;
+    box-shadow: none;
+}
+
+.job-config-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: var(--sp-4);
+}
+
+.job-config-grid .job-fact dd {
+    font-size: var(--fs-300);
+    font-weight: var(--fw-medium);
+    font-family: var(--font-mono);
+    color: var(--text-secondary);
+}
+
+/* The plain block: the traceback well and anywhere raw text needs a recess.
+   The run-job log has its own terminal now (`.console`, #13). */
 .code-block {
-    background: var(--bg-tertiary);
-    border-radius: 8px;
-    padding: 1rem;
-    font-family: 'Courier New', monospace;
-    font-size: 0.8rem;
+    background: var(--surface-sunken);
+    border: var(--bw) solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    padding: var(--sp-4);
+    font-family: var(--font-mono);
+    font-size: var(--fs-200);
+    line-height: var(--lh-snug);
     white-space: pre-wrap;
     overflow-x: auto;
     max-height: 300px;
@@ -436,78 +2717,147 @@ main {
 
 /* Buttons */
 .btn {
-    padding: 0.75rem 1.5rem;
-    border: none;
-    border-radius: 8px;
-    font-weight: 600;
+    padding: var(--sp-2) var(--sp-4);
+    border: var(--bw) solid transparent;
+    border-radius: var(--radius-sm);
+    font-family: inherit;
+    font-size: var(--fs-300);
+    font-weight: var(--fw-semibold);
     cursor: pointer;
-    transition: all 0.2s ease;
+    transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease),
+        transform var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
     display: inline-flex;
     align-items: center;
-    gap: 0.5rem;
+    gap: var(--sp-2);
     text-decoration: none;
-    font-size: 0.9rem;
 }
 
 .btn-primary {
     background: var(--accent);
-    color: white;
+    color: var(--accent-fg);
 }
 
 .btn-primary:disabled {
-    background: grey;
-    color: white;
+    background: var(--idle-bg);
+    border-color: var(--border-subtle);
+    color: var(--text-tertiary);
     cursor: not-allowed;
 }
 
 .btn-primary:hover:not(:disabled) {
     background: var(--accent-hover);
-    transform: translateY(-2px);
+    transform: translateY(-1px);
 }
 
 .btn-secondary {
-    background: var(--bg-tertiary);
+    background: var(--surface-sunken);
     color: var(--text-primary);
-    border: 1px solid var(--border);
+    /* --border-control, not --border-strong: this fill sits one step off the
+       page ground, so the border is what identifies it as a control (#17). */
+    border-color: var(--border-control);
 }
 
 .btn-secondary:hover {
-    background: var(--border);
+    background: var(--surface-raised);
+    border-color: var(--accent-border);
+}
+
+/* Quiet variants (#12): bulk controls and toolbar buttons that must not
+   compete with the primary action in the same dialog. */
+.btn-ghost {
+    background: transparent;
+    color: var(--text-secondary);
+    border-color: var(--border-subtle);
+}
+
+.btn-ghost:hover:not(:disabled) {
+    background: var(--surface-sunken);
+    border-color: var(--border-strong);
+    color: var(--text-primary);
+}
+
+.btn-ghost:disabled {
+    color: var(--text-tertiary);
+    cursor: not-allowed;
+}
+
+.btn-ghost[aria-pressed="true"] {
+    background: var(--accent-bg);
+    border-color: var(--accent-border);
+    color: var(--accent);
+}
+
+.btn-sm {
+    padding: var(--sp-1) var(--sp-2);
+    font-size: var(--fs-100);
+    font-weight: var(--fw-medium);
 }
 
 .btn-back {
-    margin-bottom: 1.5rem;
+    margin-bottom: var(--sp-6);
 }
 
-/* Modal */
+/* ==========================================================================
+   Modal  (#6 -- one generic shell, created on demand by openModal())
+   --------------------------------------------------------------------------
+   A modal only exists in the DOM while it is open, so `.modal` is the open
+   state; `.is-closing` plays the exit. `data-size="sm"` is help copy, `"lg"`
+   is the parent tree and tracebacks. `body.modal-open` locks page scroll.
+   `[inert]` (#10) marks a modal that is stacked underneath the live one, or
+   on its way out: it takes no input, and only the live dialog paints a scrim,
+   so two stacked modals do not blur and dim the page twice.
+   ========================================================================== */
 .modal {
-    display: none;
     position: fixed;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
-    background: rgba(0, 0, 0, 0.5);
+    inset: 0;
     z-index: 1000;
-    backdrop-filter: blur(4px);
-}
-
-.modal.show {
     display: flex;
     align-items: center;
     justify-content: center;
-    animation: modalFade 0.3s ease-out;
+    padding: var(--sp-4);
+    background: var(--overlay);
+    backdrop-filter: blur(6px);
+    animation: modalFade var(--dur) var(--ease-out);
+}
+
+.modal.is-closing {
+    animation: modalFade var(--dur-fast) var(--ease) reverse forwards;
+    /* Dead to input for the 140ms it is still in the DOM: a click here must
+       never reach the modal underneath. */
+    pointer-events: none;
+}
+
+/* Stacked underneath: one scrim for the stack, not one per modal. */
+.modal[inert]:not(.is-closing) {
+    background: transparent;
+    backdrop-filter: none;
+}
+
+body.modal-open {
+    overflow: hidden;
 }
 
 .modal-content {
-    background: var(--bg-secondary);
-    border-radius: 16px;
-    padding: 2rem;
-    max-width: 90vw;
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    max-width: 560px;
+    max-height: min(86vh, 720px);
+    overflow: hidden;
+    background: var(--surface-overlay);
+    border: var(--bw) solid var(--border-subtle);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-3);
+    animation: modalSlide var(--dur-slow) var(--ease-out);
+}
+
+.modal[data-size="lg"] .modal-content {
+    max-width: 900px;
     max-height: 90vh;
-    overflow-y: auto;
-    box-shadow: var(--shadow-lg);
-    animation: modalSlide 0.3s ease-out;
+}
+
+.modal.is-closing .modal-content {
+    animation: none;
 }
 
 @keyframes modalFade {
@@ -516,7 +2866,7 @@ main {
 }
 
 @keyframes modalSlide {
-    from { transform: translateY(-50px) scale(0.9); }
+    from { transform: translateY(-16px) scale(0.98); }
     to { transform: translateY(0) scale(1); }
 }
 
@@ -524,49 +2874,376 @@ main {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: 1.5rem;
-    padding-bottom: 1rem;
-    border-bottom: 1px solid var(--border);
+    gap: var(--sp-4);
+    flex: none;
+    padding: var(--sp-5) var(--sp-6);
+    border-bottom: var(--bw) solid var(--border-subtle);
 }
 
 .modal-title {
-    font-size: 1.5rem;
-    font-weight: 600;
+    font-size: var(--fs-600);
+    font-weight: var(--fw-semibold);
+    line-height: var(--lh-snug);
 }
 
-.close-btn {
-    background: none;
-    border: none;
-    font-size: 1.5rem;
-    cursor: pointer;
+/* The header stays put; only the body scrolls. */
+.modal-body {
+    flex: 1 1 auto;
+    overflow-y: auto;
+    padding: var(--sp-6);
+}
+
+/* --- Help copy, rendered from SECTION_DOCS by helpBlocks() --- */
+.help-doc {
+    max-width: 62ch;
+    font-size: var(--fs-400);
+    line-height: var(--lh-normal);
     color: var(--text-secondary);
-    padding: 0.5rem;
-    border-radius: 4px;
-    transition: all 0.2s ease;
 }
 
-.close-btn:hover {
-    background: var(--bg-tertiary);
+.help-h {
+    margin: var(--sp-6) 0 var(--sp-2);
+    font-size: var(--fs-200);
+    font-weight: var(--fw-semibold);
+    letter-spacing: var(--tracking-label);
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+}
+
+.help-doc > :first-child {
+    margin-top: 0;
+}
+
+.help-p {
+    margin: 0 0 var(--sp-3);
+}
+
+.help-ul {
+    margin: 0 0 var(--sp-3);
+    padding-left: var(--sp-5);
+}
+
+.help-ul li {
+    margin-bottom: var(--sp-2);
+}
+
+.help-dl {
+    margin: 0 0 var(--sp-3);
+}
+
+.help-dl-row {
+    display: grid;
+    grid-template-columns: 11rem 1fr;
+    gap: var(--sp-2) var(--sp-4);
+    padding: var(--sp-2) 0;
+    border-top: var(--bw) solid var(--border-subtle);
+}
+
+.help-dl-row dt {
+    font-weight: var(--fw-semibold);
     color: var(--text-primary);
 }
 
-/* Loading States */
-.loading {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 2rem;
-    color: var(--text-secondary);
+.help-dl-row dd {
+    margin: 0;
 }
 
+/* The operator aside: "if this keeps climbing, ...". */
+.help-note {
+    margin: 0 0 var(--sp-3);
+    padding: var(--sp-3) var(--sp-4);
+    background: var(--accent-bg);
+    border-left: 2px solid var(--accent-border);
+    border-radius: var(--radius-xs);
+    font-size: var(--fs-300);
+    color: var(--text-primary);
+}
+
+/* ==========================================================================
+   Tooltip  (#7 -- one floating element, shared by every [data-tip])
+   Positioned by `positionTip()`; never interactive, so it cannot swallow the
+   click that opens the full explanation.
+   ========================================================================== */
+.tooltip {
+    position: fixed;
+    z-index: 1200;
+    max-width: 17rem;
+    padding: var(--sp-2) var(--sp-3);
+    background: var(--surface-overlay);
+    border: var(--bw) solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    box-shadow: var(--shadow-2);
+    color: var(--text-primary);
+    font-size: var(--fs-200);
+    line-height: var(--lh-snug);
+    pointer-events: none;
+    animation: tipIn var(--dur-fast) var(--ease-out);
+}
+
+.tooltip[hidden] {
+    display: none;
+}
+
+@keyframes tipIn {
+    from { opacity: 0; transform: translateY(2px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+/* ==========================================================================
+   Job states document  (#7 -- rendered by metricDocBody())
+   The Status (i) and a click on any ledger row open the same document; a row
+   click anchors it at that metric. Lives inside `.help-doc`, so it inherits
+   the help type styles and only adds the per-metric entry and the diagram.
+   ========================================================================== */
+.metric-doc {
+    max-width: 47rem;
+    margin-inline: auto;
+}
+
+.metric-doc > .help-p,
+.metric-doc .metric .help-p,
+.metric-doc .help-ul,
+.metric-doc .help-note {
+    max-width: 64ch;
+}
+
+/* --- The lifecycle diagram: the branches are what prose cannot show --- */
+.lifecycle {
+    margin: 0 0 var(--sp-5);
+    padding: var(--sp-4) var(--sp-2) 0;
+    background: var(--surface-sunken);
+    border: var(--bw) solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    /* A diagram is one of the three things allowed to be wider than the page
+       -- it scrolls inside its own box rather than shrinking its labels below
+       legibility at 400px. */
+    overflow-x: auto;
+}
+
+.lifecycle-svg {
+    display: block;
+    width: 100%;
+    min-width: 34rem;
+    height: auto;
+}
+
+.lc-node rect {
+    fill: var(--lc-bg);
+    stroke: var(--lc-border);
+    stroke-width: 1;
+}
+
+.lc-node.tone-idle { --lc-bg: var(--surface-raised); --lc-border: var(--border-strong); }
+.lc-node.tone-info { --lc-bg: var(--info-bg); --lc-border: var(--info-border); }
+.lc-node.tone-warn { --lc-bg: var(--warn-bg); --lc-border: var(--warn-border); }
+.lc-node.tone-ok { --lc-bg: var(--ok-bg); --lc-border: var(--ok-border); }
+.lc-node.tone-danger { --lc-bg: var(--danger-bg); --lc-border: var(--danger-border); }
+
+.lc-node text {
+    fill: var(--text-primary);
+    font-family: var(--font-sans);
+    font-size: 13px;
+    font-weight: var(--fw-semibold);
+    text-anchor: middle;
+}
+
+.lc-node.is-branch text {
+    font-size: 12px;
+    font-weight: var(--fw-medium);
+    fill: var(--text-secondary);
+}
+
+/* --text-tertiary, not a border token: these lines carry meaning, and
+   --border-strong is too quiet to follow across the diagram in either theme. */
+.lc-flow path {
+    fill: none;
+    stroke: var(--text-tertiary);
+    stroke-width: 1.5;
+    marker-end: url(#lcArrow);
+}
+
+/* The hand-back arc is a job going backwards -- dashed, so it never reads as
+   part of the forward path. */
+.lc-flow path.lc-flow-soft {
+    stroke-dasharray: 4 3;
+}
+
+.lc-head {
+    fill: var(--text-tertiary);
+}
+
+.lc-edge {
+    fill: var(--text-tertiary);
+    font-family: var(--font-sans);
+    font-size: 10.5px;
+    text-anchor: middle;
+}
+
+.lifecycle-caption {
+    padding: var(--sp-3) var(--sp-2) var(--sp-4);
+    font-size: var(--fs-200);
+    line-height: var(--lh-snug);
+    color: var(--text-tertiary);
+}
+
+/* --- The arithmetic, spelled out once --- */
+.metric-math {
+    margin: 0 0 var(--sp-4);
+    padding: var(--sp-3) var(--sp-4);
+    background: var(--surface-sunken);
+    border-radius: var(--radius-sm);
+    font-size: var(--fs-300);
+}
+
+.metric-math-line {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--sp-2);
+    padding: var(--sp-1) 0;
+}
+
+.metric-math-key {
+    min-width: 5.5rem;
+    font-weight: var(--fw-semibold);
+    color: var(--text-primary);
+}
+
+/* --- One entry per ledger row, in lifecycle order --- */
+.metric {
+    position: relative;
+    margin: 0 0 var(--sp-4);
+    padding: var(--sp-3) var(--sp-4);
+    border-left: 2px solid var(--metric-tone, var(--border-strong));
+    border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+    scroll-margin-block: var(--sp-6);
+    transition: background-color var(--dur) var(--ease-out);
+}
+
+.metric.tone-idle { --metric-tone: var(--idle); }
+.metric.tone-info { --metric-tone: var(--info); }
+.metric.tone-warn { --metric-tone: var(--warn); }
+.metric.tone-ok { --metric-tone: var(--ok); }
+.metric.tone-danger { --metric-tone: var(--danger); }
+.metric.tone-accent { --metric-tone: var(--accent); }
+
+/* The entry the ledger row asked for: tinted, ruled, and flashed once so the
+   eye lands on it after the scroll. */
+.metric.is-active {
+    background: var(--accent-bg);
+    box-shadow: inset 0 0 0 var(--bw) var(--accent-border);
+    animation: metric-land var(--dur-slow) var(--ease-out);
+}
+
+@keyframes metric-land {
+    from { background-color: transparent; }
+    to { background-color: var(--accent-bg); }
+}
+
+/* Same measure as the prose, so `counts.x` right-aligns with the text block
+   instead of drifting off toward the modal edge. */
+.metric-head {
+    max-width: 64ch;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--sp-2);
+    margin-bottom: var(--sp-2);
+}
+
+.metric-dot {
+    width: 0.5rem;
+    height: 0.5rem;
+    flex: none;
+    border-radius: var(--radius-full);
+    background: var(--metric-tone, var(--idle));
+}
+
+.metric-name {
+    font-size: var(--fs-500);
+    font-weight: var(--fw-semibold);
+    color: var(--text-primary);
+}
+
+.metric-chip {
+    padding: 1px var(--sp-2);
+    background: var(--surface-sunken);
+    border: var(--bw) solid var(--border-subtle);
+    border-radius: var(--radius-full);
+    font-size: var(--fs-100);
+    font-weight: var(--fw-semibold);
+    letter-spacing: var(--tracking-label);
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+    white-space: nowrap;
+}
+
+.metric-chip[data-group="sum"],
+.metric-chip[data-group="sum-line"] {
+    background: var(--accent-bg);
+    border-color: var(--accent-border);
+    color: var(--accent);
+}
+
+.metric-chip[data-group="subset"] {
+    background: var(--warn-bg);
+    border-color: var(--warn-border);
+    color: var(--warn);
+}
+
+/* The literal counts key, for anyone reading /data next to the dashboard. */
+.metric-key {
+    margin-left: auto;
+    font-family: var(--font-mono);
+    font-size: var(--fs-200);
+    color: var(--text-tertiary);
+}
+
+.metric-tip {
+    margin: 0 0 var(--sp-2);
+    font-size: var(--fs-400);
+    font-weight: var(--fw-medium);
+    color: var(--text-primary);
+}
+
+.metric .help-p {
+    font-size: var(--fs-300);
+}
+
+.metric .help-note {
+    font-size: var(--fs-300);
+}
+
+.close-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    background: none;
+    border: none;
+    font-family: inherit;
+    line-height: 1;
+    cursor: pointer;
+    color: var(--text-secondary);
+    padding: var(--sp-2);
+    border-radius: var(--radius-sm);
+    transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+
+.close-btn:hover {
+    background: var(--surface-sunken);
+    color: var(--text-primary);
+}
+
+/* The last spinner in the app: the requeue button, where the shape of what is
+   coming genuinely is not known. Everything else loads as a skeleton (#16). */
 .spinner {
-    width: 2rem;
-    height: 2rem;
-    border: 2px solid var(--border);
+    width: var(--sp-8);
+    height: var(--sp-8);
+    border: 2px solid var(--border-subtle);
     border-top: 2px solid var(--accent);
-    border-radius: 50%;
+    border-radius: var(--radius-full);
     animation: spin 1s linear infinite;
-    margin-right: 1rem;
+    margin-right: var(--sp-4);
 }
 
 @keyframes spin {
@@ -574,78 +3251,2036 @@ main {
     100% { transform: rotate(360deg); }
 }
 
-/* Tree View */
-.tree-view {
-    font-family: 'Courier New', monospace;
-    font-size: 0.8rem;
-    line-height: 1.4;
+/* ==========================================================================
+   Parent tree & results  (#12)
+   --------------------------------------------------------------------------
+   The dialog opened from the job page's Lineage section. Three layers:
+
+     .ptree-head    the summary line, the two bulk controls, the missing-parent
+                    warning
+     .ptree         the tree itself. Guide lines are the left border of
+                    `.ptree-kids` plus an elbow on each row's `::before`, so
+                    they cost no markup. Indent stops growing at `data-deep`
+                    (depth 8) -- a 12-level ancestry must not walk off the
+                    right edge. `.ptree-scroll` is the backstop; names truncate
+                    so it should rarely be needed.
+     .jsonv         the collapsible JSON viewer for one retained result. Value
+                    colors reuse the `--syntax-*` ramp so a result and the job
+                    code read as the same language.
+
+   Both twisties in here are `.twisty`: a real <button> carrying
+   `aria-expanded`, whose chevron rotates. `.twisty-spacer` keeps a leaf row's
+   text aligned with a branch's.
+   ========================================================================== */
+
+.twisty {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.25rem;
+    height: 1.25rem;
+    padding: 0;
+    border: none;
+    border-radius: var(--radius-xs);
+    background: transparent;
+    color: var(--text-tertiary);
+    cursor: pointer;
 }
 
-.tree-node {
-    margin: 0.5rem 0;
-    padding-left: 1rem;
-    border-left: 2px solid var(--border);
+.twisty:hover {
+    background: var(--surface-sunken);
+    color: var(--text-primary);
 }
 
-.tree-node:last-child {
-    border-left: 2px solid transparent;
+.twisty svg {
+    transition: transform var(--dur-fast) var(--ease-out);
 }
 
-.tree-content {
-    background: var(--bg-tertiary);
-    padding: 1rem;
-    border-radius: 8px;
-    margin-bottom: 0.5rem;
+.twisty[aria-expanded="true"] svg {
+    transform: rotate(90deg);
 }
 
-.tree-job-name {
-    font-weight: 600;
+.twisty-spacer {
+    flex: none;
+    width: 1.25rem;
+    height: 1.25rem;
+}
+
+/* --- Head ------------------------------------------------------------------ */
+.ptree-intro {
+    margin: 0 0 var(--sp-3);
+    font-size: var(--fs-300);
+    line-height: var(--lh-normal);
+    color: var(--text-secondary);
+}
+
+.ptree-intro strong {
+    color: var(--text-primary);
+    font-weight: var(--fw-semibold);
+}
+
+.ptree-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-3);
+    padding-bottom: var(--sp-3);
+    border-bottom: var(--bw) solid var(--border-subtle);
+}
+
+.ptree-facts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--sp-2) var(--sp-3);
+    margin: 0;
+    font-size: var(--fs-200);
+    color: var(--text-secondary);
+}
+
+/* Middot separators, drawn rather than typed, so the strings stay translatable
+   and a wrapped row never starts with a dot. */
+.ptree-facts span + span::before {
+    content: '·';
+    margin-right: var(--sp-3);
+    color: var(--text-tertiary);
+}
+
+.ptree-bar-actions {
+    display: flex;
+    gap: var(--sp-2);
+}
+
+.ptree-warn {
+    display: flex;
+    gap: var(--sp-2);
+    margin: var(--sp-3) 0 0;
+    padding: var(--sp-2) var(--sp-3);
+    border: var(--bw) solid var(--warn-border);
+    border-radius: var(--radius-sm);
+    background: var(--warn-bg);
+    color: var(--warn);
+    font-size: var(--fs-200);
+    line-height: var(--lh-snug);
+}
+
+/* --- The tree -------------------------------------------------------------- */
+.ptree-scroll {
+    min-width: 0;
+    margin-top: var(--sp-4);
+    overflow-x: auto;
+}
+
+.ptree {
+    min-width: 0;
+}
+
+.ptree-row {
+    position: relative;
+    display: flex;
+    align-items: flex-start;
+    gap: var(--sp-2);
+    min-width: 0;
+    padding: var(--sp-2);
+    border: var(--bw) solid transparent;
+    border-radius: var(--radius-sm);
+}
+
+.ptree-row:hover {
+    background: var(--surface-sunken);
+}
+
+/* You came from this job. Everything nested below it is upstream of it. */
+.ptree-row.is-current {
+    background: var(--accent-bg);
+    border-color: var(--accent-border);
+}
+
+.ptree-row.is-current:hover {
+    background: var(--accent-bg);
+}
+
+.ptree-main {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.ptree-title {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--sp-1) var(--sp-2);
+    min-width: 0;
+}
+
+.ptree-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: var(--fs-300);
+    font-weight: var(--fw-semibold);
+    color: var(--text-primary);
+}
+
+.ptree-here {
+    flex: none;
+    padding: 0 var(--sp-2);
+    border: var(--bw) solid var(--accent-border);
+    border-radius: var(--radius-full);
+    background: var(--surface-raised);
     color: var(--accent);
-    margin-bottom: 0.5rem;
+    font-size: var(--fs-100);
+    font-weight: var(--fw-semibold);
+    letter-spacing: var(--tracking-label);
+    text-transform: uppercase;
 }
 
-.tree-result {
-    background: var(--bg-primary);
-    padding: 0.5rem;
-    border-radius: 4px;
-    margin-top: 0.5rem;
+.ptree-func {
+    max-width: 16rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: var(--font-mono);
+    font-size: var(--fs-100);
+    color: var(--text-tertiary);
+}
+
+.ptree-meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--sp-1) var(--sp-2);
+    min-width: 0;
+    margin-top: var(--sp-1);
+    font-size: var(--fs-100);
+    color: var(--text-tertiary);
+}
+
+.ptree-id {
+    font-family: var(--font-mono);
+    /* Every other id in the app is capped or ellipsised; this one was not, so
+       a 64-char hex id widened the row (#17). It wraps instead. */
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.ptree-type {
+    max-width: 12rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    padding: 0 var(--sp-2);
+    border: var(--bw) solid var(--border-subtle);
+    border-radius: var(--radius-full);
+    color: var(--text-secondary);
+}
+
+.ptree-side {
+    flex: none;
+}
+
+/* A parent the hub could not produce: dashed, quiet, but the id is still there
+   because the id is what you grep the logs for. */
+.ptree-node.is-missing > .ptree-row {
+    border-style: dashed;
+    border-color: var(--border-strong);
+    background: var(--surface-sunken);
+}
+
+.ptree-node.is-missing .ptree-name {
+    font-weight: var(--fw-medium);
+    color: var(--text-secondary);
+}
+
+/* Guides: the group's left border is the spine, each row's ::before is the
+   elbow onto it. */
+.ptree-kids {
+    margin-left: 0.625rem;
+    padding-left: 0.875rem;
+    border-left: var(--bw) solid var(--border-subtle);
+}
+
+.ptree-node[data-deep] > .ptree-kids {
+    padding-left: var(--sp-2);
+}
+
+.ptree-kids > .ptree-node > .ptree-row::before {
+    content: '';
+    position: absolute;
+    top: 1.15rem;
+    left: calc(-0.875rem - var(--bw));
+    width: 0.75rem;
+    border-top: var(--bw) solid var(--border-subtle);
+}
+
+.ptree-node[data-deep] > .ptree-kids > .ptree-node > .ptree-row::before {
+    left: calc(-1 * var(--sp-2) - var(--bw));
+    width: var(--sp-1);
+}
+
+.ptree-more,
+.jsonv-more {
+    display: block;
+    margin: var(--sp-1) 0 var(--sp-2) var(--sp-2);
+    padding: var(--sp-1) var(--sp-3);
+    border: var(--bw) dashed var(--border-strong);
+    border-radius: var(--radius-full);
+    background: transparent;
+    color: var(--text-secondary);
+    font-family: inherit;
+    font-size: var(--fs-100);
+    cursor: pointer;
+}
+
+.ptree-more:hover,
+.jsonv-more:hover {
+    border-style: solid;
+    border-color: var(--accent-border);
+    color: var(--accent);
+}
+
+/* --- The result panel, per node -------------------------------------------- */
+.ptree-result {
+    margin-left: 1.75rem;
+}
+
+.ptree-result-btn {
+    display: inline-flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--sp-2);
+    padding: var(--sp-1) var(--sp-2) var(--sp-1) var(--sp-1);
+    border: var(--bw) solid transparent;
+    border-radius: var(--radius-full);
+    background: transparent;
+    color: var(--text-secondary);
+    font-family: inherit;
+    font-size: var(--fs-100);
+    cursor: pointer;
+}
+
+.ptree-result-btn:hover {
+    border-color: var(--border-subtle);
+    background: var(--surface-sunken);
+    color: var(--text-primary);
+}
+
+.ptree-result-btn svg {
+    color: var(--text-tertiary);
+    transition: transform var(--dur-fast) var(--ease-out);
+}
+
+.ptree-result-btn[aria-expanded="true"] svg {
+    transform: rotate(90deg);
+}
+
+.ptree-result-label {
+    font-weight: var(--fw-semibold);
+    letter-spacing: var(--tracking-label);
+    text-transform: uppercase;
+}
+
+.ptree-result-size {
+    white-space: nowrap;
+    font-family: var(--font-mono);
+    color: var(--text-tertiary);
+}
+
+.ptree-result .jsonv {
+    margin: var(--sp-2) 0 var(--sp-3);
+}
+
+.ptree-noresult {
+    margin: 0 0 var(--sp-2);
+    font-size: var(--fs-100);
+    color: var(--text-tertiary);
+}
+
+/* --- Loading and the two empty states -------------------------------------- */
+.ptree-loading-text {
+    margin: 0 0 var(--sp-4);
+    font-size: var(--fs-300);
+    color: var(--text-secondary);
+}
+
+.ptree-skeleton-row[data-indent="1"] { margin-left: 1.5rem; }
+.ptree-skeleton-row[data-indent="2"] { margin-left: 3rem; }
+.ptree-skeleton-row[data-indent="3"] { margin-left: 4.5rem; }
+
+/* ==========================================================================
+   Collapsible JSON viewer  (#12)
+   ========================================================================== */
+.jsonv {
+    min-width: 0;
+    border: var(--bw) solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    background: var(--surface-sunken);
+    font-family: var(--font-mono);
+    font-size: var(--fs-200);
+    line-height: 1.6;
+}
+
+/* Controls only: the RESULT toggle above already states the kind and size. */
+.jsonv-bar {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: var(--sp-2);
+    padding: var(--sp-1) var(--sp-2);
+    border-bottom: var(--bw) solid var(--border-subtle);
+}
+
+.jsonv-size {
+    font-size: var(--fs-100);
+    color: var(--text-tertiary);
+    font-variant-numeric: var(--font-numeric);
+}
+
+.jsonv-tree,
+.jsonv-raw {
+    max-height: 22rem;
+    overflow: auto;
+    padding: var(--sp-2);
+    margin: 0;
+}
+
+.jsonv-raw {
+    white-space: pre;
+    color: var(--text-secondary);
+}
+
+.jsonv-line,
+.jsonv-row {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    min-width: 0;
+    padding: 0 var(--sp-1);
+    border-radius: var(--radius-xs);
+}
+
+.jsonv-line {
+    cursor: pointer;
+}
+
+.jsonv-line:hover,
+.jsonv-row:hover {
+    background: var(--surface-raised);
+}
+
+.jsonv-kids {
+    margin-left: 0.625rem;
+    padding-left: 0.625rem;
+    border-left: var(--bw) dashed var(--border-subtle);
+}
+
+.jsonv-key {
+    flex: none;
+    max-width: 18rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-primary);
+    font-weight: var(--fw-medium);
+}
+
+.jsonv-key.is-index {
+    color: var(--text-tertiary);
+    font-weight: var(--fw-regular);
+}
+
+.jsonv-colon {
+    color: var(--text-tertiary);
+    font-weight: var(--fw-regular);
+}
+
+.jsonv-brace,
+.jsonv-count {
+    flex: none;
+    font-size: var(--fs-100);
+    color: var(--text-tertiary);
+}
+
+.jsonv-val {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: pre;
+}
+
+.jsonv-val.is-full {
     white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+.jsonv-val.is-string { color: var(--syntax-string); }
+.jsonv-val.is-number { color: var(--syntax-number); }
+.jsonv-val.is-boolean { color: var(--syntax-constant); }
+.jsonv-val.is-null,
+.jsonv-val.is-undefined {
+    color: var(--text-tertiary);
+    font-style: italic;
+}
+
+.jsonv-grow {
+    flex: none;
+    padding: 0 var(--sp-2);
+    border: var(--bw) dashed var(--border-strong);
+    border-radius: var(--radius-full);
+    background: transparent;
+    color: var(--text-secondary);
+    font-family: inherit;
+    font-size: var(--fs-100);
+    cursor: pointer;
+}
+
+.jsonv-grow:hover {
+    border-style: solid;
+    border-color: var(--accent-border);
+    color: var(--accent);
+}
+
+.jsonv-empty {
+    margin: 0;
+    padding-left: 1.5rem;
+    font-size: var(--fs-100);
+    font-style: italic;
+    color: var(--text-tertiary);
+}
+
+/* Past half a megabyte the viewer waits to be asked: painting 40,000 rows on
+   open would freeze the dialog. */
+.jsonv-gate {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--sp-3);
+    padding: var(--sp-3);
+}
+
+.jsonv-gate-text {
+    flex: 1 1 16rem;
+    margin: 0;
+    font-family: var(--font-sans);
+    font-size: var(--fs-200);
+    color: var(--text-secondary);
+}
+
+/* ==========================================================================
+   Run-job console (#13)
+   A terminal, dark in both themes: bar (state / elapsed / lines / utilities),
+   scroller, and a floating "jump to the end" that only appears once the
+   operator has scrolled away from the tail.
+   ========================================================================== */
+.run-controls {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--sp-2);
+    margin-bottom: var(--sp-3);
+}
+
+.run-arm {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--sp-2);
+}
+
+.run-ask {
+    font-size: var(--fs-300);
+    font-weight: var(--fw-medium);
+    color: var(--text-primary);
+}
+
+/* The maze easter egg: a quiet toy that only shows up while you are waiting. */
+.run-maze {
+    display: inline-flex;
+    align-items: center;
+    padding: var(--sp-1) var(--sp-3);
+}
+
+.console {
+    position: relative;
+    border: var(--bw) solid var(--term-border);
+    border-radius: var(--radius-md);
+    background: var(--term-bg);
+    overflow: hidden;
+    box-shadow: var(--shadow-1);
+}
+
+.console-bar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--sp-2);
+    padding: var(--sp-2) var(--sp-3);
+    background: var(--term-bar);
+    border-bottom: var(--bw) solid var(--term-border);
+    font-size: var(--fs-200);
+    color: var(--term-dim);
+}
+
+.console-spacer {
+    flex: 1 1 var(--sp-2);
+}
+
+.console-state {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-2);
+    font-weight: var(--fw-medium);
+    color: var(--term-fg);
+}
+
+.console-dot {
+    width: var(--sp-2);
+    height: var(--sp-2);
+    border-radius: var(--radius-full);
+    background: currentColor;
+    color: var(--term-dim);
+    flex: none;
+}
+
+.console-state[data-tone="idle"] .console-dot { color: var(--term-dim); }
+.console-state[data-tone="info"] .console-dot { color: var(--term-meta); }
+.console-state[data-tone="ok"] .console-dot { color: var(--term-ok); }
+.console-state[data-tone="warn"] .console-dot { color: var(--term-warn); }
+.console-state[data-tone="danger"] .console-dot { color: var(--term-error); }
+
+.console-state[data-tone="ok"] .console-state-text { color: var(--term-ok); }
+.console-state[data-tone="warn"] .console-state-text { color: var(--term-warn); }
+.console-state[data-tone="danger"] .console-state-text { color: var(--term-error); }
+
+/* Running: the dot breathes. It is the only motion in the panel, and it is
+   the one thing an operator glances at to see the run is still alive. */
+.console-state[data-phase="running"] .console-dot {
+    animation: console-pulse 1.4s var(--ease) infinite;
+}
+
+@keyframes console-pulse {
+    0%, 100% { opacity: 1; box-shadow: 0 0 0 0 currentColor; }
+    50% { opacity: 0.45; box-shadow: 0 0 0 3px rgb(255 255 255 / 0.06); }
+}
+
+.console-elapsed,
+.console-count {
+    font-family: var(--font-mono);
+    font-size: var(--fs-100);
+    color: var(--term-dim);
+}
+
+.console-elapsed:empty,
+.console-count:empty {
+    display: none;
+}
+
+/* The utilities sit on the dark bar, so they cannot borrow page text colors. */
+.console-bar .console-btn {
+    background: transparent;
+    color: var(--term-dim);
+    border-color: var(--term-border);
+}
+
+.console-bar .console-btn:hover:not(:disabled) {
+    background: rgb(255 255 255 / 0.06);
+    border-color: var(--term-dim);
+    color: var(--term-fg);
+}
+
+.console-bar .copy-btn {
+    color: var(--term-dim);
+    opacity: 0.8;
+}
+
+.console-bar .copy-btn:disabled,
+.console-bar .console-btn:disabled {
+    opacity: 0.35;
+    cursor: default;
+    background: transparent;
+    border-color: var(--term-border);
+    color: var(--term-dim);
+}
+
+.console-bar .copy-btn:hover:not(:disabled) {
+    background: rgb(255 255 255 / 0.06);
+    border-color: var(--term-border);
+    color: var(--term-fg);
+}
+
+.console-bar .copy-btn.is-done {
+    color: var(--term-ok);
+    border-color: var(--term-ok);
+    background: rgb(255 255 255 / 0.06);
+}
+
+.console-bar .copy-btn.is-fail {
+    color: var(--term-error);
+    border-color: var(--term-error);
+    background: rgb(255 255 255 / 0.06);
+}
+
+.console-scroll {
+    max-height: min(52vh, 420px);
+    min-height: 6.5rem;
+    overflow: auto;
+    overscroll-behavior: contain;
+    padding: var(--sp-3);
+    font-family: var(--font-mono);
+    font-size: var(--fs-200);
+    line-height: var(--lh-snug);
+    color: var(--term-fg);
+}
+
+.console-line {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+.console-line[data-tone="error"] { color: var(--term-error); }
+.console-line[data-tone="warn"] { color: var(--term-warn); }
+.console-line[data-tone="ok"] { color: var(--term-ok); }
+.console-line[data-tone="meta"] { color: var(--term-meta); }
+
+.console-empty,
+.console-drop {
+    font-family: var(--font-sans);
+    font-size: var(--fs-200);
+    color: var(--term-dim);
+}
+
+.console-drop {
+    padding-bottom: var(--sp-2);
+    margin-bottom: var(--sp-2);
+    border-bottom: var(--bw) dashed var(--term-border);
+}
+
+.console-jump {
+    position: absolute;
+    right: var(--sp-3);
+    bottom: var(--sp-3);
+    padding: var(--sp-1) var(--sp-3);
+    border: var(--bw) solid var(--term-border);
+    border-radius: var(--radius-full);
+    background: var(--term-bar);
+    color: var(--term-fg);
+    font-family: var(--font-sans);
+    font-size: var(--fs-100);
+    font-weight: var(--fw-medium);
+    cursor: pointer;
+    box-shadow: var(--shadow-2);
+    transition: transform var(--dur-fast) var(--ease);
+}
+
+.console-jump:hover {
+    transform: translateY(-1px);
+    border-color: var(--term-dim);
+}
+
+/* ==========================================================================
+   Dangling deep link  (#15)
+   --------------------------------------------------------------------------
+   `#/job/<id>` and `#/worker/<id>` are addresses now, so they can point at
+   something that no longer exists. That is usually the *good* outcome (the
+   work finished), so this reads as an explanation, not an error card: the
+   calm dashed frame the empty states already use, never the danger ramp.
+   ========================================================================== */
+.gone {
+    /* The copy is capped at 62ch; letting the frame run the full page width
+       around it just reads as a large empty box. */
+    max-width: 720px;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--sp-3);
+    padding: var(--sp-8) var(--sp-6);
+    border: var(--bw) dashed var(--border-strong);
+    border-radius: var(--radius-lg);
+    background: var(--surface-raised);
+}
+
+.gone-icon {
+    width: 28px;
+    height: 28px;
+    fill: none;
+    stroke: var(--text-tertiary);
+    stroke-width: 1.6;
+    stroke-linecap: round;
+}
+
+.gone-lead {
+    font-size: var(--fs-600);
+    font-weight: var(--fw-semibold);
+    line-height: var(--lh-tight);
+}
+
+.gone-body {
+    margin: 0;
+    max-width: 62ch;
+    font-size: var(--fs-300);
+    color: var(--text-secondary);
+    line-height: var(--lh-normal);
+}
+
+.gone-body em {
+    font-style: normal;
+    font-weight: var(--fw-medium);
+    color: var(--text-primary);
+}
+
+.gone-id {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: var(--sp-2);
+    max-width: 100%;
+}
+
+.gone-id-label {
+    font-size: var(--fs-100);
+    font-weight: var(--fw-semibold);
+    letter-spacing: var(--tracking-label);
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+}
+
+.gone-id-value {
+    padding: 2px var(--sp-2);
+    border: var(--bw) solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    background: var(--surface-sunken);
+    font-family: var(--font-mono);
+    font-size: var(--fs-200);
+    color: var(--text-secondary);
+    /* Ids are opaque and can be long: wrap rather than push the page sideways. */
+    overflow-wrap: anywhere;
+}
+
+.gone-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--sp-2);
+    margin-top: var(--sp-2);
+}
+
+/* ==========================================================================
+   Loading, empty and failed  (#16)
+   --------------------------------------------------------------------------
+   Three different nothings, deliberately not alike:
+
+     .skel*   LOADING. Shimmering shapes in the layout the real thing will
+              occupy, so nothing shifts when data lands. Never a spinner where
+              the shape is already known.
+     .blank   EMPTY or FAILED, one component (`blankState()` in script.js),
+              told apart by [data-kind]. Left-aligned dashed frame, the same
+              language as #15's .gone, because they are the same idea. EMPTY
+              never uses the danger ramp -- an empty queue is usually the good
+              news. FAILED does, and always offers a way to try again.
+     .toast*  the outcome of an action that happened away from where you were
+              looking. There is no alert() in this app.
+
+   `.spinner` survives for the one place a shape genuinely is not known yet:
+   the inline spinner on the requeue button.
+   ========================================================================== */
+
+/* --- Skeletons ------------------------------------------------------------ */
+/* `.skel` is worn BY the real element (see skelCell() in script.js), so it
+   must not set height, font or padding -- only paint over what is there. The
+   element holds one `&nbsp;`, which gives it the line box of the real text. */
+.skel {
+    width: var(--skel-w, 100%);
+    max-width: 100%;
+    color: transparent;
+    border-radius: var(--radius-sm);
+    /* Not a flat gray: a static box reads as "broken", a moving one as
+       "coming". */
+    background: linear-gradient(90deg, var(--surface-sunken) 0%,
+        var(--surface-raised) 40%, var(--surface-sunken) 80%);
+    background-size: 300% 100%;
+    animation: skel-shimmer 1.4s var(--ease) infinite;
+}
+
+@keyframes skel-shimmer {
+    0% { background-position: 100% 0; }
+    100% { background-position: -100% 0; }
+}
+
+/* Inline elements need a box before a width means anything. */
+span.skel { display: inline-block; vertical-align: middle; }
+
+/* A skeleton is scenery, not content: never selectable, clickable, focusable,
+   and its host must not look interactive on the way past. */
+.is-skeleton {
+    pointer-events: none;
+    user-select: none;
+}
+
+/* A dot has no text to borrow a size from. */
+.skel-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: var(--radius-full);
+}
+
+/* The cards sit directly in the workers grid's own columns. */
+.workers-skeleton { display: contents; }
+
+/* Shape only; the shimmer comes from `.skel`. */
+.ptree-skeleton-row {
+    height: 2.75rem;
+    margin-bottom: var(--sp-2);
+}
+
+/* --- Empty and failed ----------------------------------------------------- */
+.blank {
+    /* Copy is capped at ~62ch; a frame running the full page width around it
+       just reads as a large empty box. */
+    max-width: 720px;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--sp-3);
+    padding: var(--sp-6) 0;
+}
+
+.blank[data-frame] {
+    padding: var(--sp-8) var(--sp-6);
+    border: var(--bw) dashed var(--border-strong);
+    border-radius: var(--radius-lg);
+    background: var(--surface-raised);
+}
+
+/* A failure is not a decorative state: give it the ramp, in a solid frame, so
+   it cannot be mistaken for one of the calm empties. */
+.blank[data-kind="failed"][data-frame] {
+    border-style: solid;
+    border-color: var(--danger-border);
+    background: var(--danger-bg);
+}
+
+/* The workers grid is a grid; a blank state spans it. */
+.workers-grid > .blank { grid-column: 1 / -1; }
+
+.blank-mark {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--sp-10);
+    height: var(--sp-10);
+    flex: none;
+    border: var(--bw) solid var(--idle-border);
+    border-radius: var(--radius-full);
+    background: var(--idle-bg);
+    color: var(--idle);
+}
+
+.blank-mark[data-tone="danger"] {
+    border-color: var(--danger-border);
+    background: var(--danger-bg);
+    color: var(--danger);
+}
+
+.blank-mark[data-tone="warn"] {
+    border-color: var(--warn-border);
+    background: var(--warn-bg);
+    color: var(--warn);
+}
+
+.blank-title {
+    margin: 0;
+    font-size: var(--fs-500);
+    font-weight: var(--fw-semibold);
+    color: var(--text-primary);
+}
+
+.blank[data-kind="failed"] .blank-title { color: var(--danger); }
+
+.blank-body {
+    max-width: 62ch;
+    margin: 0;
+    font-size: var(--fs-300);
+    line-height: var(--lh-normal);
+    color: var(--text-secondary);
+}
+
+.blank-hint {
+    max-width: 62ch;
+    margin: 0;
+    font-size: var(--fs-300);
+    line-height: var(--lh-normal);
+    color: var(--text-tertiary);
+}
+
+.blank-hint code {
+    padding: 1px var(--sp-2);
+    border: var(--bw) solid var(--border-subtle);
+    border-radius: var(--radius-xs);
+    background: var(--surface-sunken);
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    font-size: var(--fs-200);
+}
+
+/* Verbatim machine text -- an HTTP status, an exception message. Monospaced
+   and inset so it is obviously quoted, not written by us. */
+.blank-detail {
+    max-width: 100%;
+    margin: 0;
+    padding: var(--sp-2) var(--sp-3);
+    border-radius: var(--radius-sm);
+    background: var(--surface-sunken);
+    font-family: var(--font-mono);
+    font-size: var(--fs-100);
+    line-height: var(--lh-snug);
+    color: var(--text-secondary);
+    overflow-wrap: anywhere;
+}
+
+.blank-id {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    max-width: 100%;
+    margin: 0;
+    font-size: var(--fs-100);
+}
+
+.blank-id-label {
+    letter-spacing: var(--tracking-label);
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+    flex: none;
+}
+
+/* A hostile id renders as literal text and wraps rather than widening the
+   frame past the viewport. */
+.blank-id-value {
+    font-family: var(--font-mono);
+    color: var(--text-secondary);
+    overflow-wrap: anywhere;
+    min-width: 0;
+}
+
+.blank-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--sp-2);
+    margin-top: var(--sp-1);
+}
+
+/* --- Toasts --------------------------------------------------------------- */
+.toast-root {
+    position: fixed;
+    z-index: 1300;            /* above the modal layer: a failed action inside
+                                 a dialog still has to be readable */
+    right: var(--sp-5);
+    bottom: var(--sp-5);
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: var(--sp-2);
+    width: min(23rem, calc(100vw - 2 * var(--sp-4)));
+    pointer-events: none;     /* the page behind stays usable */
+}
+
+.toast {
+    position: relative;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: start;
+    gap: var(--sp-1) var(--sp-3);
+    width: 100%;
+    padding: var(--sp-3) var(--sp-3) calc(var(--sp-3) + 3px);
+    overflow: hidden;
+    border: var(--bw) solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--surface-overlay);
+    box-shadow: var(--shadow-3);
+    pointer-events: auto;
+    animation: toast-in var(--dur) var(--ease-out);
+}
+
+/* The tone lives in the left rule and the mark, not in a wash of color over
+   the text: a toast has to stay readable in both themes. */
+.toast::before {
+    content: "";
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 3px;
+    background: var(--idle);
+}
+
+.toast[data-tone="ok"]::before     { background: var(--ok); }
+.toast[data-tone="info"]::before   { background: var(--info); }
+.toast[data-tone="warn"]::before   { background: var(--warn); }
+.toast[data-tone="danger"]::before { background: var(--danger); }
+
+.toast-mark {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--sp-5);
+    height: var(--sp-5);
+    flex: none;
+    border-radius: var(--radius-full);
+    color: var(--idle);
+    background: var(--idle-bg);
+}
+
+.toast[data-tone="ok"] .toast-mark     { color: var(--ok);     background: var(--ok-bg); }
+.toast[data-tone="info"] .toast-mark   { color: var(--info);   background: var(--info-bg); }
+.toast[data-tone="warn"] .toast-mark   { color: var(--warn);   background: var(--warn-bg); }
+.toast[data-tone="danger"] .toast-mark { color: var(--danger); background: var(--danger-bg); }
+
+.toast-body { min-width: 0; }
+
+.toast-message {
+    margin: 0;
+    font-size: var(--fs-300);
+    font-weight: var(--fw-semibold);
+    line-height: var(--lh-snug);
+    color: var(--text-primary);
+    overflow-wrap: anywhere;
+}
+
+.toast-detail {
+    margin: var(--sp-1) 0 0;
+    font-size: var(--fs-200);
+    line-height: var(--lh-snug);
+    color: var(--text-secondary);
+    overflow-wrap: anywhere;
+}
+
+/* Under the copy, not beside it. */
+.toast-action { margin-top: var(--sp-2); }
+
+.toast-close {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--sp-5);
+    height: var(--sp-5);
+    flex: none;
+    padding: 0;
+    border: 0;
+    border-radius: var(--radius-xs);
+    background: none;
+    color: var(--text-tertiary);
+    cursor: pointer;
+    transition: color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+}
+
+.toast-close:hover {
+    background: var(--surface-sunken);
+    color: var(--text-primary);
+}
+
+/* The clock, made visible: it drains left to right and freezes while the
+   toast is hovered or focused, so the dismissal is never a surprise. The JS
+   timer is the authority -- this is synced decoration. */
+.toast-life {
+    position: absolute;
+    left: 0;
+    bottom: 0;
+    height: 3px;
+    width: 100%;
+    transform-origin: left center;
+    background: var(--border-strong);
+    animation: toast-drain linear forwards;
+}
+
+.toast.is-held .toast-life { animation-play-state: paused; }
+
+.toast.is-leaving {
+    height: 0;
+    margin-top: calc(-1 * var(--sp-2));
+    opacity: 0;
+    overflow: hidden;
+    pointer-events: none;
+    transition: height var(--dur) var(--ease),
+                opacity var(--dur-fast) var(--ease),
+                margin-top var(--dur) var(--ease);
+}
+
+@keyframes toast-in {
+    from { opacity: 0; transform: translateY(var(--sp-3)) scale(0.98); }
+    to   { opacity: 1; transform: none; }
+}
+
+@keyframes toast-drain {
+    from { transform: scaleX(1); }
+    to   { transform: scaleX(0); }
+}
+
+/* ==========================================================================
+   Motion and micro-interactions (#18)
+   --------------------------------------------------------------------------
+   Placed at the end on purpose: the press rule extends transition lists that
+   several of these controls declare much further up the file, so it has to win
+   the cascade. Everything here is decoration -- the reduced-motion block at the
+   bottom of the file switches all of it off, and nothing below depends on it
+   for layout or for meaning.
+   ========================================================================== */
+
+/* These controls each declare their own hover transition (or none at all), and
+   none of them listed `transform` -- so the press below would have snapped.
+   Every one of them already animates at --dur-fast/--ease, so extending the
+   property list here changes nothing but the press. */
+.live-pill,
+.theme-toggle,
+.section-info,
+.workers-more,
+.copy-btn,
+.twisty,
+.breadcrumb-link,
+.jobs-name,
+.error-group {
+    transition-property: background, background-color, color, border-color, opacity,
+        box-shadow, transform;
+    transition-duration: var(--dur-fast);
+    transition-timing-function: var(--ease);
+}
+
+/* Press (#18). One rule for every button-shaped control in the app: the thing
+   settles by a hair and stops moving. Deliberately not a color swap -- a
+   pressed control that changes hue reads as a state change, not a press.
+   `:disabled` is excluded so a refused press stays visibly refused. */
+.btn:active:not(:disabled),
+.live-pill:active,
+.theme-toggle:active,
+.workers-more:active,
+.copy-btn:active,
+.twisty:active,
+.section-info:active,
+.breadcrumb-link:active,
+.jobs-name:active,
+.error-group:active {
+    transform: translateY(0) scale(0.985);
+}
+
+/* --- Entrance stagger -----------------------------------------------------
+   First paint only. A dashboard whose rows cascade in every 30 seconds is a
+   dashboard nobody can read; the callers set `--i` and add the class once, and
+   `paintLedgerNumbers`/`updateWorkerCard` never re-add it. `both` holds the
+   from-state during the delay so a row cannot flash at full opacity first. */
+.stagger-in {
+    animation: stagger-rise var(--dur) var(--ease-out) both;
+    animation-delay: calc(var(--i, 0) * 35ms);
+}
+
+@keyframes stagger-rise {
+    from { opacity: 0; transform: translateY(6px); }
+    to   { opacity: 1; transform: none; }
+}
+
+/* --- Trend sparklines -----------------------------------------------------
+   A number answers "how much"; the operator's actual question is "is it
+   climbing?". Filled by paintLedgerTrends() from the poll history, which needs
+   two samples before there is a trend at all -- so the slot is empty and
+   display:none until it has one, and the ledger reserves no space for it. That
+   is why it sits in the headline's flexible middle and in an `auto` row track:
+   it can appear 30s in without moving a single figure. */
+.ledger-spark {
+    display: none;
+}
+
+.ledger-spark.is-on {
+    display: block;
+    line-height: 0;
+}
+
+.ledger-spark svg {
+    display: block;
+    overflow: visible;
+}
+
+.spark-area {
+    fill: currentColor;
+    opacity: 0.14;
+}
+
+.spark-line {
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.5;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+.spark-head {
+    fill: currentColor;
+    stroke: var(--surface-raised);
+    stroke-width: 1.5;
+}
+
+/* The head sparkline is the one with room to be read, so it gets a baseline:
+   a hairline at the window's low-water mark, which is what turns a squiggle
+   into "above where it started". */
+.spark-base {
+    stroke: var(--border-strong);
+    stroke-width: var(--bw);
+    stroke-dasharray: 2 3;
+}
+
+/* Colour comes from the row's tone (.tone-ok / -danger / ...), which is already
+   on the ledger row -- so a sparkline can never disagree with its dot. */
+.ledger-row .ledger-spark {
+    color: var(--text-tertiary);
+}
+
+.ledger-row.tone-danger .ledger-spark { color: var(--danger); }
+.ledger-row.tone-warn .ledger-spark   { color: var(--warn); }
+.ledger-row.tone-idle .ledger-spark   { color: var(--idle); }
+
+/* --- Headline trend ------------------------------------------------------- */
+/* Hidden until paintLedgerTrends() says there is a trend. A class, not
+   `:has(.is-on)` -- the painter already knows, and a deterministic toggle beats
+   a selector that has to be reasoned about. */
+.ledger-headline-trend {
+    display: none;
+    align-items: center;
+    gap: var(--sp-3);
+    /* Grows into the gap the headline already had between the total and the
+       remaining/complete pair, so arriving late costs no layout. */
+    flex: 1 1 auto;
+    justify-content: center;
+    min-width: 0;
+    color: var(--accent);
+}
+
+.ledger-headline-trend.is-on {
+    display: flex;
+}
+
+.ledger-headline-trend .ledger-spark.is-on {
+    color: var(--accent);
+}
+
+.spark-delta {
+    font-size: var(--fs-200);
+    font-weight: var(--fw-semibold);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    color: var(--text-tertiary);
+}
+
+/* Deliberately not colour-coded by direction. A climbing Total means work
+   arriving, which is neither good nor bad, and a green "up" on the biggest
+   number on the page would say otherwise. The arrow carries the direction; the
+   colour stays neutral. */
+
+/* --- Ledger row press ----------------------------------------------------
+   #7 already gave an explainable row its hover vocabulary (tint, un-mute, the
+   dotted underline on the label). Two things it did not have: a left rule to
+   pick one row out of ten without moving anything, and any acknowledgement of
+   the press that opens the modal. The rule is guarded off `.is-alarm`, which
+   owns that inset already and must not trade a danger colour for a neutral. */
+.ledger-row.is-explainable:hover:not(.is-alarm),
+.ledger-row.is-explainable:focus-visible:not(.is-alarm) {
+    box-shadow: inset 2px 0 0 var(--border-control);
+}
+
+.ledger-row.is-explainable:active {
+    transform: scale(0.995);
 }
 
 /* Responsive */
 @media (max-width: 768px) {
     .container {
-        padding: 0 0.5rem;
+        padding: 0 var(--sp-2);
     }
 
-    .stats-grid {
-        grid-template-columns: 1fr 1fr;
+    /* Header controls stack instead of pushing the page sideways: brand keeps
+       the first row with the toolbar, the breadcrumb drops to its own. */
+    .header-content {
+        flex-wrap: wrap;
+        row-gap: var(--sp-2);
+    }
+
+    .breadcrumb {
+        order: 3;
+        flex: 1 0 100%;
+    }
+
+    .nav-controls {
+        flex-wrap: wrap;
+        gap: var(--sp-2);
+    }
+
+    /* At phone width the label is the only thing worth its pixels; the pill
+       keeps the ring, the refresh button drops to an icon-sized square. */
+    .btn-refresh {
+        min-width: 0;
+    }
+
+    .conn-banner-inner {
+        flex-wrap: wrap;
+        row-gap: var(--sp-2);
+    }
+
+    /* The counts key drops under the title instead of fighting the chip for
+       the same row. */
+    .metric-key {
+        margin-left: 0;
+        flex-basis: 100%;
+    }
+
+    /* The ledger's two columns stack; the aside keeps its indent but swaps
+       its left rule for a top rule so it still reads as subordinate. */
+    .ledger-body {
+        grid-template-columns: minmax(0, 1fr);
+        gap: var(--sp-5);
+    }
+
+    .ledger-aside {
+        padding-left: 0;
+        padding-top: var(--sp-4);
+        border-left: none;
+        border-top: var(--bw) solid var(--border-subtle);
+    }
+
+    /* 7-figure counts overflow a narrow column at 40px. Step down the scale
+       rather than let the page scroll horizontally. */
+    .ledger-headline-value {
+        font-size: var(--fs-700);
+    }
+
+    .ledger-headline-meta {
+        gap: var(--sp-4);
+    }
+
+    .errors-section {
+        padding: var(--sp-4);
+    }
+
+    /* A wide control (the errors section's reset) drops onto its own line
+       rather than squeezing the title into two characters. A lone (i) button
+       is narrow enough to stay on the title row -- `.section-heading`'s
+       flex-wrap handles both without a width rule here. */
+    .error-reset {
+        flex-wrap: wrap;
+    }
+
+    .help-dl-row {
+        grid-template-columns: 1fr;
+        gap: 2px;
     }
 
     .workers-grid {
         grid-template-columns: 1fr;
     }
 
-    .detail-grid {
+    /* The job page's grids collapse; the code listing keeps its gutter and
+       scrolls sideways inside `.code-scroll` like the jobs table does. */
+    .job-detail > .section {
+        padding: var(--sp-4);
+    }
+
+    /* The facts and the settings stay two-up on a phone -- they are short
+       label/value pairs, and one column made the page twice as tall for no
+       gain. Lineage goes to one column: chips need the width. */
+    .job-facts,
+    .job-config-grid {
+        grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+        gap: var(--sp-3);
+    }
+
+    .job-lineage {
         grid-template-columns: 1fr;
     }
 
-    .modal-content {
-        margin: 1rem;
-        padding: 1rem;
+    .job-hero-name {
+        font-size: var(--fs-600);
+    }
+
+    .job-chip-name {
+        max-width: 9rem;
+    }
+
+    .code-ln {
+        width: 2.5rem;
+    }
+
+    /* The table itself keeps every column and scrolls sideways inside its
+       wrapper (a dense table is the one thing allowed to). Trim the two
+       elastic cells so less of that scrolling is spent on one name. */
+    .jobs-name-wrap {
+        max-width: 12rem;
+    }
+
+    .jobs-ident-id {
+        max-width: 11rem;
+    }
+
+    .jobs-filter {
+        max-width: none;
+    }
+
+    .modal {
+        padding: var(--sp-2);
+    }
+
+    .modal-header {
+        padding: var(--sp-4);
+    }
+
+    .modal-body {
+        padding: var(--sp-4);
     }
 }
 
+/* ==========================================================================
+   Status history  (#20 -- reads the series #19 records)
+   Two surfaces for one idea: the ledger becomes a time machine, and a table
+   is its index. The whole design problem here is a negative one -- an operator
+   must never read a two-hour-old error count as current -- so the mode is
+   marked in four places at once (the bar, the card's frame, the desaturated
+   chrome, the header pill) rather than trusting any single cue.
+   ========================================================================== */
+
+/* --- The discovery affordance, in the status section header --- */
+.history-hint {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-1);
+    font-size: var(--fs-200);
+    color: var(--text-tertiary);
+    white-space: nowrap;
+}
+
+.history-hint kbd {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 1.25rem;
+    padding: 1px var(--sp-1);
+    border: var(--bw) solid var(--border-strong);
+    border-bottom-width: 2px;
+    border-radius: var(--radius-xs);
+    background: var(--surface-sunken);
+    font-family: var(--font-sans);
+    font-size: var(--fs-100);
+    line-height: 1.3;
+    color: var(--text-secondary);
+}
+
+.history-open {
+    gap: var(--sp-1);
+}
+
+/* The series could not be read at all: the button is the only way to find out
+   why, so it stops being quiet. */
+.history-open.is-warn {
+    color: var(--warn);
+}
+
+/* --- The bar: "this is not now" --- */
+.history-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--sp-3) var(--sp-4);
+    margin-bottom: var(--sp-3);
+    padding: var(--sp-3) var(--sp-4);
+    border: var(--bw) solid var(--history-border);
+    /* The one 2px inset rule in the app that is not the alarm ramp: a mode is
+       not an alarm, but it does need to be impossible to scroll past. */
+    box-shadow: inset 3px 0 0 var(--history);
+    border-radius: var(--radius-md);
+    background: var(--history-bg);
+    animation: history-bar-in var(--dur) var(--ease-out);
+}
+
+@keyframes history-bar-in {
+    from { opacity: 0; transform: translateY(-4px); }
+    to   { opacity: 1; transform: none; }
+}
+
+.history-bar-mark {
+    display: inline-flex;
+    color: var(--history);
+}
+
+.history-bar-text {
+    flex: 1 1 14rem;
+    min-width: 0;
+}
+
+.history-bar-head {
+    margin: 0;
+    font-size: var(--fs-400);
+    font-weight: var(--fw-semibold);
+    color: var(--history);
+    font-variant-numeric: var(--font-numeric);
+}
+
+.history-bar-meta {
+    margin: 2px 0 0;
+    font-size: var(--fs-200);
+    color: var(--text-secondary);
+    font-variant-numeric: var(--font-numeric);
+}
+
+.history-bar-nav {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--sp-2);
+}
+
+/* Square, because they are a pair of steppers and not sentences. */
+.history-step {
+    min-width: 2rem;
+    padding-inline: var(--sp-2);
+    font-size: var(--fs-500);
+    line-height: 1;
+}
+
+/* --- The mode, on the rest of the dashboard --- */
+/* The card keeps its own background: the status inks were solved for contrast
+   against it, and retinting the ground under them would undo #17. The frame
+   and the desaturated chrome carry the mode instead. */
+body.is-history .ledger-card {
+    box-shadow: var(--shadow-1), inset 0 0 0 2px var(--history-border);
+}
+
+/* Decorative colour only -- the proportion bar and the row dots. Nothing here
+   is the sole carrier of any information, so muting it costs nothing and the
+   card visibly stops looking live. */
+body.is-history .ledger-bar,
+body.is-history .ledger-dot,
+body.is-history .ledger-seg {
+    /* 0.35 was the first try and it flattened the five segments of the
+       proportion bar into one grey block -- the mode was legible and the bar
+       was not. This is enough to read as "not live" while the segments stay
+       tellable apart. */
+    filter: saturate(0.6);
+}
+
+/* A live-looking countdown next to a historical figure is the whole failure
+   mode. The ring stops, and the pill takes the history hue. */
+.live-pill.is-history {
+    background: var(--history-bg);
+    border-color: var(--history-border);
+    color: var(--history);
+}
+
+.live-pill.is-history .live-ring-fill,
+.live-pill.is-history .live-ring-track {
+    stroke: var(--history-border);
+}
+
+/* --- The per-row delta: the actual insight --- */
+.ledger-delta {
+    min-width: 0;
+    font-size: var(--fs-200);
+    font-weight: var(--fw-semibold);
+    text-align: right;
+    white-space: nowrap;
+    font-variant-numeric: var(--font-numeric);
+    color: var(--text-tertiary);
+}
+
+/* Direction, not sign: "done up 1,204" is good news and "errors up 3" is not,
+   so the colour follows the metric's meaning (METRIC_GOOD_UP in script.js). */
+.ledger-delta.is-good { color: var(--ok); }
+.ledger-delta.is-bad  { color: var(--danger); }
+.ledger-delta.is-flat { color: var(--text-secondary); }
+
+/* No previous sample to compare against. Reads as a note, not a number, so it
+   cannot be mistaken for "no change". */
+.ledger-delta.is-none {
+    font-weight: var(--fw-regular);
+    font-style: italic;
+    color: var(--text-tertiary);
+}
+
+/* --- The table --- */
+.hist-lede {
+    margin: 0 0 var(--sp-4);
+    max-width: 62ch;
+    font-size: var(--fs-300);
+    line-height: var(--lh-snug);
+    color: var(--text-secondary);
+}
+
+.hist-lede kbd {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 1.25rem;
+    padding: 1px var(--sp-1);
+    border: var(--bw) solid var(--border-strong);
+    border-bottom-width: 2px;
+    border-radius: var(--radius-xs);
+    background: var(--surface-sunken);
+    font-family: var(--font-sans);
+    font-size: var(--fs-100);
+    color: var(--text-secondary);
+}
+
+/* Below the table, so it reads as its footer: what the cadence is, what is
+   being kept, and how to get the numbers out. */
+.hist-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: var(--sp-3) var(--sp-4);
+    margin-top: var(--sp-4);
+    padding-top: var(--sp-4);
+    border-top: var(--bw) solid var(--border-subtle);
+}
+
+.hist-toolbar-config {
+    min-width: 0;
+}
+
+.hist-interval {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-2);
+    font-size: var(--fs-300);
+    color: var(--text-secondary);
+}
+
+.hist-interval-label {
+    font-weight: var(--fw-medium);
+}
+
+.hist-interval-select {
+    padding: var(--sp-1) var(--sp-2);
+    border: var(--bw) solid var(--border-control);
+    border-radius: var(--radius-sm);
+    background: var(--surface-raised);
+    color: var(--text-primary);
+    font-family: inherit;
+    font-size: var(--fs-300);
+}
+
+.hist-interval-select:focus-visible {
+    outline: var(--ring-width) solid var(--ring);
+    outline-offset: var(--ring-offset);
+}
+
+.hist-retention {
+    margin: var(--sp-2) 0 0;
+    font-size: var(--fs-200);
+    color: var(--text-tertiary);
+    font-variant-numeric: var(--font-numeric);
+}
+
+.hist-toolbar-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--sp-2);
+}
+
+.hist-table-wrap {
+    /* Both axes, same reasoning as the jobs table: vertical so the sticky
+       header has a box to stick to, horizontal because ten dense numeric
+       columns do not fit a phone. */
+    overflow: auto;
+    max-height: min(62vh, 40rem);
+    border: var(--bw) solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--surface-raised);
+}
+
+/* A ring on the OUTSIDE, unlike .jobs-table-wrap's inset one: this table has
+   a sticky header and a sticky first column, and both paint straight over an
+   inset shadow -- leaving a ring visible on two edges out of four. A spread
+   shadow follows the border radius, so it does not need to be inset to avoid
+   clipping against the corners. */
+.hist-table-wrap:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 var(--ring-width) var(--ring);
+}
+
+.hist-table {
+    width: 100%;
+    min-width: 44rem;
+    /* `separate` -- `collapse` drops the borders of a sticky <th>. */
+    border-collapse: separate;
+    border-spacing: 0;
+    font-size: var(--fs-300);
+    font-variant-numeric: var(--font-numeric);
+}
+
+.hist-table thead th {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    /* sp-2 a side, not sp-3: ten uppercase column labels at sp-3 push the
+       table past the 900px lg modal and clip Workers behind the scroller. */
+    padding: var(--sp-2);
+    background: var(--surface-sunken);
+    border-bottom: var(--bw) solid var(--border-strong);
+    color: var(--text-secondary);
+    font-size: var(--fs-100);
+    font-weight: var(--fw-semibold);
+    text-transform: uppercase;
+    letter-spacing: var(--tracking-label);
+    text-align: right;
+    white-space: nowrap;
+}
+
+.hist-table thead th:first-child {
+    text-align: left;
+    /* The time column stays put while ten numeric columns scroll under it:
+       without it you lose which row you are reading. */
+    left: 0;
+    z-index: 3;
+}
+
+.hist-row > th,
+.hist-row > td {
+    padding: 0;
+    border-bottom: var(--bw) solid var(--border-subtle);
+    font-weight: inherit;
+    vertical-align: middle;
+}
+
+.hist-row {
+    cursor: pointer;
+}
+
+.hist-row:hover > td {
+    /* Above the change tint, which is painted by the cell's ::before. */
+    box-shadow: inset 0 0 0 99rem var(--accent-bg);
+}
+
+.hist-row.is-current > td,
+.hist-row.is-current > th {
+    box-shadow: inset 0 0 0 99rem var(--history-bg);
+}
+
+.hist-time {
+    position: sticky;
+    left: 0;
+    z-index: 1;
+    background: var(--surface-raised);
+    text-align: left;
+}
+
+.hist-row.is-current .hist-time {
+    background: var(--surface-raised);
+}
+
+.hist-jump {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    width: 100%;
+    padding: var(--sp-2);
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font-family: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+.hist-clock {
+    font-size: var(--fs-300);
+    font-weight: var(--fw-semibold);
+    color: var(--text-primary);
+    white-space: nowrap;
+}
+
+.hist-rel {
+    font-size: var(--fs-100);
+    color: var(--text-tertiary);
+    white-space: nowrap;
+}
+
+/* --- The change tint: see where something moved before reading a figure ---
+   Intensity is `--tint` (0..1), set per cell from the size of the change
+   relative to the biggest move that column makes anywhere in the series. It is
+   a ::before rather than a background so the row's hover and current-sample
+   fills can sit on top of it without either one having to know the other's
+   opacity. */
+.hist-cell {
+    position: relative;
+    padding: var(--sp-2);
+    text-align: right;
+    white-space: nowrap;
+}
+
+.hist-cell::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: currentColor;
+    opacity: calc(var(--tint, 0) * 0.30);
+    pointer-events: none;
+}
+
+.hist-cell.is-good  { color: var(--ok); }
+.hist-cell.is-bad   { color: var(--danger); }
+.hist-cell.is-flat  { color: var(--idle); }
+
+.hist-cell.is-blank {
+    color: var(--text-tertiary);
+}
+
+/* The figure keeps the text colour; only the delta wears the tone, so a tinted
+   column is still a column of readable numbers. */
+.hist-value {
+    position: relative;
+    color: var(--text-primary);
+}
+
+.hist-delta {
+    position: relative;
+    display: block;
+    font-size: var(--fs-100);
+    font-weight: var(--fw-semibold);
+    color: currentColor;
+}
+
+/* A gap in the record is information, so it gets a row of its own rather than
+   a missing one. */
+.hist-row.is-gap > td {
+    padding: var(--sp-2) var(--sp-3);
+    background: var(--danger-bg);
+    color: var(--danger);
+    font-size: var(--fs-200);
+    text-align: center;
+}
+
+.hist-gap-why {
+    display: block;
+    margin-top: 2px;
+    color: var(--text-tertiary);
+    font-family: var(--font-mono);
+    font-size: var(--fs-100);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* --------------------------------------------------------------------------
+   Phone (<=560px). This used to be two separate 560 blocks on either side of
+   the 768 one, which is how a rule ends up added to the wrong half. One block,
+   grouped by area. The design target is 400px (#17).
+   -------------------------------------------------------------------------- */
+@media (max-width: 560px) {
+    /* --- Header: each cluster gets its own row rather than letting the
+           toolbar shove the page sideways (brand / breadcrumb / controls). --- */
+    .brand-logo {
+        gap: var(--sp-3);
+    }
+
+    .breadcrumb {
+        order: 2;
+    }
+
+    .nav-controls {
+        order: 3;
+        flex: 1 0 100%;
+        margin-left: 0;
+        justify-content: space-between;
+    }
+
+    .live-pill {
+        flex: 0 1 auto;
+        min-width: 0;
+    }
+
+    .live-label {
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+    /* --- Ledger row: the label and the number are the row; the sub-note drops
+           under the label instead of competing for the same line. Placement is
+           explicit because a 4-track grid would otherwise wrap the number. --- */
+    .ledger-row {
+        grid-template-columns: 0.75rem 0.5rem minmax(0, 1fr) auto;
+        row-gap: 0;
+    }
+
+    .ledger-op   { grid-column: 1; grid-row: 1; }
+    .ledger-dot  { grid-column: 2; grid-row: 1; }
+    .ledger-label { grid-column: 3; grid-row: 1; }
+    .ledger-num  { grid-column: 4; grid-row: 1; }
+    /* The delta drops under the figure it belongs to, right-aligned with it
+       (#20). It is the reason to be in history mode at all, so it stays. */
+    .ledger-delta { grid-column: 4; grid-row: 2; }
+
+    /* A 44px sparkline is noise at 400px, and the row has explicit placement
+       here -- an extra track would wrap the number. The headline trend stays:
+       that one has room and is the one worth reading. */
+    .ledger-row .ledger-spark.is-on { display: none; }
+
+    .ledger-sub {
+        /* Stops at column 3: the delta owns column 4 on row 2 (#20). */
+        grid-column: 3;
+        grid-row: 2;
+        overflow: visible;
+        text-overflow: clip;
+        white-space: normal;
+    }
+
+    /* The card's own padding is 24px a side: a quarter of a 400px viewport. */
+    .ledger-card {
+        padding: var(--sp-4);
+    }
+
+    /* --- History (#20). A phone has no arrow keys, so the hint is a lie
+           there; the steppers in the bar are the control that survives. --- */
+    .history-hint,
+    .hist-lede-keys {
+        display: none;
+    }
+
+    .history-bar-nav {
+        width: 100%;
+    }
+
+    .hist-toolbar-actions {
+        width: 100%;
+    }
+
+    /* --- Modal becomes a bottom sheet: full width, full height. A dialog with
+           an 8px scrim ring on a phone is neither one thing nor the other, and
+           long help copy needs the vertical room. --- */
+    .modal {
+        padding: 0;
+        align-items: stretch;
+    }
+
+    .modal-content,
+    .modal[data-size="lg"] .modal-content {
+        max-width: none;
+        max-height: none;
+        height: 100%;
+        border-radius: 0;
+    }
+
+    /* --- Toast: full width along the bottom. --- */
+    .toast-root {
+        right: var(--sp-3);
+        left: var(--sp-3);
+        bottom: var(--sp-3);
+        width: auto;
+    }
+}
+
+/* Motion: one global opt-out. Keep layout, drop movement. */
 
 /* Maze Loader */
 .maze-loader {
   width: 35px;
   aspect-ratio: 2;
   background:
-    radial-gradient(farthest-side, var(--text-primary) 90%,#0000) 0 0/4px 4px,
+    radial-gradient(farthest-side, var(--text-primary) 90%,transparent) 0 0/4px 4px,
     linear-gradient(var(--accent) 0 0) 100% 0/15px 5px,
     linear-gradient(var(--accent) 0 0) 0 100%/15px 5px,
-    repeating-linear-gradient(90deg, var(--accent) 0 5px,#0000 0 15px);
+    repeating-linear-gradient(90deg, var(--accent) 0 5px,transparent 0 15px);
   background-repeat: no-repeat;
   animation: l6-maze 2s infinite linear;
 }
@@ -661,22 +5296,20 @@ main {
   100%  {background-position:left 0.5px bottom 0.5px,100% 0,0 100%,0 0}
 }
 
-
-
 /* Crazy Eyes Loader */
 .crazy-eyes-loader {
   display: inline-flex;
-  gap: 8.5px; /* was 10px */
+  gap: 8.5px;
 }
 .crazy-eyes-loader:before,
 .crazy-eyes-loader:after {
   content: "";
-  height: 17px; /* was 20px */
+  height: 17px;
   aspect-ratio: 1;
   border-radius: 50%;
   background:
-    radial-gradient(farthest-side,#000 95%,#0000) 35% 35%/5px 5px no-repeat /* was 6px */
-    #fff;
+    radial-gradient(farthest-side, var(--eye-pupil) 95%,transparent) 35% 35%/5px 5px no-repeat
+    var(--eye-white);
   transform: scaleX(var(--s,1)) rotate(0deg);
   animation: l6 1s infinite linear;
 }
@@ -688,32 +5321,250 @@ main {
   100% {transform:scaleX(var(--s,1)) rotate(360deg);}
 }
 
+@media (prefers-reduced-motion: reduce) {
+    :root {
+        --dur-fast: 0ms;
+        --dur: 0ms;
+        --dur-slow: 0ms;
+    }
 
-/* NEW STYLES */
-.error-section .error-title {
-    color: var(--danger);
+    *,
+    *::before,
+    *::after {
+        animation-duration: 0.001ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.001ms !important;
+        scroll-behavior: auto !important;
+    }
+
+    .card-clickable:hover,
+    .btn-primary:hover:not(:disabled),
+    .console-jump:hover,
+    .brand-logo-link:hover .brand-logo-image {
+        transform: none;
+    }
+
+    /* `animation-duration: 0.001ms` above does NOT cancel a delay, and the
+       stagger fills backwards -- so without this a 24-card grid would sit
+       invisible for the best part of a second under reduce (#18). */
+    .stagger-in {
+        animation-delay: 0ms !important;
+    }
+
+    /* Nothing should acknowledge a press by moving. */
+    .btn:active:not(:disabled),
+    .live-pill:active,
+    .theme-toggle:active,
+    .workers-more:active,
+    .copy-btn:active,
+    .twisty:active,
+    .section-info:active,
+    .breadcrumb-link:active,
+    .jobs-name:active,
+    .error-group:active,
+    .card-clickable:active,
+    .worker-card:active,
+    .ledger-row.is-explainable:active,
+    .brand-logo-link:active .brand-logo-image {
+        transform: none;
+    }
+
+    .spinner,
+    .skel,
+    .toast-life,
+    .ptree-skeleton-row,
+    .console-dot,
+    .maze-loader,
+    .conn-dot,
+    .live-pill.is-down .live-ring-fill,
+    .crazy-eyes-loader:before,
+    .crazy-eyes-loader:after {
+        animation: none !important;
+    }
+
+    .theme-toggle:hover .theme-icon {
+        transform: none;
+    }
 }
 
-.error-message {
-    color: var(--danger);
-    background-color: rgba(239, 68, 68, 0.1);
-    border: 1px solid rgba(239, 68, 68, 0.2);
-}
+/* ==========================================================================
+   Print (#18)
+   --------------------------------------------------------------------------
+   An operator prints this to paste a failure into a ticket, so the target is a
+   readable record of what was on screen -- not a screenshot of a dark UI.
+   Three jobs: force the light palette (the dark theme is 40 tokens of dark
+   surface, and `data-theme="dark"` is on <body>, so the override has to be on a
+   selector that beats it), drop every control (a paper Refresh button is a lie),
+   and un-clip everything that scrolls in a box on screen.
+   ========================================================================== */
+@media print {
+    /* `body[data-theme]` beats `[data-theme="dark"]` on specificity, so this
+       one block re-lights the whole app without touching the theme toggle. */
+    body,
+    body[data-theme="dark"] {
+        --surface: #ffffff;
+        --surface-raised: #ffffff;
+        --surface-sunken: #f4f5f7;
+        --surface-overlay: #ffffff;
+        --header-bg: #ffffff;
+        --border-subtle: #c8ccd2;
+        --border-strong: #9aa0a8;
+        --border-control: #9aa0a8;
+        --text-primary: #000000;
+        --text-secondary: #2b3038;
+        --text-tertiary: #454c56;
+        --accent: #0f3f9e;
+        --shadow-1: none;
+        --shadow-2: none;
+        --shadow-3: none;
+        /* The console is deliberately dark in both themes, but a black
+           rectangle is most of an ink cartridge. On paper it is a code block. */
+        --term-bg: #ffffff;
+        --term-bar: #f4f5f7;
+        --term-fg: #000000;
+        --term-dim: #454c56;
+        --term-border: #c8ccd2;
+        background: #ffffff;
+    }
 
-.error-trace {
-    color: var(--text-secondary);
-    background-color: rgba(239, 68, 68, 0.05);
-    border: 1px solid rgba(239, 68, 68, 0.2);
-}
+    /* Controls, transient UI, and the loaders. Anything whose only purpose is
+       to be pressed or to spin. */
+    .skip-link,
+    .nav-controls,
+    .conn-banner,
+    .toast-root,
+    .modal-root,
+    .tooltip,
+    .section-info,
+    .btn,
+    .btn-back,
+    .jobs-toolbar,
+    .jobs-pager,
+    .workers-more,
+    .copy-btn,
+    .blank-action,
+    .jsonv-bar,
+    .jsonv-gate,
+    .maze-loader,
+    .crazy-eyes-loader,
+    .skel,
+    .spinner {
+        display: none !important;
+    }
 
-.run-job-controls {
-    display: flex;
-    align-items: center;
-    gap: 1rem;
-    margin-bottom: 1rem;
-}
+    /* A disclosure triangle on paper is just a stray glyph, but the content it
+       revealed is what you printed -- so hide the control, keep the panel. */
+    .twisty {
+        visibility: hidden;
+    }
 
-#runJobLogOutput {
-    min-height: 100px;
-    color: var(--text-secondary);
+    header {
+        position: static;
+        border-bottom: 1px solid var(--border-strong);
+        backdrop-filter: none;
+    }
+
+    /* Only the view you were looking at. */
+    .page:not(.active) {
+        display: none !important;
+    }
+
+    main {
+        min-height: 0;
+        padding: 0;
+    }
+
+    /* Boxes that scroll on screen have to grow on paper: a printed table cut
+       off at the viewport width is the whole reason people screenshot instead.
+       Sticky headers become floating garbage mid-page, so they stop sticking. */
+    .jobs-table-wrap,
+    .code-scroll,
+    .console-scroll,
+    .jsonv-tree,
+    .ptree-kids,
+    .modal-body {
+        max-height: none !important;
+        overflow: visible !important;
+    }
+
+    .jobs-table thead th {
+        position: static;
+    }
+
+    /* Wrap rather than ellipsis: paper has no hover to reveal the rest. */
+    .jobs-name-wrap,
+    .jobs-ident-id,
+    .ptree-id,
+    .ledger-label,
+    .ledger-sub,
+    .worker-name,
+    .worker-id {
+        max-width: none;
+        overflow: visible;
+        text-overflow: clip;
+        white-space: normal;
+        word-break: break-word;
+    }
+
+    /* One flat elevation system: borders, since a shadow prints as a smudge. */
+    .card,
+    .console,
+    .code-block {
+        border: 1px solid var(--border-strong) !important;
+        box-shadow: none !important;
+        break-inside: avoid;
+    }
+
+    /* Nothing lifts, nothing tints, nothing animates on paper. */
+    .card-clickable:hover,
+    .worker-card:hover {
+        transform: none;
+        box-shadow: none !important;
+    }
+
+    .card::before {
+        display: none;
+    }
+
+    .section {
+        break-inside: avoid;
+        break-after: auto;
+    }
+
+    /* The one thing that must never be split: a traceback. */
+    .error-panel,
+    .job-fail,
+    .ledger-card {
+        break-inside: avoid;
+    }
+
+    .ledger-row {
+        break-inside: avoid;
+    }
+
+    /* The stacked bar and the status dots are pure colour, and colour is the
+       first thing a printer drops. Give them an outline so they survive. */
+    .ledger-bar,
+    .ledger-dot,
+    .worker-dot {
+        outline: 0.5pt solid var(--border-strong);
+        print-color-adjust: exact;
+        -webkit-print-color-adjust: exact;
+    }
+
+    /* The Σ row's dot is deliberately blank (it is a total, not a state), so
+       outlining it draws an empty circle where the design says nothing. */
+    .ledger-row.is-total .ledger-dot {
+        outline: none;
+    }
+
+    /* The trend is a 44px squiggle with no axis; it needs the screen. */
+    .ledger-spark,
+    .ledger-headline-trend {
+        display: none !important;
+    }
+
+    a[href^="#"]::after {
+        content: '';
+    }
 }
