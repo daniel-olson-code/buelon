@@ -4881,7 +4881,13 @@ body.is-history .ledger-seg {
 }
 
 /* --- The per-row delta: the actual insight --- */
+/* Holds up to two chips: the change to the next sample and the change to the
+   live reading. Right-aligned as one unit so the figures stay in a column. */
 .ledger-delta {
+    display: flex;
+    justify-content: flex-end;
+    align-items: baseline;
+    gap: var(--sp-3);
     min-width: 0;
     font-size: var(--fs-200);
     font-weight: var(--fw-semibold);
@@ -4891,13 +4897,25 @@ body.is-history .ledger-seg {
     color: var(--text-tertiary);
 }
 
+/* The tag is what makes two numbers legible as two different measurements --
+   without it a reader has to hover to tell "next" from "live". Quiet, so the
+   figure stays the thing being read. */
+.ledger-delta-tag {
+    margin-right: var(--sp-1);
+    font-size: var(--fs-100);
+    font-weight: var(--fw-medium);
+    letter-spacing: var(--tracking-label);
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+}
+
 /* Direction, not sign: "done up 1,204" is good news and "errors up 3" is not,
    so the colour follows the metric's meaning (METRIC_GOOD_UP in script.js). */
-.ledger-delta.is-good { color: var(--ok); }
-.ledger-delta.is-bad  { color: var(--danger); }
-.ledger-delta.is-flat { color: var(--text-secondary); }
+.ledger-delta-chip.is-good { color: var(--ok); }
+.ledger-delta-chip.is-bad  { color: var(--danger); }
+.ledger-delta-chip.is-flat { color: var(--text-secondary); }
 
-/* No previous sample to compare against. Reads as a note, not a number, so it
+/* No newer reading to compare against. Reads as a note, not a number, so it
    cannot be mistaken for "no change". */
 .ledger-delta.is-none {
     font-weight: var(--fw-regular);

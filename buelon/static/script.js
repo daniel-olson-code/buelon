@@ -2358,10 +2358,15 @@ function paintHistoryClock() {
         'auto-refresh paused',
     ];
     if (gap) parts.unshift('the server was unavailable');
-    // Name the reference the deltas are measured to. Without it the only way
-    // to learn what a "-552" is against was to hover it.
-    const next = historyNextRef(historyIndex);
-    if (!gap && next && next.counts) parts.splice(1, 0, `changes to ${refClock(next)}`);
+    // Name the references the deltas are measured to. Without it the only way
+    // to learn what a "-552" is against was to hover it -- and with two chips
+    // per row, which is which has to be readable without hovering either.
+    const nextSample = historySamples[historyIndex + 1] || null;
+    const live = liveSampleRef();
+    const refs = [];
+    if (nextSample && nextSample.counts) refs.push(`next (${historyClock(nextSample.ts)})`);
+    if (live && live.counts) refs.push('live');
+    if (!gap && refs.length) parts.splice(1, 0, `changes to ${refs.join(' and ')}`);
     const metaText = parts.join('  ·  ');
     if (meta.textContent !== metaText) meta.textContent = metaText;
 
@@ -2391,7 +2396,11 @@ function renderHistoryView() {
     paintHistoryClock();
 
     const container = document.getElementById('ledger');
-    const next = historyNextRef(historyIndex);
+    // Kept apart: `next` is the newer *recorded* sample (null at the end of the
+    // series), `live` is the reading now. At the end of the series they are the
+    // same thing, and paintLedgerDeltas renders one chip rather than two.
+    const next = historySamples[historyIndex + 1] || null;
+    const live = liveSampleRef();
 
     if (!sample.counts) {
         // A failed sample. There are no numbers to show and inventing a zero
@@ -2417,7 +2426,7 @@ function renderHistoryView() {
         renderLedger(sample.counts, {flash: false});
         // The trend as it stood THEN: the window ends at this sample.
         paintLedgerTrends(container, historyIndex);
-        paintLedgerDeltas(container, sample, next);
+        paintLedgerDeltas(container, sample, next, live);
     }
 
     renderHistoryErrors(sample);
@@ -2429,17 +2438,40 @@ function renderHistoryView() {
         : `No sample at ${historyClock(sample.ts)}: the server was unavailable.`);
 }
 
+// One chip: a signed number, coloured by what that direction MEANS for the
+// metric, with the sentence version as both tooltip and accessible name.
+function deltaChip(key, tag, from, to, refText) {
+    const delta = to - from;
+    if (!delta) return '';
+    const tone = changeTone(key, delta);
+    const cls = tone > 0 ? 'is-good' : tone < 0 ? 'is-bad' : 'is-flat';
+    const label = (METRIC_BY_KEY[key] && METRIC_BY_KEY[key].label) || key;
+    const sentence = `${label} ${delta > 0 ? 'up' : 'down'} ${num(Math.abs(delta))}`
+        + ` to ${num(to)} ${refText}`;
+    return `<span class="ledger-delta-chip ${cls}" role="img"
+                  aria-label="${attr(sentence)}" data-tip="${attr(sentence)}"
+        ><span class="ledger-delta-tag" aria-hidden="true">${esc(tag)}</span
+        >${esc(signed(delta))}</span>`;
+}
+
 // The delta is the insight; the absolute number is context. Written into the
 // slot `ledgerRow` always leaves, so nothing shifts when it arrives.
 //
-// `next` is the reading one step NEWER than `sample` (the live one at the end
-// of the series), and the delta is `next - sample`: what happened after this
-// point, signed so up is still up. Measuring the other way round would invert
-// every changeTone() verdict -- errors falling would paint as trouble.
-function paintLedgerDeltas(container, sample, next) {
+// TWO references, because they answer different questions and an operator
+// browsing the record asks both: `next` is the sample one step newer -- what
+// happened right after this point -- and `live` is the reading now, which is
+// how this sample compares with what the dashboard shows when you leave
+// history. Both are `reference - sample`, signed so up is still up; measuring
+// the other way round would invert every changeTone() verdict, painting
+// falling errors as trouble.
+//
+// Viewing the newest sample, `next` IS live, so only the live chip renders --
+// two identical numbers side by side would be noise.
+function paintLedgerDeltas(container, sample, next, live) {
     if (!container) return;
     const cur = sample && sample.counts;
     const after = next && next.counts;
+    const now = live && live.counts;
     container.querySelectorAll('[data-delta-key]').forEach(slot => {
         const key = slot.dataset.deltaKey;
         slot.textContent = '';
@@ -2449,28 +2481,30 @@ function paintLedgerDeltas(container, sample, next) {
         slot.removeAttribute('role');
         if (!cur) return;
 
-        if (!after) {
-            // Either the newest reading we hold, or the one before a gap. Say
-            // which -- a blank cell looks like "no change".
+        if (!after && !now) {
+            // Nothing newer to compare against at all. Say which -- a blank
+            // cell looks like "no change".
             slot.classList.add('is-none');
             slot.textContent = next ? 'before gap' : 'latest';
             slot.dataset.tip = next
-                ? 'The next sample is a gap, so there is nothing to compare against.'
+                ? 'The next sample is a gap, and there is no live reading to compare'
+                    + ' against either.'
                 : 'The newest reading in the record: nothing after it to compare against yet.';
             return;
         }
 
-        const delta = (Number(after[key]) || 0) - (Number(cur[key]) || 0);
-        if (!delta) return;
-        const tone = changeTone(key, delta);
-        slot.classList.add(tone > 0 ? 'is-good' : tone < 0 ? 'is-bad' : 'is-flat');
-        slot.textContent = signed(delta);
-        const label = (METRIC_BY_KEY[key] && METRIC_BY_KEY[key].label) || key;
-        const sentence = `${label} ${delta > 0 ? 'up' : 'down'} ${num(Math.abs(delta))}`
-            + ` to ${num(Number(after[key]) || 0)} by ${refClock(next)}`;
-        slot.dataset.tip = sentence;
-        slot.setAttribute('role', 'img');
-        slot.setAttribute('aria-label', sentence);
+        const value = Number(cur[key]) || 0;
+        const chips = [];
+        if (after) {
+            chips.push(deltaChip(key, 'next', value, Number(after[key]) || 0,
+                `by ${refClock(next)}, the next sample`));
+        }
+        if (now) {
+            chips.push(deltaChip(key, 'live', value, Number(now[key]) || 0,
+                'at the live reading now'));
+        }
+        const html = chips.filter(Boolean).join('');
+        if (html) slot.innerHTML = html;
     });
 }
 
