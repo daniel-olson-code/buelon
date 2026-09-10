@@ -3,21 +3,50 @@ import tempfile
 import json
 import threading
 import collections
+import uuid
+
+from buelon.settings import DIR_PATH
+
+
+TEMP_FILE_DIR = os.path.join(DIR_PATH, 'persist_queues')
+
+
+def _ensure_dir(folder: str) -> None:
+    """Create a queue's folder on first use rather than at import -- see
+    `created_cache._ensure_dir`: a bare `import buelon` must not create state dirs.
+    """
+    if folder and folder not in {'.', '', './', '.\\'}:
+        os.makedirs(folder, exist_ok=True)
 
 
 class JsonlPersistentQueue:
-    def __init__(self, path=None, max_size=1000):
+    def __init__(self, path=None, max_size=1000, temp_dir=None, delete_on_close=None):
+        """
+        Args:
+            path: file to back the queue. When omitted, a file is created inside
+                `temp_dir` (default `<DIR_PATH>/persist_queues`) instead of the
+                system temp dir, so queue files live with the rest of buelon's state.
+            temp_dir: where to put the generated file. Ignored when `path` is given.
+            delete_on_close: whether `close()`/`__exit__`/garbage collection removes
+                the files. Defaults to True for a generated file and False for a
+                caller-supplied `path` -- a named path is the caller's to keep.
+        """
+        # A generated file has no owner but this object, so it is ours to delete.
+        self._owns_file = not path
+        self.delete_on_close = self._owns_file if delete_on_close is None else delete_on_close
+        self.temp_dir = temp_dir or TEMP_FILE_DIR
+
         if not path:
-            path = tempfile.NamedTemporaryFile(suffix='.jsonl', delete=False).name
+            _ensure_dir(self.temp_dir)
+            path = os.path.join(self.temp_dir, f'queue_{uuid.uuid4().hex}.jsonl')
 
         self.mutex = threading.Lock()
         self.not_empty = threading.Condition(self.mutex)
         self.path = path
         self._position_file = path + '.pos'
+        self._closed = False
 
-        folder = os.path.dirname(path)
-        if not os.path.exists(folder) and folder not in {'.', '', './', '.\\'}:
-            os.makedirs(folder)
+        _ensure_dir(os.path.dirname(path))
 
         # Create or load position and size
         if not os.path.exists(self._position_file):
@@ -105,13 +134,35 @@ class JsonlPersistentQueue:
             return json.loads(item)
 
     def delete_file(self):
+        for file_path in (self.path, self._position_file):
+            try:
+                os.remove(file_path)
+            except (OSError, TypeError):
+                pass
+        self._closed = True
+
+    def close(self):
+        """Release the queue's files if it owns them. Idempotent."""
+        if self._closed:
+            return
+        self._closed = True
+        if self.delete_on_close:
+            self.delete_file()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+        return False
+
+    def __del__(self):
+        # Last-resort cleanup: a queue dropped without `close()` still must not leak
+        # its file. Interpreter shutdown can already have torn down the globals this
+        # touches, so nothing here may raise.
         try:
-            os.remove(self.path)
-        except:
-            pass
-        try:
-            os.remove(self._position_file)
-        except:
+            self.close()
+        except Exception:
             pass
 
     def itr(self, limit: int | None = None):

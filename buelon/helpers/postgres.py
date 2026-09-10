@@ -392,8 +392,12 @@ class Postgres:
                 if queue:
                     q = buelon.helpers.persistqueue.JsonlPersistentQueue()
 
-                    for row in gen():
-                        q.put(row)
+                    try:
+                        for row in gen():
+                            q.put(row)
+                    except:
+                        q.delete_file()
+                        raise
 
                     return q
 
