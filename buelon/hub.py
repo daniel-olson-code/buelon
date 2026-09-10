@@ -761,7 +761,7 @@ def handle_step(step:  buelon.core.step.Job, status: buelon.core.step.StepStatus
             # has already taken it out of `STEPS` and `bi_on_release` pops it out of
             # `holds_v2`, so no dict referenced it any more and `_job_status` reported
             # `'unknown'`. `create_return_value` lets user code return an arbitrary
-            # `StepStatus` in a tuple, so this is reachable from a `.bue` script. Record it
+            # `StepStatus` in a tuple, so this is reachable from a `.boo` script. Record it
             # as an error instead -- visible in `bue errors`, and cancellable. BUGS.md #13.
             #
             # `queued` in particular keeps landing here rather than getting a branch of its
@@ -1061,16 +1061,16 @@ def upload_code_to_server(code: str, return_jobs: bool = False) -> None | list[b
 
 
 def submit_bootstrap_code(code: str, scope: str) -> str:
-    """Wrap a `.bue` script in a one-job `.bue` that uploads it from a worker.
+    """Wrap a `.boo` script in a one-job `.boo` that uploads it from a worker.
 
-    `bue upload` runs the script on the machine you type it on: a `.bue` is a program
+    `bue upload` runs the script on the machine you type it on: a `.boo` is a program
     that builds a job graph, and a `for` loop's source pipe genuinely executes to say
     how many jobs to make. `bue submit` moves that work onto the cluster by uploading
     a single bootstrap job whose body re-uploads the real script -- so the build, and
     the loop source with it, run on a worker in `scope`.
 
     The payload is base64 so it cannot break out of the enclosing block: inline code
-    in a `.bue` is delimited by backticks, and a submitted script may well contain
+    in a `.boo` is delimited by backticks, and a submitted script may well contain
     them (any inline `sqlite3` job does). Base64 has no backticks, no newlines and no
     quotes, so it embeds verbatim.
     """

@@ -511,7 +511,7 @@ class PipelineParser:
                     # error budget. Same split the hub makes in `handle_step` (#50).
                     handbacks[job_id] = handbacks.get(job_id, 0) + 1
                     # Normalised for the same reason the hub normalises it: the value
-                    # comes from a `.bue` file's `!max_handbacks` and a string here
+                    # comes from a `.boo` file's `!max_handbacks` and a string here
                     # would raise on the comparison (BUGS.md #42).
                     max_handbacks = buelon.core.step.job_int_field(
                         job, 'max_handbacks', 0)
@@ -882,7 +882,7 @@ class PipelineParser:
         job.max_handbacks = definition['args'].get('max_handbacks', 0)
         job.kwargs = definition['args']
         # The one place a job's age is established -- BUGS.md #64. Build time, not
-        # upload time: a `.bue` built by `bue submit` and uploaded days later, or a
+        # upload time: a `.boo` built by `bue submit` and uploaded days later, or a
         # loop job whose payload was frozen into its `code` here (see
         # `job_for_loop`), is as old as the data baked into it, not as old as the
         # connection that delivered it.
@@ -1639,7 +1639,7 @@ def generate_steps_from_code(code: str) -> Generator[step.Job, None, None]:
     """
     # print('start')
 
-    # with open('amazon_report_v2.bue') as f:  # ('test.bue') as f:  # ('amazon_report_v2.bue') as f:
+    # with open('amazon_report_v2.boo') as f:  # ('test.boo') as f:  # ('amazon_report_v2.boo') as f:
     #     content = f.read()
 
     # with open('test.yaml', 'w') as f:

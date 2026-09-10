@@ -333,7 +333,7 @@ class Step(pipe_util.PipeObject):
     # Wall-clock timestamp before which the hub must not dispatch this job; 0.0 means
     # "dispatchable now". Set by `handle_step` when a failed job is requeued for a retry
     # and skipped over by `get_steps_v2` until it passes -- BUGS.md #35. Hub-owned
-    # bookkeeping, not a `.bue` job arg, and like `attempts` it rides along in
+    # bookkeeping, not a `.boo` job arg, and like `attempts` it rides along in
     # `__dict__` so it survives the requeue -> dispatch -> release round trip and the
     # hub snapshot.
     not_before: float = 0.0
