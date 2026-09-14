@@ -547,6 +547,70 @@ def count_job_ages() -> tuple[float | None, int]:
         return oldest, unknown
 
 
+def count_stranded_jobs() -> tuple[int, int]:
+    """Finished jobs whose entire DAG is finished -- work the sweep should have cleared.
+
+    Returns `(jobs, pipelines)`. This is #72's condition stated as a measurement: every
+    id reachable from the job is in `done`, so nothing live remains that could ever
+    trigger `sweep_if_complete` again. A non-zero count is not a backlog an operator can
+    wait out -- it is retained results that will never be dropped.
+
+    Each connected DAG is walked once, not once per job in it: `seen` carries across the
+    loop, so the whole scan is linear in `len(done)` rather than quadratic. That is what
+    makes it cheap enough for the status refresh, which is the only caller.
+    """
+    with lock:
+        seen: set[str] = set()
+        jobs = pipelines = 0
+
+        for step_id, job in done.items():
+            if step_id in seen:
+                continue
+
+            ids = get_all_ids(job)
+            seen |= ids
+
+            # `get_all_ids` stops at an id it cannot resolve, so `ids` is the part of
+            # the DAG that still exists -- which is the right set to ask about. A job
+            # pointing at children the hub has never heard of is exactly #72's shape,
+            # and it is stranded precisely because that remnant is all in `done`.
+            if all([i in done for i in ids]):
+                jobs += len(ids)
+                pipelines += 1
+
+        return jobs, pipelines
+
+
+def sweep_stranded_jobs() -> tuple[int, int]:
+    """Clear every DAG `count_stranded_jobs` reports. Returns `(jobs, pipelines)`.
+
+    Called once from `auto_load`, deliberately *not* from a timer. #72's fix makes a job
+    that succeeds from now on sweep itself, but state stranded by an older hub has no
+    such moment left -- it is in `done` and nothing will ever release it again. A restart
+    is a bounded, explainable point at which to reconcile that; a background reaper
+    deleting pipelines on a schedule is what #50, #56 and #64 each declined to build.
+    """
+    with lock:
+        seen: set[str] = set()
+        jobs = pipelines = 0
+
+        # `list(...)`: `remove_id` mutates `done` inside the loop.
+        for step_id, job in list(done.items()):
+            if step_id in seen:
+                continue
+
+            ids = get_all_ids(job)
+            seen |= ids
+
+            if all([i in done for i in ids]):
+                for dag_id in ids:
+                    remove_id(dag_id)
+                jobs += len(ids)
+                pipelines += 1
+
+        return jobs, pipelines
+
+
 def count_staged_jobs() -> tuple[int, int]:
     """Jobs sitting in `staging`, and how many in-flight uploads they belong to -- #49.
 
@@ -1337,6 +1401,8 @@ def display_text():
         staged_len, staged_uploads = count_staged_jobs()
         # Also a subset of `pending` + `holds`, not a state -- BUGS.md #50.
         handback_jobs, worst_handbacks = count_handbacks()
+        # A subset of `done`: finished jobs whose whole DAG is finished -- BUGS.md #72.
+        stranded_jobs, stranded_pipelines = count_stranded_jobs()
         oldest_age, undated_jobs = count_job_ages()
 
     total = steps_len + holds_len + done_len + queue_len + error_len
@@ -1379,7 +1445,13 @@ def display_text():
             # the far end. `unknown` is a job with no `created` stamp -- a pre-#64
             # snapshot, or an upload from an older client. BUGS.md #64.
             f', oldest: {buelon.core.step.format_age(oldest_age)}'
-            + (f' ({undated_jobs:,} undated)' if undated_jobs else ''))
+            + (f' ({undated_jobs:,} undated)' if undated_jobs else '')
+            # Only when non-zero: this is a fault, not a state, and a permanent
+            # `stranded: 0` on a healthy hub would train the eye to skip the field
+            # exactly when it finally matters. Counted inside `done`, never added on.
+            # BUGS.md #72.
+            + (f', stranded: {stranded_jobs:,} in {stranded_pipelines:,} pipeline(s)'
+               if stranded_jobs else ''))
 
     return text
 
@@ -1949,6 +2021,16 @@ def auto_load():
         print(f'auto_load: could not restore {path!r}; starting with empty state')
         traceback.print_exc()
         return
+
+    # Before the counts line, so what it reports is the state the hub is actually
+    # starting with rather than the state it is about to discard. BUGS.md #72.
+    stranded_jobs, stranded_pipelines = sweep_stranded_jobs()
+
+    if stranded_jobs:
+        print(f'auto_load: cleared {stranded_jobs:,} finished job(s) in '
+              f'{stranded_pipelines:,} pipeline(s) that were stranded in `done` -- every '
+              f'job in them had succeeded, so nothing live was left to trigger the '
+              f'cleanup sweep. Their retained results are dropped with them')
 
     with lock:
         n_steps = sum(len(jobs) for pr in STEPS.values() for jobs in pr.values())
@@ -2738,6 +2820,7 @@ def bi_get_web_info(request: ServerRequest, workers_info: bool = False):
         done_len, queue_len, error_len = len(done), len(queued), len(errors)
         staged_len, staged_uploads = count_staged_jobs()
         handback_jobs, worst_handbacks = count_handbacks()
+        stranded_jobs, stranded_pipelines = count_stranded_jobs()
 
         total = steps_len + holds_len + done_len + queue_len + error_len
         remaining = total - done_len
@@ -2761,6 +2844,10 @@ def bi_get_web_info(request: ServerRequest, workers_info: bool = False):
             # and the highest count among them. A subset of `jobs` + `holds`, so like
             # `delayed` it stays out of `total`/`remaining` -- BUGS.md #50.
             'handbacks': handback_jobs, 'handbacks_max': worst_handbacks,
+            # Finished jobs whose whole DAG is finished -- work the cleanup sweep should
+            # already have cleared. A subset of `done`, so like `delayed` and
+            # `handbacks` it stays out of `total`/`remaining`. BUGS.md #72.
+            'stranded': stranded_jobs, 'stranded_pipelines': stranded_pipelines,
         }
 
         if workers_info:

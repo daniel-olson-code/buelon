@@ -1647,6 +1647,18 @@ const METRIC_DOCS = [
         ],
     },
     {
+        key: 'stranded',
+        label: 'of which stranded',
+        group: 'subset',
+        tone: 'danger',
+        tip: 'Finished jobs whose whole pipeline finished, and that were never cleared.',
+        body: [
+            ['p', 'The hub clears a pipeline when the last job in it succeeds. If that moment is missed \u2014 a job whose children no longer exist on the hub, or a result that arrived after the pipeline had already been deleted \u2014 there is no live job left to trigger the sweep again, and what is left sits in Completed for good.'],
+            ['p', 'They are already inside Completed, so they are not added to the total. Their retained results are counted in Results held, and will never be dropped on their own.'],
+            ['note', 'This row is hidden when it is zero, which is what it should always be. Non-zero is not a backlog to wait out \u2014 nothing will clear it. Restarting the hub reconciles it; `boo delete` on the job ids clears it now.'],
+        ],
+    },
+    {
         key: 'results',
         label: 'Results held',
         group: 'other',
@@ -2181,7 +2193,7 @@ function historySampleAge(sample) {
 const METRIC_GOOD_UP = {
     done: 1, workers: 1,
     errors: -1, jobs: -1, queued: -1, delayed: -1, handbacks: -1, handbacks_max: -1,
-    remaining: -1, staged: -1, staged_uploads: -1,
+    remaining: -1, staged: -1, staged_uploads: -1, stranded: -1, stranded_pipelines: -1,
     total: 0, holds: 0, results: 0, results_bytes: 0,
 };
 
@@ -3112,6 +3124,20 @@ function renderLedger(counts, opts) {
             sub: counts.handbacks_max ? `max ${num(counts.handbacks_max)}×` : '',
             alarm: Number(counts.handbacks_max) >= HANDBACK_ALARM,
         }),
+        // A fault rather than a state, so unlike its two neighbours the row is
+        // hidden at zero: a permanently-zero row teaches the eye to skip it.
+        // BUGS.md #72.
+        ...(Number(counts.stranded) > 0 ? [ledgerRow({
+            key: 'stranded',
+            label: 'of which stranded',
+            tone: 'danger',
+            prefix: '↳',
+            value: counts.stranded,
+            sub: counts.stranded_pipelines
+                ? `${num(counts.stranded_pipelines)} pipeline${Number(counts.stranded_pipelines) === 1 ? '' : 's'}`
+                : '',
+            alarm: true,
+        })] : []),
     ].join('');
 
     // Not jobs at all -- retained results (BUGS.md #36) and chunks of an
