@@ -336,10 +336,17 @@ class PipelineParser:
     def __init__(self, scope: str = 'default', priority: int = 0):
         self.scope = scope
         self.priority = priority
+        # `timeout: 0` means "this file declares none", which `BiWorkerJob._arun` reads
+        # as "use `worker.job_timeout`" (48 hours by default) -- BUGS.md #68. It used to
+        # seed `20 * 60` here, so every job built from any `.boo` carried a 20-minute
+        # bound whether or not the script asked for one. Harmless while #14 was
+        # outstanding and nothing enforced `!timeout`; the moment it was enforced, jobs
+        # that had always run longer than 20 minutes started failing on a number their
+        # author never wrote.
         self.args = {
             'scope': self.scope,
             'priority': self.priority,
-            'timeout': 20 * 60,
+            'timeout': 0,
             'retries': 0,
             'max_handbacks': 0
         }

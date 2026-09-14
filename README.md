@@ -425,7 +425,9 @@ def upload_to_db(table: list[dict]) -> None:
 - `!timeout` takes an arithmetic expression in seconds (`20 * 60`, `60**2 * 5`), but it must
   not contain parentheses inside an `import (...)` block — the parser counts brackets. A job
   that declares none gets `worker.job_timeout`, 48 hours by default; set that to `0` for no
-  ceiling at all.
+  ceiling at all. Before BUGS.md #68 the parser seeded every file with a 20-minute
+  `!timeout` instead, so jobs uploaded by an older client carry 1200 seconds until they are
+  re-uploaded.
 - A single-job pipe needs a leading `|`: `p = | accounts`.
 - A pipe can be wrapped across lines in parentheses.
 - Only two ways to run a pipe: `pipe()` on its own, or `for x in pipe1(): pipe2(x)`.
