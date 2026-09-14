@@ -761,7 +761,23 @@ def handle_step(step:  buelon.core.step.Job, status: buelon.core.step.StepStatus
         elif status == buelon.core.step.StepStatus.success:
             ALL_STEPS[step.id] = [status.value, step]
             done[step.id] = step
+            # Whether anything downstream actually moved. The cleanup sweep below used
+            # to be gated on `step.children` being empty -- i.e. on leafness -- when the
+            # condition it wants is "nothing is left to promote". A leaf promotes
+            # nothing, which is why the two were indistinguishable until a *non*-leaf
+            # also promoted nothing: a job whose declared children are not on the hub at
+            # all. Then neither arm cleaned up and the job sat in `done` forever, its
+            # result pinned in `db`, with no live job left to ever trigger a sweep.
+            # BUGS.md #72.
+            promoted = False
+            # A declared child still sitting in `queued` is proof the DAG is unfinished
+            # (it is in `queued`, so it is not in `done`), which makes the sweep's
+            # `all(i in done)` test a foregone conclusion. Tracked so the common fan-in
+            # case -- this parent finished, the other has not -- skips the DAG walk
+            # entirely rather than paying for it on every success.
+            blocked = False
             if step.children:
+                missing = []
                 for step_id in step.children:
                     child = queued.get(step_id)
 
@@ -780,8 +796,20 @@ def handle_step(step:  buelon.core.step.Job, status: buelon.core.step.StepStatus
                     # BUGS.md #33) is already in `db` carrying a placeholder. Membership
                     # in `db` therefore does not mean "has produced a result", and using
                     # it here handed children a `None` in place of real parent output.
-                    if child is None or not buelon.core.step.all_parents_complete(
-                            child.parents, done):
+                    if child is None:
+                        # Two unrelated conditions used to share this `continue`, and
+                        # telling them apart is the whole of #72. A child that is simply
+                        # not in `queued` any more is ordinary -- it has already been
+                        # promoted, or run, or it is waiting its turn. A child id that
+                        # resolves to *nothing anywhere on the hub* is a broken DAG:
+                        # nothing downstream can ever run, and this job is terminal
+                        # despite declaring children. That case left no trace at all.
+                        if step_from_id(step_id) is None:
+                            missing.append(step_id)
+                        continue
+
+                    if not buelon.core.step.all_parents_complete(child.parents, done):
+                        blocked = True
                         continue
 
                     # The status write is the child's, not the parent's -- the parent's
@@ -789,11 +817,20 @@ def handle_step(step:  buelon.core.step.Job, status: buelon.core.step.StepStatus
                     del queued[step_id]
                     ALL_STEPS[step_id] = [buelon.core.step.StepStatus.pending.value, child]
                     upload_step(child)
-            else:
-                ids = get_all_ids(step)
-                if all([i in done for i in ids]):
-                    for step_id in ids:
-                        remove_id(step_id)
+                    promoted = True
+
+                if missing:
+                    print(f'job {step.id} ({step.name}) succeeded, but {len(missing):,} '
+                          f'of its {len(step.children):,} declared child job(s) do not '
+                          f'exist on the hub: '
+                          f'{", ".join(sorted(missing)[:5])}'
+                          f'{" ..." if len(missing) > 5 else ""} -- nothing downstream '
+                          f'can run, so this job is treated as terminal')
+
+            # Not `else`: a job with children that promoted none of them is finished as
+            # far as this DAG is concerned, and is exactly the case that used to strand.
+            if not promoted and not blocked:
+                sweep_if_complete(step)
         else:
             # `working`, `queued` and `unknown` have no branch of their own. Reaching the
             # end of the chain with nothing written used to destroy the job: `get_steps_v2`
@@ -992,6 +1029,30 @@ def get_all_ids(step: buelon.core.step.Job, already: set | None = None):
             get_all_ids(step_from_id(parent), already)
 
         return already
+
+
+def sweep_if_complete(step: buelon.core.step.Job) -> bool:
+    """Drop the whole connected DAG once every job in it has succeeded. BUGS.md #72.
+
+    The hub's only automatic cleanup. `get_all_ids` walks children *and* parents, so
+    any job in the DAG is an equally good starting point -- what matters is that this
+    is reached whenever a success leaves nothing further to promote, not only when the
+    successful job happens to be a leaf. Returns whether it removed anything.
+
+    `get_all_ids` truncates on an id it cannot resolve, so a DAG with a hole in it
+    sweeps the part that still exists rather than refusing to sweep at all -- which is
+    what strands the jobs #72 is about.
+    """
+    with lock:
+        ids = get_all_ids(step)
+
+        if not all([i in done for i in ids]):
+            return False
+
+        for step_id in ids:
+            remove_id(step_id)
+
+        return True
 
 
 def get_all_steps(step: buelon.core.step.Job, already: dict | None = None):
