@@ -185,6 +185,29 @@ WORKER_IDLE_BACKOFF_MAX = 2.0
 # never last one.
 WORKER_STUCK_TICKS = 3
 
+# Consecutive `hold` timeouts a worker tolerates before it gives up -- BUGS.md #69.
+#
+# #67 made a dead `see_if_more` end the run, which is right for a task that has stopped
+# for good and wrong for a `HubTimeout`: the hub answers every request under one lock, so
+# an operator command that scans the whole graph (`boo delete`, `cancel-errors`) or a slow
+# autosave can hold every worker's `hold` past `HOLD_RESPONSE_TIMEOUT` while the socket is
+# perfectly healthy. Every worker times out at once, so making the first one fatal empties
+# the cluster over a hiccup. Retry a few times, then treat it as a dead hub.
+HOLD_TIMEOUT_RETRIES = 3
+HOLD_TIMEOUT_BACKOFF = 5.0
+
+# How long a worker that is shutting down waits for its running jobs before hard-exiting
+# -- BUGS.md #69.
+#
+# `asyncio.run` cancels the *awaits* and then joins the default executor, and a plain
+# `def` job runs there under `asyncio.to_thread`. A job hung on a dead socket -- usually
+# the same network event that just timed out the hold -- therefore blocks process exit
+# for as long as it hangs. systemd sees a live process and never restarts it, so the
+# worker that #67 stopped stays stopped: connected to nothing, running nothing, until
+# somebody restarts it by hand. The hub has already requeued these jobs (the socket closed
+# when the client did), so the only thing waiting buys is the chance they finish first.
+WORKER_EXIT_GRACE = 60.0
+
 # `BiWorkerClient.get_response` used to poll `self.messages` in a sleep loop, and #6
 # had to give that loop a floor: `handle_finished_jobs` asks for `wait_time=0.0`, which
 # made the wait an `await asyncio.sleep(0)` loop that spun the event loop flat out for a
@@ -2771,7 +2794,29 @@ def delete_all_jobs() -> int:
         return count
 
 
+# A hub request that takes longer than this is logged with its method and duration --
+# BUGS.md #69. Everything the hub does runs under one lock, so a single slow request
+# (an operator command scanning the whole graph, a big autosave) stalls every worker's
+# `hold` behind it, and until now nothing said which one it was. Well above any healthy
+# request, so a quiet log means the hub is not the thing that is slow.
+SLOW_REQUEST_SECONDS = 10.0
+
+
 def bi_handle_messages(request: ServerRequest):
+    start = time.time()
+    method = request.method
+
+    try:
+        return _bi_handle_messages(request)
+    finally:
+        elapsed = time.time() - start
+
+        if elapsed >= SLOW_REQUEST_SECONDS:
+            print(f'slow hub request: {method!r} from {request.client_id} took '
+                  f'{elapsed:0.1f}s -- every other request waited behind it')
+
+
+def _bi_handle_messages(request: ServerRequest):
     global errors, holds
     client_id = request.client_id
     with lock:
@@ -3176,6 +3221,34 @@ def _log_worker_task_exception(task: asyncio.Task) -> None:
         traceback.print_exception(type(exc), exc, exc.__traceback__)
 
 
+def _arm_exit_watchdog(pending: int, grace: float = None) -> threading.Timer | None:
+    """Hard-exit the process if a shutdown with `pending` running jobs hangs -- BUGS.md #69.
+
+    Returns the armed timer (a daemon, so it never keeps the process alive by itself), or
+    None when there is nothing that could block the exit.
+
+    `os._exit` skips every `finally`, every `atexit` and every buffer flush, which is the
+    point: the thing we are escaping is `asyncio.run` joining an executor thread that is
+    never going to return. Nothing is lost that the hub does not already have -- it
+    requeued this worker's jobs the moment the client's socket closed.
+    """
+    if pending <= 0:
+        return None
+
+    if grace is None:
+        grace = WORKER_EXIT_GRACE
+
+    def give_up():
+        print(f'worker still has {pending:,} job(s) running {grace:g}s after shutdown '
+              f'started; forcing exit. The hub has already requeued them.', flush=True)
+        os._exit(1)
+
+    timer = threading.Timer(grace, give_up)
+    timer.daemon = True
+    timer.start()
+    return timer
+
+
 async def bi_test_worker(jobs_at_a_time: int = 25, single_step: str | None = None, max_time: float | None = None, stop_on_no_jobs: bool = False):
     """Run jobs off the hub until `max_time` (or, with `single_step`, until that one job is done).
 
@@ -3248,6 +3321,7 @@ async def bi_test_worker(jobs_at_a_time: int = 25, single_step: str | None = Non
     async def see_if_more():
         nonlocal should_stop_n, stop_now
         idle_backoff = 0.0
+        hold_timeouts = 0
         while not out_of_time() and not should_stop():
             limit = await take_capacity(jobs_at_a_time)
             if not limit:
@@ -3257,7 +3331,24 @@ async def bi_test_worker(jobs_at_a_time: int = 25, single_step: str | None = Non
                 await asyncio.sleep(0.1)
                 continue
 
-            uid, jobs, args = await hold(limit=limit, reverse=settings.worker.reverse, single_job=single_step)
+            try:
+                uid, jobs, args = await hold(limit=limit, reverse=settings.worker.reverse, single_job=single_step)
+            except HubTimeout as e:
+                # A busy hub, not necessarily a dead one -- BUGS.md #69. Hand the slots
+                # back, wait, and ask again; only a run of these is worth dying over.
+                await give_capacity(limit)
+                hold_timeouts += 1
+
+                if single_job_mode or hold_timeouts > HOLD_TIMEOUT_RETRIES:
+                    # `bue run-job` is one shot and has an operator waiting on it: say so
+                    # rather than retrying for another 20 minutes.
+                    raise
+
+                print(f'{e} (attempt {hold_timeouts} of {HOLD_TIMEOUT_RETRIES}); retrying')
+                await idle_sleep(HOLD_TIMEOUT_BACKOFF * hold_timeouts)
+                continue
+
+            hold_timeouts = 0
             print(f'pulled {len(jobs):,} jobs')
             if stop_on_no_jobs:
                 if not jobs:
@@ -3422,9 +3513,14 @@ async def bi_test_worker(jobs_at_a_time: int = 25, single_step: str | None = Non
         results = await asyncio.gather(t1, t2, return_exceptions=True)
         print('finished see_if_more and handle_finished_jobs')
 
-        for result in results:
-            if isinstance(result, BaseException):
-                raise result
+    # Outside the `async with`: the client is closed, so the hub has these jobs back.
+    # Armed before the raise below, because the hang this guards against is in
+    # `asyncio.run`'s own teardown, which no `except` here can reach -- BUGS.md #69.
+    _arm_exit_watchdog(job_queue.qsize())
+
+    for result in results:
+        if isinstance(result, BaseException):
+            raise result
 
 
 async def v1_bi_test_worker(jobs_at_a_time: int = 25, single_step: str | None = None, iterations: int = 10_000, max_time: float = 60 * 20, stop_on_no_jobs: bool = False):

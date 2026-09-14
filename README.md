@@ -250,8 +250,15 @@ the default, means forever). Set it to e.g. `86400` if you want a daily recycle 
 
 A worker still exits by itself when something is actually wrong — one of its two internal
 tasks dying, or its job slots leaking — so run it under a supervisor that restarts it:
-systemd with `Restart=always`, a Docker restart policy, or a shell loop. `boo work` and
+systemd with `Restart=always`, a Docker restart policy, or a shell loop. A hub that is
+merely slow is not "wrong": a timed-out request for work is retried a few times before the
+worker gives up. If the exit finds jobs still running, the process hard-exits after a
+minute rather than waiting on them — the hub has already requeued them. `boo work` and
 `boo run-job` are single-shot and exit when their job is done, as before.
+
+If workers time out waiting for the hub, the hub logs any request that took 10 seconds or
+more (`slow hub request: 'cancel-errors' from … took 44.1s`) — everything it does runs
+under one lock, so one slow request stalls every worker behind it.
 
 ## Supported Languages
 
