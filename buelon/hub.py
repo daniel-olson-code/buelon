@@ -227,6 +227,11 @@ WORKER_EXIT_GRACE = 60.0
 RESPONSE_TIMEOUT = 60.0
 HOLD_RESPONSE_TIMEOUT = 300.0
 
+# How often a parked request re-checks that replies can still reach it -- BUGS.md #71.
+# Only a liveness check on two objects, so it can be frequent; the cost of being slow
+# here is a worker that sits on a dead socket for the rest of its timeout.
+RECEIVE_PUMP_CHECK_INTERVAL = 1.0
+
 # `upload` gets its own, larger bound too -- BUGS.md #8. Its reply is a bare `b'ok'`, but
 # the hub has to decompress and register up to 500 jobs under `lock` before sending it,
 # behind however many other workers are queued ahead of it.
@@ -2008,6 +2013,22 @@ class HubTimeout(TimeoutError):
         super().__init__(f'no response from the hub for request {request_id} within {timeout}s')
 
 
+class HubConnectionLost(ConnectionError):
+    """The client can no longer receive replies from the hub -- BUGS.md #71.
+
+    bisocket gives a client two sockets: requests go out on the send socket, replies come
+    back on the receive socket. If the receive socket dies on its own, its reader thread
+    ends quietly -- nothing wakes the waiters, and `asend` keeps succeeding on the healthy
+    send socket. So the worker goes on asking for work the hub goes on preparing, every
+    reply lands in a queue nobody drains, and each request costs a full
+    `HOLD_RESPONSE_TIMEOUT` before `HubTimeout`. The hub says so in its log
+    (`client ... lost its receive socket`); the worker had no idea.
+
+    Raised as soon as the pump is seen dead, so the worker can exit and be restarted with
+    a fresh pair of sockets instead of timing its way there over 15 minutes.
+    """
+
+
 class UploadRejected(RuntimeError):
     """The hub did not accept an uploaded chunk of jobs -- BUGS.md #8.
 
@@ -2098,6 +2119,43 @@ class BiWorkerClient:
         except RuntimeError:
             pass  # loop already closed; the waiter is gone with it
 
+    def receive_pump_alive(self) -> bool:
+        """Can a reply still reach us? -- BUGS.md #71.
+
+        bisocket >= 0.0.10 answers this itself: a client whose receive socket dies records
+        it in `connection_lost` and refuses further sends. That is the answer to prefer --
+        it covers failures this cannot see from the outside, like the server's `__close__`
+        arriving on the send socket.
+
+        Older bisocket says nothing, so fall back to watching its two receive-side workers
+        directly: a thread reading the socket (`receiving_task`) feeding an asyncio task
+        (`_receiving_task`). Either one ending means no reply will ever arrive again, on
+        any request, while `asend` goes on succeeding over the healthy send socket.
+
+        Defensive about all three attributes: they are bisocket internals, and a version
+        that renames them should degrade to "assume alive" -- the timeout still catches it
+        -- rather than making every worker exit on a false positive.
+        """
+        client = self.client
+
+        if client is None:
+            return False
+
+        if getattr(client, 'connection_lost', None) is not None:
+            return False
+
+        thread = getattr(client, 'receiving_task', None)
+
+        if thread is not None and not thread.is_alive():
+            return False
+
+        task = getattr(client, '_receiving_task', None)
+
+        if isinstance(task, asyncio.Task) and task.done():
+            return False
+
+        return True
+
     async def get_response(self, request_id: str, wait_time: float | int = 0.1,
                            timeout: float | int | None = _DEFAULT_TIMEOUT) -> BiMessage | None:
         """Wait for the hub's reply to `request_id`.
@@ -2122,17 +2180,40 @@ class BiWorkerClient:
             # The reply can land between the pop above and the register on the line
             # before this one; `on_receive` would then have found no waiter to wake.
             if request_id not in self.messages:
-                if timeout is None:
-                    await event.wait()
-                else:
-                    try:
-                        await asyncio.wait_for(event.wait(), timeout)
-                    except (asyncio.TimeoutError, TimeoutError):
-                        if request_id not in self.messages:
-                            # A late reply will have nobody left to claim it.
-                            self._abandoned.add(request_id)
-                            raise HubTimeout(request_id, timeout) from None
-                        # The reply landed in the same breath as we gave up. Take it.
+                # Waited in slices rather than one `wait_for`, so a receive socket that
+                # died can be noticed while we are parked on it -- BUGS.md #71. Nothing
+                # else ever wakes this event in that case, and the whole timeout would
+                # otherwise be spent waiting for a reply that cannot arrive.
+                deadline = None if timeout is None else time.time() + timeout
+
+                while True:
+                    slice_for = RECEIVE_PUMP_CHECK_INTERVAL
+
+                    if deadline is not None:
+                        slice_for = min(slice_for, deadline - time.time())
+
+                    if slice_for > 0:
+                        try:
+                            await asyncio.wait_for(event.wait(), slice_for)
+                            break
+                        except (asyncio.TimeoutError, TimeoutError):
+                            pass
+
+                    if request_id in self.messages or event.is_set():
+                        break
+
+                    if not self.receive_pump_alive():
+                        self._abandoned.add(request_id)
+                        raise HubConnectionLost(
+                            'the connection to the hub can no longer receive replies '
+                            f'(request {request_id}); reconnecting means restarting this '
+                            'worker'
+                        ) from None
+
+                    if deadline is not None and time.time() >= deadline:
+                        # A late reply will have nobody left to claim it.
+                        self._abandoned.add(request_id)
+                        raise HubTimeout(request_id, timeout) from None
         finally:
             self._waiters.pop(request_id, None)
 
@@ -2348,39 +2429,56 @@ def bi_on_hold(request: ServerRequest, data):
                 for job in _jobs:
                     client_holds.pop(job.id, None)
 
-    with lock:
-        jobs = get_steps_v2(**data)
+    # Every exit from here MUST answer the worker -- BUGS.md #70. `get_steps_v2` raising,
+    # or `get_args` raising, used to `return` (or propagate) without sending anything, and
+    # a request the hub silently drops is indistinguishable from a hub that is down: the
+    # worker waits the full `HOLD_RESPONSE_TIMEOUT` (300s) and then raises `HubTimeout`.
+    # The jobs go back on the queue, so the next hold picks the same batch and fails the
+    # same way -- one poisoned job stalls a worker in a 5-minute loop indefinitely.
+    jobs, args, note = [], [], None
 
-        try:
-            # Register in holds_v2 only AFTER get_args has filtered the batch. get_args
-            # drops jobs whose parent results are missing from `db` and resets them
-            # (which re-queues them into STEPS); registering first left those dropped
-            # jobs in holds_v2 forever, and every disconnect requeued them again.
-            jobs, args = get_args(jobs)
-        except:
-            traceback.print_exc()
-            # Nothing is registered yet, so this only puts the popped jobs back on the
-            # queue. release_back's holds_v2 pop is a no-op here.
-            release_back(jobs)
-            return
+    try:
+        with lock:
+            jobs = get_steps_v2(**data)
 
-        # An operator asking for one job by id and getting nothing back deserves to be
-        # told why -- blocked on a parent, already checked out, or an id the hub has
-        # never seen. BUGS.md #54. Computed here rather than in `get_steps_v2` so the
-        # batch dispatch path never pays for it, and only when the answer was empty.
-        #
-        # After `get_args`, not before: a job that reached `STEPS` blocked anyway (a
-        # snapshot reloaded mid-DAG) is dropped by `temp_handle_step_args`' backstop,
-        # which resets it into `queued` -- so asking now gets that job the blocked
-        # message too, instead of no message at all.
-        note = None
-        if data.get('single_step') and not jobs:
-            note = single_job_unavailable_reason(data['single_step'])
+            try:
+                # Register in holds_v2 only AFTER get_args has filtered the batch. get_args
+                # drops jobs whose parent results are missing from `db` and resets them
+                # (which re-queues them into STEPS); registering first left those dropped
+                # jobs in holds_v2 forever, and every disconnect requeued them again.
+                jobs, args = get_args(jobs)
+            except:
+                traceback.print_exc()
+                # Nothing is registered yet, so this only puts the popped jobs back on the
+                # queue. release_back's holds_v2 pop is a no-op here.
+                release_back(jobs)
+                jobs, args = [], []
+                raise
 
-        if jobs:
-            client_holds = holds_v2.setdefault(request.client_id, {})
-            for job in jobs:
-                client_holds[job.id] = job
+            # An operator asking for one job by id and getting nothing back deserves to
+            # be told why -- blocked on a parent, already checked out, or an id the hub
+            # has never seen. BUGS.md #54. Computed here rather than in `get_steps_v2` so
+            # the batch dispatch path never pays for it, and only when the answer was
+            # empty.
+            #
+            # After `get_args`, not before: a job that reached `STEPS` blocked anyway (a
+            # snapshot reloaded mid-DAG) is dropped by `temp_handle_step_args`' backstop,
+            # which resets it into `queued` -- so asking now gets that job the blocked
+            # message too, instead of no message at all.
+            if data.get('single_step') and not jobs:
+                note = single_job_unavailable_reason(data['single_step'])
+
+            if jobs:
+                client_holds = holds_v2.setdefault(request.client_id, {})
+                for job in jobs:
+                    client_holds[job.id] = job
+    except Exception as e:
+        # Answer with an empty batch rather than nothing at all. The worker treats that
+        # as "the hub has no work for me", backs off and asks again -- which is the truth,
+        # and is recoverable, unlike silence.
+        traceback.print_exc()
+        jobs, args = [], []
+        note = f'the hub could not prepare a batch: {type(e).__name__}: {e}'
 
     try:
         # The fourth element is #54's note. `BiWorkerClient.hold` treats it as
@@ -3429,6 +3527,22 @@ async def bi_test_worker(jobs_at_a_time: int = 25, single_step: str | None = Non
                         # job_queue.put(BiWorkerJob(mut, uid, job, arg))
 
                     await give_capacity(n_released - len(jobs))
+                except HubConnectionLost:
+                    # No reply can ever arrive again, so retrying here would loop until
+                    # `max_time` -- which is now forever. End the run and let the
+                    # supervisor reconnect for us. BUGS.md #71.
+                    await give_capacity(n_released)
+                    raise
+                except HubTimeout as e:
+                    # The hub went quiet on the re-hold. Not a crash and not worth a
+                    # traceback -- this loop is the noisiest source of them in the
+                    # journal (BUGS.md #70) -- but the jobs were released, so hand the
+                    # slots back and let `see_if_more`, which counts consecutive
+                    # timeouts, decide whether the hub is actually dead.
+                    print(f'{e} (re-hold after releasing {n_released:,} job(s))')
+                    await give_capacity(n_released)
+                    if single_job_mode:
+                        stop_now = True
                 except Exception:
                     # Hand the slots back and keep going. If the release itself is
                     # what failed, the hub still has the jobs held; it requeues them

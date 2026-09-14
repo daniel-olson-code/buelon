@@ -17,11 +17,16 @@ orjson
 python-dotenv
 unsync
 PyYAML
-# Pinned exactly here, deliberately: buelon depends on `OnFinallyInfo.connection_type`,
-# added in 0.0.9 (BUGS.md #30), and bisocket is installed editable from a local
-# checkout during development, so a dev pin is worth more than a range. setup.py ships
-# `>=0.0.9` for users, which is the correct story for a published package.
-bisocket==0.0.9
+# Pinned exactly here, deliberately: buelon depends on `OnFinallyInfo.connection_type`
+# (added in 0.0.9, BUGS.md #30) and on `Client.connection_lost` (added in 0.0.10,
+# BUGS.md #71), and bisocket is installed editable from a local checkout during
+# development, so a dev pin is worth more than a range. setup.py ships `>=0.0.10` for
+# users, which is the correct story for a published package.
+#
+# 0.0.10 is a floor rather than a nicety: below it a client whose receive socket dies
+# says nothing, and every request waits out its full timeout instead of failing.
+# `receive_pump_alive` still has a fallback for 0.0.9, but it cannot see every case.
+bisocket==0.0.10
 
 # --- buelon[postgres] / buelon[bucket] ---
 psycopg2-binary
