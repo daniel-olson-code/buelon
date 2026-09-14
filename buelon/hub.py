@@ -1,5 +1,6 @@
 import collections
 import os
+import math
 import itertools
 import uuid
 import time
@@ -173,6 +174,16 @@ preset_priorities = list(range(100, -1, -1)) # 100 - 0
 # seconds rather than minutes.
 WORKER_IDLE_BACKOFF_START = 0.1
 WORKER_IDLE_BACKOFF_MAX = 2.0
+
+# How long a worker's heartbeat can see "every slot reserved, nothing running" before it
+# calls that a leak and stops -- BUGS.md #67.
+#
+# The state is legitimate for as long as a `hold` is in flight (`take_capacity` reserves
+# up front, and the reply can take up to `HOLD_RESPONSE_TIMEOUT`), so the check is gated
+# on there being no outstanding hold as well. Both conditions have to hold for this many
+# consecutive 5s heartbeats, which makes a spurious trip need ~15s of a state that should
+# never last one.
+WORKER_STUCK_TICKS = 3
 
 # `BiWorkerClient.get_response` used to poll `self.messages` in a sleep loop, and #6
 # had to give that loop a floor: `handle_finished_jobs` asks for `wait_time=0.0`, which
@@ -1928,6 +1939,39 @@ def encryption_mode() -> str | None:
     return getattr(settings.hub, 'encryption', None)
 
 
+def worker_max_time() -> float:
+    """How long `bue worker` runs before exiting, in seconds -- BUGS.md #67.
+
+    `settings.worker.max_time <= 0` means "run forever" and comes back as `math.inf`,
+    which is the default. Read fresh per run rather than captured at import, for the
+    same reason as `encryption_mode`.
+    """
+    value = getattr(settings.worker, 'max_time', 0) or 0
+
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return math.inf
+
+    return math.inf if value <= 0 else value
+
+
+def default_job_timeout() -> float:
+    """The `!timeout` applied to a job that does not declare one -- BUGS.md #67.
+
+    48 hours by default. `<= 0` in settings means no ceiling, which is what every job
+    got before #67 and is still what a `!timeout` of 0 means per-job (BUGS.md #14).
+    """
+    value = getattr(settings.worker, 'job_timeout', 0) or 0
+
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+    return 0.0 if value <= 0 else value
+
+
 class HubTimeout(TimeoutError):
     """The hub did not answer a request within the allowed time -- BUGS.md #7.
 
@@ -3009,14 +3053,21 @@ class BiWorkerJob:
     async def _arun(self):
         print('handling', self.step.name)
         # `!timeout` was parsed and then read by nothing -- BUGS.md #14. A hung job held
-        # its worker slot for the whole 20-minute `max_time`. `<= 0` (the `Job` class
-        # default) still means "no timeout".
+        # its worker slot for the whole 20-minute `max_time`. `<= 0` on the step (the
+        # `Job` class default) now means "no per-job timeout", not "no timeout": it
+        # falls back to `worker.job_timeout`, 48 hours by default -- BUGS.md #67. The
+        # 20-minute recycle used to be the real ceiling on a hung job; with `max_time`
+        # defaulting to forever there has to be one that is not the process lifetime.
         #
         # Best-effort by construction: `wait_for` cancels the *await*, which really does
         # stop a coroutine job, but a plain `def` job runs under `asyncio.to_thread` and
         # that thread keeps going after we stop waiting for it. Either way the slot is
         # freed and the job is reported as an error rather than occupying the worker.
         timeout = getattr(self.step, 'timeout', 0.0) or 0.0
+
+        if timeout <= 0:
+            timeout = default_job_timeout()
+
         try:
             coro = self.step.arun(*self.arg, mut=self.mut)
             if timeout > 0:
@@ -3027,8 +3078,10 @@ class BiWorkerJob:
         except asyncio.TimeoutError:
             # Must precede the generic handler: from 3.11 on `asyncio.TimeoutError` is
             # the builtin `TimeoutError`, an ordinary `Exception` subclass.
+            declared = (getattr(self.step, 'timeout', 0.0) or 0.0) > 0
+            source = '!timeout' if declared else 'worker.job_timeout'
             msg = (f'job {self.step.name!r} ({self.step.id}) exceeded its '
-                   f'!timeout of {timeout:g} seconds')
+                   f'{source} of {timeout:g} seconds')
             print(msg)
             self.status, self.result = buelon.core.step.StepStatus.error, {
                 'error': msg,
@@ -3123,13 +3176,21 @@ def _log_worker_task_exception(task: asyncio.Task) -> None:
         traceback.print_exception(type(exc), exc, exc.__traceback__)
 
 
-async def bi_test_worker(jobs_at_a_time: int = 25, single_step: str | None = None, max_time: float = 60 * 20, stop_on_no_jobs: bool = False):
+async def bi_test_worker(jobs_at_a_time: int = 25, single_step: str | None = None, max_time: float | None = None, stop_on_no_jobs: bool = False):
     """Run jobs off the hub until `max_time` (or, with `single_step`, until that one job is done).
+
+    `max_time` defaults to `settings.worker.max_time`, which is "forever" unless the
+    operator sets it -- BUGS.md #67. It used to be a hard-coded 20 minutes, whose real
+    job was recycling a worker that had stopped pulling work; the stall itself is fixed
+    now, so the timer is opt-in rather than the thing keeping the cluster alive.
 
     `single_step` is the `bue run-job -j <id>` / web "run job" path and is **single shot**:
     exactly one `hold` is attempted, and the worker exits as soon as that job has been
     released. Without that it re-held the same id forever -- see BUGS.md #5.
     """
+    if max_time is None:
+        max_time = worker_max_time()
+
     mut = {}
     t = time.time()
     available = jobs_at_a_time
@@ -3138,6 +3199,11 @@ async def bi_test_worker(jobs_at_a_time: int = 25, single_step: str | None = Non
     should_stop_n = 0
     single_job_mode = single_step is not None
     stop_now = False
+    # Outstanding `hold` requests. Slots are reserved before the request goes out, so
+    # "no slots, no jobs" is a normal state while this is non-zero -- BUGS.md #67.
+    holds_in_flight = 0
+    stuck_ticks = 0
+
     def should_stop():
         return stop_now or should_stop_n > 5
 
@@ -3169,6 +3235,16 @@ async def bi_test_worker(jobs_at_a_time: int = 25, single_step: str | None = Non
         async with available_lock:
             available = max(0, min(jobs_at_a_time, available + n))
 
+    async def hold(**kwargs):
+        """`client.hold`, counted, so the stuck-worker check can tell a reserved-but-
+        unfilled slot from a leaked one -- BUGS.md #67."""
+        nonlocal holds_in_flight
+        holds_in_flight += 1
+        try:
+            return await client.hold(**kwargs)
+        finally:
+            holds_in_flight -= 1
+
     async def see_if_more():
         nonlocal should_stop_n, stop_now
         idle_backoff = 0.0
@@ -3181,7 +3257,7 @@ async def bi_test_worker(jobs_at_a_time: int = 25, single_step: str | None = Non
                 await asyncio.sleep(0.1)
                 continue
 
-            uid, jobs, args = await client.hold(limit=limit, reverse=settings.worker.reverse, single_job=single_step)
+            uid, jobs, args = await hold(limit=limit, reverse=settings.worker.reverse, single_job=single_step)
             print(f'pulled {len(jobs):,} jobs')
             if stop_on_no_jobs:
                 if not jobs:
@@ -3249,7 +3325,7 @@ async def bi_test_worker(jobs_at_a_time: int = 25, single_step: str | None = Non
 
                     # The released jobs' slots are still counted as in use, so this
                     # hold spends already-reserved capacity -- no `take_capacity`.
-                    uid, jobs, args = await client.hold(limit=n_released, reverse=settings.worker.reverse, single_job=single_step, wait_time=0.0)
+                    uid, jobs, args = await hold(limit=n_released, reverse=settings.worker.reverse, single_job=single_step, wait_time=0.0)
                     print(f'pulled {len(jobs):,} jobs')
                     if stop_on_no_jobs:
                         if not jobs and n_released:
@@ -3274,18 +3350,39 @@ async def bi_test_worker(jobs_at_a_time: int = 25, single_step: str | None = Non
             if not finished_jobs:
                 await asyncio.sleep(0.1)
 
+    def task_died(task: asyncio.Task) -> None:
+        """Log a dead worker task and end the run -- BUGS.md #67.
+
+        `_log_worker_task_exception` printed the traceback and stopped there. Nothing
+        read the tasks' state, so a `see_if_more` killed by (say) a `HubTimeout` left a
+        worker that was still connected, still listed in the web UI and no longer
+        pulling a single job -- until `max_time` recycled it. With `max_time` defaulting
+        to forever that state would be permanent, so the fault has to end the process and
+        let the supervisor (systemd `Restart=always`) start a clean one.
+
+        Only an *exception* stops the run: `see_if_more` returns normally on purpose in
+        single-job mode, and both tasks return normally at every ordinary stop.
+        """
+        nonlocal stop_now
+        _log_worker_task_exception(task)
+
+        if not task.cancelled() and task.exception() is not None:
+            print(f'worker task {task.get_name()!r} died; stopping this worker')
+            stop_now = True
+
     async with BiWorkerClient(settings.worker.host, settings.worker.port, ['test'] + settings.worker.scopes.split(',')) as client:
         t1 = asyncio.create_task(see_if_more(), name='see_if_more')
         t2 = asyncio.create_task(handle_finished_jobs(), name='handle_finished_jobs')
         # Neither task is awaited until the run ends, so a crash in either was
         # invisible for up to `max_time` -- the worker just quietly stopped doing
-        # half its job. Say so the moment it happens. BUGS.md #43.
-        t1.add_done_callback(_log_worker_task_exception)
-        t2.add_done_callback(_log_worker_task_exception)
+        # half its job. Say so the moment it happens (BUGS.md #43) and stop (#67).
+        t1.add_done_callback(task_died)
+        t2.add_done_callback(task_died)
 
         while (time.time() - t) < max_time and not should_stop():
             # await asyncio.sleep(5.0)
-            print(f'left: {max_time - (time.time() - t):0.2f} seconds. Available: {available:,}, Job Queue: {job_queue.qsize():,}')
+            left = 'no limit' if max_time == math.inf else f'{max_time - (time.time() - t):0.2f} seconds'
+            print(f'left: {left}. Available: {available:,}, Job Queue: {job_queue.qsize():,}')
             # Sleep in slices rather than one 5s block so a finished single-job run --
             # or any other stop -- is noticed straight away instead of up to 5s later.
             for _ in range(50):
@@ -3297,13 +3394,37 @@ async def bi_test_worker(jobs_at_a_time: int = 25, single_step: str | None = Non
                     should_stop_n += 1
                 else:
                     should_stop_n = 0
+
+            # Every slot reserved, nothing running and nothing asked for is not a state
+            # the loop can reach: `take_capacity` only hands out slots to a `hold`, and
+            # every path that does not fill one hands it straight back. Seeing it means
+            # slots have leaked (the shape of BUGS.md #43), and a worker whose
+            # `available` has walked to zero never pulls another job. The 20-minute
+            # recycle used to paper over that; say so and stop instead -- BUGS.md #67.
+            if available <= 0 and not job_queue.qsize() and not holds_in_flight:
+                stuck_ticks += 1
+
+                if stuck_ticks >= WORKER_STUCK_TICKS:
+                    print(f'worker has {available:,} free slots of {jobs_at_a_time:,} with '
+                          f'nothing running and no hold outstanding -- slots have leaked. '
+                          f'Stopping this worker.')
+                    stop_now = True
+            else:
+                stuck_ticks = 0
+
             if should_stop():
                 break
 
         print('finishing up see_if_more')
-        await t1
-        print('finished see_if_more, now for handle_finished_jobs')
-        await t2
+        # `await t1` on its own used to skip `await t2` whenever t1 raised, so a dead
+        # `see_if_more` left `handle_finished_jobs` to be cancelled by loop teardown
+        # mid-release. Drain both, then re-raise -- BUGS.md #67.
+        results = await asyncio.gather(t1, t2, return_exceptions=True)
+        print('finished see_if_more and handle_finished_jobs')
+
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
 
 
 async def v1_bi_test_worker(jobs_at_a_time: int = 25, single_step: str | None = None, iterations: int = 10_000, max_time: float = 60 * 20, stop_on_no_jobs: bool = False):

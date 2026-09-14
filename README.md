@@ -130,6 +130,8 @@ worker:
   port: 65432
   scopes: production-heavy,production-small,default   # comma-separated, no spaces
   reverse: false       # pull the lowest-priority scope first instead of the highest
+  max_time: 0          # seconds before `boo worker` exits; 0 (default) = run forever
+  job_timeout: 172800  # seconds a job may run without its own !timeout; 0 = no limit
   info:
     name: Worker       # shown in `boo web`'s worker list
 
@@ -241,10 +243,15 @@ boo --version               print the version
 
 `boo repair` and `boo test` are accepted and do nothing.
 
-**`boo worker` and `boo work` exit on their own after 20 minutes.** That is deliberate
-(a periodic restart drops any leaked memory or module state), and it is not configurable.
-Run them under a supervisor that restarts them — systemd with `Restart=always`, a Docker
-restart policy, or a shell loop.
+**`boo worker` runs until it is stopped.** It used to exit on its own after 20 minutes,
+which was really a workaround for a worker that could stop pulling jobs and never notice;
+that is fixed (BUGS.md #67), so the timer is now opt-in via `worker.max_time` (seconds; 0,
+the default, means forever). Set it to e.g. `86400` if you want a daily recycle anyway.
+
+A worker still exits by itself when something is actually wrong — one of its two internal
+tasks dying, or its job slots leaking — so run it under a supervisor that restarts it:
+systemd with `Restart=always`, a Docker restart policy, or a shell loop. `boo work` and
+`boo run-job` are single-shot and exit when their job is done, as before.
 
 ## Supported Languages
 
@@ -416,7 +423,9 @@ def upload_to_db(table: list[dict]) -> None:
   a poll loop genuinely does not know how many turns it needs — set it only on a job that
   should not poll forever. It is a separate budget from `!retries`, which counts failures.
 - `!timeout` takes an arithmetic expression in seconds (`20 * 60`, `60**2 * 5`), but it must
-  not contain parentheses inside an `import (...)` block — the parser counts brackets.
+  not contain parentheses inside an `import (...)` block — the parser counts brackets. A job
+  that declares none gets `worker.job_timeout`, 48 hours by default; set that to `0` for no
+  ceiling at all.
 - A single-job pipe needs a leading `|`: `p = | accounts`.
 - A pipe can be wrapped across lines in parentheses.
 - Only two ways to run a pipe: `pipe()` on its own, or `for x in pipe1(): pipe2(x)`.
@@ -458,8 +467,8 @@ for the I/O-heavy work Buelon is built for, a handful of processes per machine i
 Use scopes to route heavy jobs to the machines that can take them.
 
 **Restarts.** Workers are disposable — a worker that dies mid-job has its jobs requeued by
-the hub, and it exits by itself every 20 minutes anyway, so run it under a supervisor. The
-hub is not disposable: it holds the queue and every job result, and loses up to
+the hub, and it exits on its own when it detects it can no longer make progress, so run it
+under a supervisor. The hub is not disposable: it holds the queue and every job result, and loses up to
 `BUELON_AUTO_SAVE_INTERVAL` seconds of progress on an unclean stop.
 
 **Memory.** The hub keeps every intermediate result until the whole DAG finishes, and a

@@ -67,7 +67,17 @@ DEFAULT_SETTINGS = {
         # 'n_processes': 1,
         # 'n_threads': 1,
         # 'n_jobs': 1,
-        # 'job_timeout': 60 * 60 * 2,
+        # How long `bue worker` runs before exiting, in seconds. 0 (the default) or any
+        # negative value means "run forever" and leave restarts to whatever supervises
+        # the process. It used to be a hard-coded 20 minutes, which recycled a worker
+        # that had stalled -- the stall itself is what #67 fixes, so the timer is no
+        # longer load-bearing. Set it to e.g. 86400 for a belt-and-braces daily restart.
+        'max_time': 0,
+        # Wall-clock ceiling for a single job that does not declare its own `!timeout`,
+        # in seconds. Default 48 hours: long enough that a genuinely long job is not
+        # cut off, short enough that a job hung on a dead socket cannot hold a worker
+        # slot for the life of a now-immortal process. 0 or negative means no ceiling.
+        'job_timeout': 60 * 60 * 48,
         # 'restart_interval': 60 * 60 * 2,
         'reverse': False,
         # 'one_shot': False,
@@ -177,7 +187,9 @@ class WorkerSettings(YamlObj):
         # self.n_processes = _get(settings, 'n_processes', DEFAULT_SETTINGS['worker']['n_processes'])
         # self.n_threads = _get(settings, 'n_threads', DEFAULT_SETTINGS['worker']['n_threads'])
         # self.n_jobs = _get(settings, 'n_jobs', DEFAULT_SETTINGS['worker']['n_jobs'])
-        # self.job_timeout = _get(settings, 'job_timeout', DEFAULT_SETTINGS['worker']['job_timeout'])
+        # Both are seconds, and both treat <= 0 as "no limit" -- see DEFAULT_SETTINGS.
+        self.max_time = _get(settings, 'max_time', DEFAULT_SETTINGS['worker']['max_time'])
+        self.job_timeout = _get(settings, 'job_timeout', DEFAULT_SETTINGS['worker']['job_timeout'])
         # self.restart_interval = _get(settings, 'restart_interval', DEFAULT_SETTINGS['worker']['restart_interval'])
         self.reverse = _get(settings, 'reverse', DEFAULT_SETTINGS['worker']['reverse'])
 
