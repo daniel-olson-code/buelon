@@ -262,8 +262,19 @@ UPLOAD_STAGING_SWEEP_INTERVAL = 60.0
 # releasing; ids are `uuid1`-based (`pipe_util.get_id`), so a stale entry can never
 # collide with a later pipeline.
 #
-# Not persisted by `auto_save`: a hub restart drops `holds_v2` as well, so there is no
-# in-flight job for a restored tombstone to match.
+# Not persisted by `auto_save`. The original reasoning -- "a hub restart drops
+# `holds_v2` as well, so there is no in-flight job for a restored tombstone to match" --
+# was about the wrong end of the wire: the *worker* survives the restart, and it is the
+# worker that sends the release. A cancelled DAG is not in the snapshot either, so that
+# release used to land on a hub with no record of the job and rebuild it from the
+# worker's copy. BUGS.md #73.
+#
+# Still not persisted, but now because it does not have to be: `bi_on_release` drops any
+# result whose id is absent from `ALL_STEPS`, which is the same rule with no clock and
+# no dependence on hub-process state. The tombstone is the precise, quiet path -- it
+# knows the job was *cancelled*, so it says so and stays silent about everything else --
+# and `TOMBSTONE_TTL` now bounds only how long that better message is available, not
+# whether the result is dropped at all.
 tombstones: dict[str, float] = {}
 TOMBSTONE_TTL: float = 3600.0
 
@@ -2653,6 +2664,30 @@ def bi_on_release(request: ServerRequest, data):
                 print(f'discarding result for cancelled job {step.id} ({step.name}) '
                       f'-- it was already running on worker {request.client_id} when '
                       f'the cancel arrived')
+                continue
+
+            # The same rule as the tombstone, stated so it cannot expire. BUGS.md #73.
+            #
+            # A tombstone only covers a cancel this hub process performed within
+            # `TOMBSTONE_TTL`. The worker that outlives the hub is outside both bounds:
+            # `holds_v2` and `tombstones` are dropped on restart, the cancelled DAG is
+            # not in the snapshot to be restored, so the release lands on a hub with no
+            # record of the job at all and `handle_step` rebuilds it out of the worker's
+            # own copy -- `ALL_STEPS`, `done` and `db`, a root with children that no
+            # longer exist. That is precisely what strands jobs in #72.
+            #
+            # `ALL_STEPS` is the answer to "does this hub know this job", and dispatch is
+            # careful to keep the entry: `get_steps_v2` takes a job out of `STEPS` only,
+            # and `pop_step_from_id` keeps it on purpose (#5). So an id missing from it
+            # has been deliberately forgotten -- cancelled, deleted, or swept -- and its
+            # result is not ours to act on. No clock, and it survives a restart because
+            # it asks about state the snapshot carries rather than state it does not.
+            if step.id not in ALL_STEPS:
+                print(f'discarding result for unknown job {step.id} ({step.name}) from '
+                      f'worker {request.client_id} -- the hub has no record of it, so it '
+                      f'was cancelled, deleted, or finished and swept while this worker '
+                      f'was still running it. Accepting it would re-create its pipeline '
+                      f'one job at a time')
                 continue
 
             db[step.id] = result
