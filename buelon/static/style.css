@@ -1682,7 +1682,11 @@ main {
     height: 4px;
     margin-top: calc(var(--sp-1) * -1);
     border-radius: var(--radius-full);
-    background: var(--surface-sunken);
+    /* The track carries a real colour rather than the sunken well an input
+       uses. Against an empty track a part-filled bar reads as a gauge -- "25
+       of a possible 100" -- and the number here is a share of the fleet, not
+       a capacity. Two tones of one hue read as a split of a whole instead. */
+    background: var(--border-strong);
     overflow: hidden;
 }
 
@@ -1691,12 +1695,21 @@ main {
     height: 100%;
     min-width: 2px;
     border-radius: inherit;
-    background: var(--border-strong);
+    background: var(--text-tertiary);
     transition: width var(--dur) var(--ease);
+}
+
+.worker-card.is-live .worker-share-bar {
+    background: var(--warn-border);
 }
 
 .worker-card.is-live .worker-share-fill {
     background: var(--warn);
+}
+
+/* A worker holding nothing gets no sliver -- the whole track is "the rest". */
+.worker-share-fill.is-empty {
+    min-width: 0;
 }
 
 .worker-share-text,

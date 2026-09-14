@@ -3740,9 +3740,13 @@ function updateWorkerCard(el, model, fleetHolds) {
     // is no share to show, so it goes rather than reading 0% on every card.
     const bar = el.querySelector('.worker-share-bar');
     const shareText = el.querySelector('.worker-share-text');
+    const fill = el.querySelector('.worker-share-fill');
     bar.hidden = shareText.hidden = fleetHolds <= 0;
-    el.querySelector('.worker-share-fill').style.width = `${(model.share * 100).toFixed(3)}%`;
-    shareText.textContent = fleetHolds > 0 ? `${pct} of ${num(fleetHolds)} held` : '';
+    fill.style.width = `${(model.share * 100).toFixed(3)}%`;
+    // At a true zero there is no slice to show, so the sliver `min-width`
+    // keeps for small-but-real shares would be a lie.
+    fill.classList.toggle('is-empty', model.share <= 0);
+    shareText.textContent = fleetHolds > 0 ? `${pct} of all jobs` : '';
 
     // Holds and jobs can legitimately disagree for a moment -- a just-taken
     // hold may not have been reported in detail yet. Say so instead of
@@ -3831,9 +3835,12 @@ function renderWorkers(workers, counts) {
     const models = sortWorkers(entries.map(([id, worker]) => workerModel(id, worker, fleetHolds)));
     const busy = models.filter(model => model.holds > 0).length;
 
-    // The count belongs in the #6 section header, not in a card.
+    // The counts belong in the #6 section header, not in a card. The fleet
+    // total lives here too: on a card it sat next to that card's own number
+    // and read as a per-worker ceiling, which is not what it is.
     setSectionMeta('workers', models.length
         ? `${num(models.length)} connected · ${busy ? `${num(busy)} busy` : 'all idle'}`
+          + (fleetHolds > 0 ? ` · ${num(fleetHolds)} hold${fleetHolds === 1 ? '' : 's'}` : '')
         : 'none connected');
 
     if (!models.length) {
