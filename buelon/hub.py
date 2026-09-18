@@ -1,4 +1,5 @@
 import collections
+import io
 import os
 import math
 import itertools
@@ -6,6 +7,7 @@ import uuid
 import time
 import json
 import base64
+import socket
 import asyncio
 import traceback
 import threading
@@ -236,6 +238,13 @@ RECEIVE_PUMP_CHECK_INTERVAL = 1.0
 # the hub has to decompress and register up to 500 jobs under `lock` before sending it,
 # behind however many other workers are queued ahead of it.
 UPLOAD_RESPONSE_TIMEOUT = 300.0
+
+# How long a reconnect waits for the connection it is replacing to say goodbye politely
+# -- see `BiWorkerClient._hang_up`. Short on purpose: the connection being replaced has
+# usually already failed, and the reconnect waits behind this. Applied as a socket
+# timeout on each of its two sockets, so the whole hang-up is bounded by a small
+# multiple of it.
+HANG_UP_TIMEOUT = 5.0
 
 # How long a staged upload may sit untouched before the hub reaps it -- BUGS.md #32.
 #
@@ -2138,6 +2147,21 @@ def worker_max_time() -> float:
     return math.inf if value <= 0 else value
 
 
+def _format_task_stack(task: 'asyncio.Task') -> str:
+    """The frames a job is sitting in, formatted like a traceback.
+
+    Only meaningful before the task is cancelled. Best-effort: a job running under
+    `asyncio.to_thread` shows the `to_thread` frame rather than the thread's own
+    stack, which still says more than the empty string this used to be.
+    """
+    try:
+        buffer = io.StringIO()
+        task.print_stack(file=buffer)
+        return buffer.getvalue()
+    except Exception:  # never let reporting an error raise one
+        return ''
+
+
 def default_job_timeout() -> float:
     """The `!timeout` applied to a job that does not declare one -- BUGS.md #67.
 
@@ -2152,6 +2176,23 @@ def default_job_timeout() -> float:
         return 0.0
 
     return 0.0 if value <= 0 else value
+
+
+class _JobTimedOut(Exception):
+    """Raised only by `BiWorkerJob._arun`, and only when *we* cancelled the job.
+
+    `asyncio.wait_for` cannot be used to tell "the job ran past its ceiling" from
+    "the job raised `TimeoutError`": since 3.11 `asyncio.TimeoutError` *is* the
+    builtin `TimeoutError`, so a socket read, a `requests` timeout or a `HubTimeout`
+    coming out of the job was reported as the job exceeding `worker.job_timeout`
+    -- a 48-hour number on a job three hours old -- and the real traceback was
+    thrown away (BUGS.md #69). Deliberately not a `TimeoutError` subclass so it can
+    never be confused with one raised by a job.
+    """
+
+    def __init__(self, stack: str):
+        self.stack = stack
+        super().__init__('job exceeded its timeout')
 
 
 class HubTimeout(TimeoutError):
@@ -2223,6 +2264,65 @@ class BiWorkerClient:
         # Only a single-job hold that came back empty ever sets it -- BUGS.md #54.
         self.last_hold_note: str | None = None
 
+    async def _hang_up(self, client: BiClient) -> None:
+        """Close a connection we are about to replace, come what may.
+
+        A reconnect that just overwrites `self.client` leaks the old connection: its
+        reader threads are daemons holding a reference to it, so it is never collected,
+        its sockets stay open, and the hub never gets the close that drops the
+        registration. The hub keys a client off `BiClient.client_id`, a fresh uuid4 per
+        connection, so every reconnect left one more registration behind that nothing
+        would ever remove -- in `boo web`, whose single shared client is the one thing
+        that reconnects, a dashboard filling with idle "Web App (...)" workers holding
+        no jobs. BUGS.md #74.
+
+        The goodbye is bounded twice over, because the connection being replaced is
+        usually the one that just broke, and a broken socket is most often half-open (a
+        slept laptop) rather than closed -- a read on it blocks until the OS gives up:
+
+        - `settimeout` on both sockets, so the blocking read inside the handshake gives
+          up in bounded time rather than waiting out the kernel's own retries.
+        - the synchronous `close`, on a worker thread, rather than `aclose` on the loop.
+          bisocket's sockets are blocking, and `loop.sock_recv`/`sock_sendall` call
+          straight through to `recv`/`send` on a blocking socket -- which parks the
+          whole event loop, so no timer fires and `asyncio.wait_for` cannot help. In
+          `boo web` that is every HTTP request stalling behind the reconnect. On a
+          thread it costs nothing but the thread.
+
+        Then the sockets are shut down regardless of how the goodbye went: only the
+        send socket actually going away makes the hub release the client, and an
+        abandoned connection costs a ghost worker, so dropping it rudely beats not
+        dropping it.
+        """
+        conns = [conn for conn in (getattr(client, 'send_conn', None),
+                                   getattr(client, 'receive_conn', None))
+                 if conn is not None]
+
+        for conn in conns:
+            try:
+                conn.settimeout(HANG_UP_TIMEOUT)
+            except OSError:
+                pass  # already gone; the shutdown below is still worth trying
+
+        try:
+            await asyncio.wait_for(asyncio.to_thread(client.close), HANG_UP_TIMEOUT * 3)
+        except Exception:
+            pass  # a goodbye is a courtesy; the teardown below is not
+        finally:
+            # `close` may not have reached the sockets, and its reader threads check
+            # this flag to decide whether a dead socket is news.
+            client.receiving = False
+
+            for conn in conns:
+                try:
+                    conn.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass  # already gone
+                try:
+                    conn.close()
+                except OSError:
+                    pass
+
     async def __aenter__(self):
         # self.websocket = await connect(
         #     f'ws://{self.host}:{self.port}',
@@ -2234,6 +2334,20 @@ class BiWorkerClient:
         # web.py reconnects by re-entering an existing client. Request ids from the old
         # connection can never be answered on the new one, so stop tracking them.
         self._abandoned.clear()
+        previous, self.client = self.client, None
+
+        if previous is not None:
+            # Everything below belongs to the connection being replaced: replies that
+            # can never be claimed now, and readers waiting for replies that can never
+            # arrive. Cancelled here rather than left for `__aexit__`, which a
+            # reconnecting caller never reaches.
+            for task in list(self._background):
+                task.cancel()
+
+            self._background.clear()
+            self.messages.clear()
+            await self._hang_up(previous)
+
         self.client = await BiClient(self.host, self.port, self.on_receive,
                                      encryption=encryption_mode()).__aenter__()
         await self.update_worker_info()
@@ -3397,13 +3511,30 @@ class BiWorkerJob:
         try:
             coro = self.step.arun(*self.arg, mut=self.mut)
             if timeout > 0:
-                r: buelon.core.step.Result = await asyncio.wait_for(coro, timeout)
+                # Not `asyncio.wait_for`: it raises the same exception type a job
+                # raises when *its own* network call times out, so the two were
+                # indistinguishable here and every `TimeoutError` out of a job was
+                # reported as "exceeded worker.job_timeout" (BUGS.md #69). `wait`
+                # never raises the job's exception, so reaching the cancel branch
+                # means the ceiling really was hit.
+                task = asyncio.ensure_future(coro)
+                done, _ = await asyncio.wait({task}, timeout=timeout)
+
+                if not done:
+                    # Read the stack before cancelling -- afterwards there are no
+                    # frames left to look at.
+                    stack = _format_task_stack(task)
+                    task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
+                        await task
+                    raise _JobTimedOut(stack)
+
+                r: buelon.core.step.Result = task.result()
             else:
                 r: buelon.core.step.Result = await coro
             self.status, self.result = r.status, r.data
-        except asyncio.TimeoutError:
-            # Must precede the generic handler: from 3.11 on `asyncio.TimeoutError` is
-            # the builtin `TimeoutError`, an ordinary `Exception` subclass.
+        except _JobTimedOut as e:
+            # Must precede the generic handler.
             declared = (getattr(self.step, 'timeout', 0.0) or 0.0) > 0
             source = '!timeout' if declared else 'worker.job_timeout'
             msg = (f'job {self.step.name!r} ({self.step.id}) exceeded its '
@@ -3411,13 +3542,21 @@ class BiWorkerJob:
             print(msg)
             self.status, self.result = buelon.core.step.StepStatus.error, {
                 'error': msg,
-                'trace': '',
+                # Where the job actually was when we gave up on it. There is no
+                # exception to format -- nothing raised -- so without this the UI
+                # shows a timeout with an empty traceback and no way to tell which
+                # call hung.
+                'trace': e.stack,
                 'worker_name': f'{settings.worker.info.get("name", "Unknown")}',
             }
         except Exception as e:
             print(e)
             traceback.print_exc()
-            self.status, self.result = buelon.core.step.StepStatus.error, {'error': str(e), 'trace': traceback.format_exc()}
+            self.status, self.result = buelon.core.step.StepStatus.error, {
+                'error': str(e),
+                'trace': traceback.format_exc(),
+                'worker_name': f'{settings.worker.info.get("name", "Unknown")}',
+            }
         self.start = None
 
     @property
