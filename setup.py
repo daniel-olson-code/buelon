@@ -24,7 +24,7 @@ requirements = [
     'python-dotenv',
     'unsync',
     'PyYAML',
-    'bisocket>=0.0.10',  # Client.connection_lost -- BUGS.md #71
+    'bisocket>=0.0.11',  # Client.connection_lost -- BUGS.md #71
 ]
 
 # Optional dependency groups.

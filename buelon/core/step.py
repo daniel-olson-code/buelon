@@ -447,7 +447,7 @@ class Step(pipe_util.PipeObject):
 
         if self.type == sqlite3:
             # return create_return_value(execution.run_sqlite3(code, self.func, *args, **self.kwargs))
-            return create_return_value(await asyncio.to_thread(execution.run_sqlite3, code, self.func, *args, **self.kwargs))
+            return create_return_value(await execution.to_job_thread(execution.run_sqlite3, code, self.func, *args, **self.kwargs))
 
         raise ValueError(f"Unrecognized step language type: {self.type}")
 

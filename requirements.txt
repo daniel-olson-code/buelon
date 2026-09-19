@@ -26,7 +26,7 @@ PyYAML
 # 0.0.10 is a floor rather than a nicety: below it a client whose receive socket dies
 # says nothing, and every request waits out its full timeout instead of failing.
 # `receive_pump_alive` still has a fallback for 0.0.9, but it cannot see every case.
-bisocket==0.0.10
+bisocket==0.0.11
 
 # --- buelon[postgres] / buelon[bucket] ---
 psycopg2-binary

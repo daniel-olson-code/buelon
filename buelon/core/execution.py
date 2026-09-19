@@ -10,6 +10,9 @@ import sys
 import time
 import asyncio
 import concurrent
+import concurrent.futures
+import functools
+import threading
 import inspect
 import tempfile
 import importlib
@@ -18,6 +21,71 @@ import contextlib
 from typing import List, Dict, Any
 
 import unsync
+
+# region job threads
+
+# A `def` job runs in a thread, and it must not be a thread from the event loop's
+# *default* executor -- which is what `asyncio.to_thread` reaches for.
+#
+# That executor belongs to whatever else shares the loop. bisocket hands every reply
+# from the hub to `on_receive` through it, so a worker that filled it with its own
+# jobs stopped receiving hub replies over a socket that was healthy the whole time:
+# every `hold` waited out its 300s timeout, and the close that was meant to recover
+# the worker queued behind the same jobs and never returned, so systemd never
+# restarted it. Three hung HTTP calls were enough on a 3-core box, where the default
+# pool is 7 threads.
+#
+# Sizing matters for a second reason: the pool has to be at least `jobs_at_a_time`
+# wide, or the worker hands out slots it has no thread to run.
+DEFAULT_JOB_THREADS = 64
+
+_job_executor: 'concurrent.futures.ThreadPoolExecutor | None' = None
+_job_executor_lock = threading.Lock()
+_job_thread_limit = int(os.environ.get('BUELON_JOB_THREADS') or 0) or DEFAULT_JOB_THREADS
+
+
+def set_job_thread_limit(limit: int) -> None:
+    """Size the job pool. Takes effect only before the first job runs.
+
+    $BUELON_JOB_THREADS wins: an operator raising the ceiling on a busy worker should
+    not have it silently lowered again by the caller's `jobs_at_a_time`.
+    """
+    global _job_thread_limit
+
+    if os.environ.get('BUELON_JOB_THREADS'):
+        return
+
+    with _job_executor_lock:
+        if _job_executor is not None:
+            return
+
+        _job_thread_limit = max(1, int(limit))
+
+
+def job_executor() -> 'concurrent.futures.ThreadPoolExecutor':
+    """The pool `def` jobs run on, created on first use."""
+    global _job_executor
+
+    with _job_executor_lock:
+        if _job_executor is None:
+            _job_executor = concurrent.futures.ThreadPoolExecutor(
+                max_workers=_job_thread_limit,
+                thread_name_prefix='buelon-job',
+            )
+
+        return _job_executor
+
+
+async def to_job_thread(func, *args, **kwargs) -> Any:
+    """`asyncio.to_thread` for job code, on buelon's pool rather than the loop's.
+
+    See DEFAULT_JOB_THREADS for why that distinction is the whole point.
+    """
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(job_executor(), functools.partial(func, *args, **kwargs))
+
+# endregion
+
 
 from buelon.helpers import pipe_util
 import buelon.helpers.sqlite3_helper
@@ -358,7 +426,7 @@ async def arun_py(txt: str, module_name: str | None, func: str, *args, __pure__=
 
             if not inspect.iscoroutinefunction(f):
                 # r = f(*args)
-                r = await asyncio.to_thread(f, *args, **kws)
+                r = await to_job_thread(f, *args, **kws)
             else:
                 # r = unsync.unsync(f)(*args).result(timeout=60 * 60 * 24)
                 r = await f(*args, **kws)
@@ -413,10 +481,10 @@ async def run_py_async(txt: str, func: str, *args, mut=None, __pure__=False, **k
             kws = {'mut': mut} if has_mut(f) else {}
 
             if not inspect.iscoroutinefunction(f):
-                r = await asyncio.to_thread(f, *args, **kws)
+                r = await to_job_thread(f, *args, **kws)
             else:
                 # async def run_async_in_thread(async_func, *args, **kwargs):
-                #     return await asyncio.to_thread(lambda: asyncio.run(async_func(*args, **kwargs)))
+                #     return await to_job_thread(lambda: asyncio.run(async_func(*args, **kwargs)))
 
                 async def run_async_in_thread(async_func, *args, **kwargs):
                     """
@@ -437,7 +505,7 @@ async def run_py_async(txt: str, func: str, *args, mut=None, __pure__=False, **k
                     def run(*args, **kwargs):
                         return unsync.unsync(async_func)(*args, **kwargs).result()
 
-                    return await asyncio.to_thread(run, *args, **kwargs)
+                    return await to_job_thread(run, *args, **kwargs)
                 # r = await f(*args, **kws)
                 r = await run_async_in_thread(f, *args, **kws)
             del module

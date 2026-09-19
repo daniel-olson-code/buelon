@@ -19,6 +19,7 @@ import orjson
 
 from buelon.settings import settings
 import buelon
+import buelon.core.execution
 
 
 # region structs
@@ -2237,6 +2238,36 @@ class UploadRejected(RuntimeError):
 _DEFAULT_TIMEOUT = object()
 
 
+def _drop_connection(client: BiClient, conns: list | None = None) -> None:
+    """Take a connection away from bisocket, politeness already spent.
+
+    Split out of `_hang_up` because there are two callers with opposite needs: one
+    has a goodbye to attempt first, and one has just finished waiting out a close
+    that never returned and must not start a second wait.
+    """
+    if conns is None:
+        conns = [conn for conn in (getattr(client, 'send_conn', None),
+                                   getattr(client, 'receive_conn', None))
+                 if conn is not None]
+
+    # `close` may not have reached the sockets, and bisocket's reader threads check
+    # this flag to decide whether a dead socket is news.
+    try:
+        client.receiving = False
+    except Exception:
+        pass
+
+    for conn in conns:
+        try:
+            conn.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass  # already gone
+        try:
+            conn.close()
+        except OSError:
+            pass
+
+
 class BiWorkerClient:
     def __init__(self, *args, **kwargs):  # (self, host: str, port: int, scopes: list[str]):
         self.host = settings.worker.host  # host
@@ -2309,19 +2340,7 @@ class BiWorkerClient:
         except Exception:
             pass  # a goodbye is a courtesy; the teardown below is not
         finally:
-            # `close` may not have reached the sockets, and its reader threads check
-            # this flag to decide whether a dead socket is news.
-            client.receiving = False
-
-            for conn in conns:
-                try:
-                    conn.shutdown(socket.SHUT_RDWR)
-                except OSError:
-                    pass  # already gone
-                try:
-                    conn.close()
-                except OSError:
-                    pass
+            _drop_connection(client, conns)
 
     async def __aenter__(self):
         # self.websocket = await connect(
@@ -2357,7 +2376,27 @@ class BiWorkerClient:
         for task in list(self._background):
             task.cancel()
         self._background.clear()
-        await self.client.__aexit__(exc_type, exc_val, exc_tb)
+
+        # Bounded, for the same reason `_hang_up` is: this close is the last thing
+        # between a finished run and the exit its supervisor is waiting for, and an
+        # unbounded await here is indistinguishable from a worker that died without
+        # dying -- `Restart=always` never fires, because the process never leaves.
+        # That is exactly how four workers sat idle for five hours: every thread in
+        # the loop's default executor was held by a hung job, so the join inside this
+        # close never got one. Both halves of that are fixed elsewhere; this is the
+        # backstop that stops any future version of it from being permanent.
+        try:
+            await asyncio.wait_for(self.client.__aexit__(exc_type, exc_val, exc_tb),
+                                   HANG_UP_TIMEOUT * 3)
+        except (asyncio.TimeoutError, TimeoutError):
+            # `_drop_connection`, not `_hang_up`: the courteous close is what just
+            # failed to return, and trying it again would only add its own timeout
+            # to a teardown that is already late. Shutting the send socket down is
+            # what makes the hub release this worker's jobs, and that is the part
+            # that matters now.
+            print(f'the hub connection did not close within {HANG_UP_TIMEOUT * 3:g}s; '
+                  f'dropping it')
+            _drop_connection(self.client)
 
     def on_receive(self, msg: BiMessage):
         if msg.request_id in self._abandoned:
@@ -3687,6 +3726,12 @@ async def bi_test_worker(jobs_at_a_time: int = 25, single_step: str | None = Non
     mut = {}
     t = time.time()
     available = jobs_at_a_time
+    # `def` jobs run on buelon's own pool, and it has to be wide enough for every
+    # slot this worker hands out -- otherwise jobs queue up inside the executor
+    # while the worker believes all `jobs_at_a_time` of them are running. On a
+    # 3-core box the default executor this used to share gave it 7 threads for 25
+    # slots. See `execution.DEFAULT_JOB_THREADS` for the rest of the story.
+    buelon.core.execution.set_job_thread_limit(jobs_at_a_time)
     available_lock = asyncio.Lock()
     job_queue = BiWorkerJobQueue()
     should_stop_n = 0
@@ -3949,10 +3994,17 @@ async def bi_test_worker(jobs_at_a_time: int = 25, single_step: str | None = Non
         results = await asyncio.gather(t1, t2, return_exceptions=True)
         print('finished see_if_more and handle_finished_jobs')
 
+        # Armed here, inside the `async with`, rather than after it. It used to be
+        # armed once the client was closed -- which assumed closing the client was
+        # something that always finishes. It is not: a `__aexit__` that never
+        # returned left the watchdog unarmed and the worker alive forever, which is
+        # the one state it exists to prevent. Arming it first costs nothing -- the
+        # jobs it counts are lost either way, and the hub requeues them the moment
+        # this client disconnects -- and it now covers the close as well as the
+        # `asyncio.run` teardown it was written for. BUGS.md #69.
+        _arm_exit_watchdog(job_queue.qsize())
+
     # Outside the `async with`: the client is closed, so the hub has these jobs back.
-    # Armed before the raise below, because the hang this guards against is in
-    # `asyncio.run`'s own teardown, which no `except` here can reach -- BUGS.md #69.
-    _arm_exit_watchdog(job_queue.qsize())
 
     for result in results:
         if isinstance(result, BaseException):
