@@ -48,7 +48,10 @@ PIPE_TOKENS = {
         'timeout': {'type': 'calculate'},
         'retries': {'type': 'int'},
         # 0 means unlimited -- see `Step.max_handbacks` and BUGS.md #50.
-        'max_handbacks': {'type': 'int'}
+        'max_handbacks': {'type': 'int'},
+        # 0 means "use the hub's BUELON_MAX_REROUTES", NOT unlimited -- see
+        # `Step.max_reroutes` and BUGS.md #75.
+        'max_reroutes': {'type': 'int'}
     }
 }
 
@@ -348,7 +351,8 @@ class PipelineParser:
             'priority': self.priority,
             'timeout': 0,
             'retries': 0,
-            'max_handbacks': 0
+            'max_handbacks': 0,
+            'max_reroutes': 0
         }
 
     def close(self) -> None:
@@ -887,6 +891,8 @@ class PipelineParser:
         # `.get`, not `[...]`: a prepared/parsed file written before #50 has no
         # `max_handbacks` key in its args, and 0 (unlimited) is the old behaviour.
         job.max_handbacks = definition['args'].get('max_handbacks', 0)
+        # Same `.get` for the same reason, one release later (#75).
+        job.max_reroutes = definition['args'].get('max_reroutes', 0)
         job.kwargs = definition['args']
         # The one place a job's age is established -- BUGS.md #64. Build time, not
         # upload time: a `.boo` built by `bue submit` and uploaded days later, or a

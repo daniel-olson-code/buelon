@@ -335,6 +335,44 @@ HANDBACK_DELAY: float = buelon.core.step.HANDBACK_DELAY
 # timestamp (`unknown`) is never expired -- see `job_created`.
 MAX_JOB_AGE: float = float(os.environ.get('BUELON_MAX_JOB_AGE', 0.0))
 
+# Default ceiling on how many times one job may relocate itself to another scope --
+# BUGS.md #75.
+#
+# `Result(status=pending, self_scope=...)` lets a job say "I am on the wrong machine,
+# put me on that one". Nothing stops the job it becomes on the new machine from saying
+# the same thing back: a job that reroutes `small -> heavy` on a worker whose copy of
+# the code reroutes `heavy -> small` ping-pongs forever, never running, and looks from
+# `bue status` exactly like a job that is merely waiting its turn -- the same
+# indistinguishable-from-healthy shape as #50's unbounded `pending` loop.
+#
+# So unlike `!max_handbacks`, this one is capped by default. A poll loop legitimately
+# does not know how many polls it needs; no job legitimately does not know how many
+# machines it needs. Ten is far more than any real routing decision takes and far fewer
+# than a loop needs to hurt. `!max_reroutes N` overrides it per job, and a negative
+# `!max_reroutes` means unlimited for the caller who is sure.
+MAX_REROUTES: int = int(os.environ.get('BUELON_MAX_REROUTES', 10))
+
+# Every scope any worker has asked for since this hub started -- BUGS.md #75.
+#
+# `upload_step` files a job under `job.scope` whatever that string is (`if job.scope not
+# in STEPS: STEPS[job.scope] = {}`), so a scope no worker subscribes to is not an error:
+# it is a bucket that fills up and is never drained, counted by `bue status`, offered to
+# nobody. That is #45's failure shape, and #75 makes it worse by moving the scope from
+# parse time -- where a typo is in a file a human reads -- to run time, where it is a
+# string a job computed.
+#
+# So scope assignments coming from a `Result` are checked against the scopes workers
+# actually poll for. Recorded on every `hold`, since that is the one message that
+# carries a worker's subscription list, and kept for the life of the hub process rather
+# than expired: a worker being restarted or briefly unreachable does not make its scope
+# wrong, and treating it as wrong would reroute jobs away from a machine that is coming
+# straight back.
+#
+# Empty means "no worker has ever asked", which is the state of a hub that has just
+# come up -- not evidence that any particular scope is bad. `scope_is_known` accepts
+# everything until the first `hold` arrives rather than rejecting the whole world.
+KNOWN_SCOPES: set[str] = set()
+
 # endregion
 
 # region handling steps
@@ -699,6 +737,90 @@ def retry_backoff_delay(attempts: int) -> float:
     return min(RETRY_BACKOFF_BASE * (2 ** exponent), RETRY_BACKOFF_MAX)
 
 
+def note_worker_scopes(scopes) -> None:
+    """Record what a worker just said it subscribes to -- BUGS.md #75.
+
+    Called from `bi_on_hold` on every hold, because `hold` is the only message that
+    carries a worker's scope list. Cheap enough to do unconditionally: a `set.update`
+    of a handful of strings against a set that stops growing once every worker has been
+    heard from once.
+
+    Tolerant of junk for the same reason `job_int_field` is -- the hub takes messages
+    from clients it does not control, and a malformed `scopes` must not take the hold
+    down. Anything that is not a non-empty string is skipped.
+    """
+    if not isinstance(scopes, (list, tuple, set)):
+        return
+
+    with lock:
+        for scope in scopes:
+            if isinstance(scope, str) and scope:
+                KNOWN_SCOPES.add(scope)
+
+
+def scope_is_known(scope: str) -> bool:
+    """Would any worker this hub has heard from ever be offered a job in `scope`?
+
+    `True` while `KNOWN_SCOPES` is empty. A hub that has just started, or one whose
+    workers are all down, knows nothing about which scopes are real -- and "I have no
+    information" must not read as "every scope is wrong", which would reroute-reject
+    every job on the cluster for as long as the first worker took to connect.
+    """
+    with lock:
+        return not KNOWN_SCOPES or scope in KNOWN_SCOPES
+
+
+def resolve_scope(job: buelon.core.step.Job, requested, field: str) -> str:
+    """The scope `job` should actually be filed under, given what a `Result` asked for.
+
+    Returns `job.scope` unchanged when `requested` is empty, is not a string, or names a
+    scope no worker subscribes to. Falling back rather than honouring it is the whole
+    point: `upload_step` creates a bucket for any string it is handed, so an unknown
+    scope does not fail -- it parks the job in a queue nothing drains, where `bue status`
+    counts it forever and no worker is ever offered it (BUGS.md #45). A job that runs on
+    the wrong machine is a performance problem; a job that never runs at all is an
+    outage, and one nobody notices.
+
+    Loud on the fallback, naming the job, the scope asked for and the scope used, since
+    by construction this fires at run time on a string some job computed -- there is no
+    file for an operator to go and read.
+    """
+    current = getattr(job, 'scope', None) or 'default'
+
+    if not requested:
+        return current
+
+    if not isinstance(requested, str):
+        print(f'job {job.id} ({job.name}) returned a non-string {field} '
+              f'{requested!r} -- ignoring it and keeping scope {current!r}')
+        return current
+
+    if not scope_is_known(requested):
+        print(f'job {job.id} ({job.name}) asked for {field} {requested!r}, which no '
+              f'worker subscribes to (known: '
+              f'{", ".join(sorted(KNOWN_SCOPES)) or "none yet"}) -- keeping scope '
+              f'{current!r} rather than parking the job in a queue nothing drains')
+        return current
+
+    return requested
+
+
+def reroute_cap(job: buelon.core.step.Job) -> int:
+    """How many reroutes this job is allowed; `0` means unlimited -- BUGS.md #75.
+
+    `!max_reroutes` unset (`0`) means "use `MAX_REROUTES`", not "unlimited", which is the
+    opposite of `!max_handbacks` -- see `Step.max_reroutes` for why the defaults differ.
+    A negative `!max_reroutes` is the explicit opt-out and comes back as `0`, the value
+    `handle_step` reads as no ceiling.
+    """
+    configured = job_int_field(job, 'max_reroutes', 0)
+
+    if configured < 0:
+        return 0
+
+    return configured or MAX_REROUTES
+
+
 def upload_step(job: buelon.core.step.Job):
     with lock:
         priority = job_int_field(job, 'priority', 0)
@@ -718,46 +840,150 @@ def upload_steps(jobs: list[buelon.core.step.Job]):
             upload_step(job)
 
 
-def handle_step(step:  buelon.core.step.Job, status: buelon.core.step.StepStatus):
-    with lock:
-        if status == buelon.core.step.StepStatus.pending:
-            # A job saying "not ready, try me again later" -- the documented way to poll
-            # a slow API without holding a worker slot for the whole wait. This used to
-            # be a bare `upload_step`: no counter, no delay, no ceiling, so a job that
-            # never became ready spun as fast as a worker could ask for it and looked
-            # exactly like a job that was simply waiting its turn. BUGS.md #50.
-            #
-            # `handbacks` is its own counter rather than `attempts`: `attempts` is the
-            # error budget `!retries` spends (#14), and a hand-back is not a failure.
-            step.handbacks = (getattr(step, 'handbacks', 0) or 0) + 1
-            # Normalised through `job_int_field` for the same reason `retries` is -- the
-            # hub takes jobs from clients it does not control, and a string here would
-            # raise on the comparison below (BUGS.md #42).
-            max_handbacks = job_int_field(step, 'max_handbacks', 0)
+def handle_step(step:  buelon.core.step.Job,
+                status: buelon.core.step.StepStatus,
+                next_scope: str | None = None,
+                self_scope: str | None = None):
+    """Apply a worker's verdict on one job to the hub's state.
 
-            if max_handbacks and step.handbacks > max_handbacks:
-                # Opt-in only: 0 means unlimited, which is the default and the
-                # pre-#50 behaviour. Capping under `!retries` instead would have
-                # broken the poll pattern for everyone who never set one.
-                print(f'job {step.id} ({step.name}) handed itself back '
-                      f'{step.handbacks:,} times, over its !max_handbacks '
-                      f'{max_handbacks:,} -- recording as an error')
-                step.not_before = 0.0
-                ALL_STEPS[step.id] = [buelon.core.step.StepStatus.error.value, step]
-                errors[step.id] = step
-                db[step.id] = {
-                    'error': f'Job {step.name!r} ({step.id}) returned `pending` '
-                             f'{step.handbacks:,} times, exceeding its '
-                             f'`!max_handbacks {max_handbacks}`.',
-                    'trace': '',
-                }
+    `next_scope` / `self_scope` are #75's scope routing, read off the released job by
+    `bi_on_release` and passed in here rather than left on the object, so that every
+    call site states what routing it is applying and a caller that means "no routing"
+    says so by passing nothing. Both are advisory: an unknown scope falls back to the
+    job's parsed one (see `resolve_scope`) instead of parking the job.
+
+    `next_scope` moves this job's CHILDREN and is read on `success` only -- there are no
+    children to promote otherwise. `self_scope` moves THIS job and is read on `pending`
+    only: `pending` is the one status that requeues the job for another attempt, so it
+    is the one status where "which queue" is still a question. `self_scope` on any other
+    status is refused and logged.
+
+    A `self_scope` reroute RESTARTS the job. The hub requeues it from the top on the new
+    scope; it has no way to move a half-finished attempt between machines, so whatever
+    the current attempt already did is discarded and repeated. That is the one thing
+    about this feature that surprises callers, so: reroute early, before the expensive
+    part, not after. The requeue serves out the same `HANDBACK_DELAY` an ordinary
+    hand-back does, which costs one poll interval and stops a pair of mutually
+    rerouting workers from spinning at dispatch speed.
+    """
+    with lock:
+        # Consumed here whatever the caller passed, so a stale request cannot ride the
+        # job into its next dispatch and relocate it a second time on its own.
+        step.next_scope = None
+        step.self_scope = None
+
+        # A local, never the parameter itself: #34 was a loop variable quietly rebinding
+        # `step` for the rest of this function, and `tmp/test_hub_reset_shadow.py` now
+        # asserts that no parameter of `handle_step` is reassigned in its body at all.
+        self_route = self_scope
+
+        if self_route and status != buelon.core.step.StepStatus.pending:
+            # Refused rather than applied. On `success` the job is finished and moving
+            # it means nothing; on `error` the retry path owns the requeue and its own
+            # `not_before`; on `cancel` / `reset` the whole DAG is being rebuilt. In
+            # every one of those the job would be relocated for a run that either is not
+            # happening or is not this branch's to schedule -- so say so and drop it,
+            # rather than silently honouring it somewhere the caller never looked.
+            print(f'job {step.id} ({step.name}) returned self_scope {self_scope!r} with '
+                  f'status {status.name!r} -- self_scope is honoured on `pending` only '
+                  f'(the status that requeues the job); ignoring the reroute')
+            self_route = None
+
+        if status == buelon.core.step.StepStatus.pending:
+            # #75. A job relocating itself: "this download is 400GB, I am on a 3-core
+            # box with no disk, put me on the storage worker". Taken before the
+            # hand-back bookkeeping below because the two are deliberately separate
+            # budgets -- a reroute is not a poll, and a job that legitimately polls for
+            # an hour must not run out of `!max_handbacks` because it also changed
+            # machines once. `reroutes` is counted here for the same reason `handbacks`
+            # is: hub-side, on the job, so it survives the requeue -> dispatch -> release
+            # round trip and the snapshot.
+            #
+            # `resolve_scope` has already rejected a scope no worker subscribes to and
+            # handed back the current one, so an unknown `self_scope` falls through to
+            # the ordinary hand-back path below -- one poll wasted, not a job parked
+            # forever in a queue nothing drains.
+            current_scope = getattr(step, 'scope', None) or 'default'
+            destination = resolve_scope(step, self_route, 'self_scope')
+
+            if destination != current_scope:
+                step.reroutes = (getattr(step, 'reroutes', 0) or 0) + 1
+                cap = reroute_cap(step)
+
+                if cap and step.reroutes > cap:
+                    # The ping-pong: X reroutes to Y, Y reroutes back to X, forever. It
+                    # burns a dispatch slot per hop and never runs the job, and from
+                    # `bue status` it is indistinguishable from a job patiently waiting
+                    # its turn -- so it has to end as an *error*, which is visible in
+                    # `bue errors` and recoverable with `bue reset-errors`, rather than
+                    # as a silent give-up.
+                    print(f'job {step.id} ({step.name}) rerouted itself '
+                          f'{step.reroutes:,} times, over its max_reroutes {cap:,} '
+                          f'(last hop {current_scope!r} -> {destination!r}) -- this is '
+                          f'almost certainly two workers rerouting it back and forth; '
+                          f'recording as an error')
+                    step.not_before = 0.0
+                    ALL_STEPS[step.id] = [buelon.core.step.StepStatus.error.value, step]
+                    errors[step.id] = step
+                    db[step.id] = {
+                        'error': f'Job {step.name!r} ({step.id}) requested '
+                                 f'{step.reroutes:,} scope reroutes, exceeding its '
+                                 f'`max_reroutes {cap}`. Last requested hop: '
+                                 f'{current_scope!r} -> {destination!r}.',
+                        'trace': '',
+                    }
+                else:
+                    print(f'job {step.id} ({step.name}) rerouting itself '
+                          f'{current_scope!r} -> {destination!r} (reroute '
+                          f'{step.reroutes:,} of {cap if cap else "unlimited"}); it '
+                          f'restarts from the beginning there')
+                    # `upload_step` files by `job.scope`, so this assignment IS the
+                    # reroute -- there is nothing else to tell.
+                    step.scope = destination
+                    # The same wait an ordinary hand-back serves. A relocation is not
+                    # urgent, and without it a mutual-reroute pair spins as fast as two
+                    # workers can poll until it hits the cap.
+                    step.not_before = time.time() + HANDBACK_DELAY
+                    ALL_STEPS[step.id] = [status.value, step]
+                    upload_step(step)
             else:
-                # Held back rather than requeued at once, so the poll is a poll and not
-                # a hot loop. Constant, unlike the exponential retry back-off -- see
-                # `HANDBACK_DELAY`. `get_steps_v2` steps over it until it passes.
-                step.not_before = time.time() + HANDBACK_DELAY
-                ALL_STEPS[step.id] = [status.value, step]
-                upload_step(step)
+                # A job saying "not ready, try me again later" -- the documented way to poll
+                # a slow API without holding a worker slot for the whole wait. This used to
+                # be a bare `upload_step`: no counter, no delay, no ceiling, so a job that
+                # never became ready spun as fast as a worker could ask for it and looked
+                # exactly like a job that was simply waiting its turn. BUGS.md #50.
+                #
+                # `handbacks` is its own counter rather than `attempts`: `attempts` is the
+                # error budget `!retries` spends (#14), and a hand-back is not a failure.
+                step.handbacks = (getattr(step, 'handbacks', 0) or 0) + 1
+                # Normalised through `job_int_field` for the same reason `retries` is -- the
+                # hub takes jobs from clients it does not control, and a string here would
+                # raise on the comparison below (BUGS.md #42).
+                max_handbacks = job_int_field(step, 'max_handbacks', 0)
+
+                if max_handbacks and step.handbacks > max_handbacks:
+                    # Opt-in only: 0 means unlimited, which is the default and the
+                    # pre-#50 behaviour. Capping under `!retries` instead would have
+                    # broken the poll pattern for everyone who never set one.
+                    print(f'job {step.id} ({step.name}) handed itself back '
+                          f'{step.handbacks:,} times, over its !max_handbacks '
+                          f'{max_handbacks:,} -- recording as an error')
+                    step.not_before = 0.0
+                    ALL_STEPS[step.id] = [buelon.core.step.StepStatus.error.value, step]
+                    errors[step.id] = step
+                    db[step.id] = {
+                        'error': f'Job {step.name!r} ({step.id}) returned `pending` '
+                                 f'{step.handbacks:,} times, exceeding its '
+                                 f'`!max_handbacks {max_handbacks}`.',
+                        'trace': '',
+                    }
+                else:
+                    # Held back rather than requeued at once, so the poll is a poll and not
+                    # a hot loop. Constant, unlike the exponential retry back-off -- see
+                    # `HANDBACK_DELAY`. `get_steps_v2` steps over it until it passes.
+                    step.not_before = time.time() + HANDBACK_DELAY
+                    ALL_STEPS[step.id] = [status.value, step]
+                    upload_step(step)
         elif status == buelon.core.step.StepStatus.cancel:
             # `remove_id` alone clears `queued` / `errors` / `done` / `db` / `ALL_STEPS`
             # and nothing else, so before #4 a cancelled DAG kept running: a sibling
@@ -900,6 +1126,23 @@ def handle_step(step:  buelon.core.step.Job, status: buelon.core.step.StepStatus
                     # The status write is the child's, not the parent's -- the parent's
                     # `success` entry set above must survive. BUGS.md #9.
                     del queued[step_id]
+                    # #75. The parent routing its children: a step that has just found
+                    # out how big the download is puts the step that does the
+                    # downloading on the worker with the disk. Set BEFORE `upload_step`,
+                    # which files by `job.scope` and is the only thing that reads it.
+                    #
+                    # Assigned only when `resolve_scope` gives back something other than
+                    # what the child already has, so a job that returned no `next_scope`
+                    # -- every job written before #75 -- leaves its children exactly
+                    # where their `.boo` file put them.
+                    if next_scope:
+                        child_scope = resolve_scope(child, next_scope, 'next_scope')
+
+                        if child_scope != child.scope:
+                            print(f'job {step.id} ({step.name}) routing child '
+                                  f'{child.id} ({child.name}) {child.scope!r} -> '
+                                  f'{child_scope!r}')
+                            child.scope = child_scope
                     ALL_STEPS[step_id] = [buelon.core.step.StepStatus.pending.value, child]
                     upload_step(child)
                     promoted = True
@@ -2269,10 +2512,36 @@ def _drop_connection(client: BiClient, conns: list | None = None) -> None:
 
 
 class BiWorkerClient:
-    def __init__(self, *args, **kwargs):  # (self, host: str, port: int, scopes: list[str]):
-        self.host = settings.worker.host  # host
-        self.port = settings.worker.port  # port
-        self.scopes = settings.worker.scopes.split(',') + ['test']  # scopes
+    def __init__(self,
+                 host: str | None = None,
+                 port: int | None = None,
+                 scopes: list[str] | None = None):
+        """Connect to the hub as a worker.
+
+        Every argument used to be swallowed by `*args, **kwargs` and overridden from
+        `settings` -- so the dozen call sites that carefully passed a host, a port and a
+        scope list were all dead code, and the signature advertised control it did not
+        provide. They are honoured now, with `settings.worker` as the fallback for each
+        one independently, so `BiWorkerClient()` still behaves exactly as before.
+        BUGS.md #75.
+        """
+        self.host = settings.worker.host if host is None else host
+        self.port = settings.worker.port if port is None else port
+        # `+ ['test']` used to be appended here, so every worker on the cluster silently
+        # subscribed to a scope its `settings.yaml` never mentioned. That is the whole
+        # point of dedicating a worker to one scope: a box whose CPU, RAM and disk are
+        # reserved for one heavy pipeline must not quietly pick up anything else, and
+        # #75's routing is only as good as the guarantee that a scope names exactly the
+        # machines you meant. A worker now subscribes to precisely what it declares.
+        #
+        # Nothing produced `test`-scope work -- it is in no `.boo` file, no
+        # `settings.yaml`, and not in `DEFAULT_SETTINGS['worker']['scopes']` -- so there
+        # is nothing to migrate. Were there, the fix would be an explicit
+        # `worker.extra_scopes` setting, not a hardcoded append: a job in a scope no
+        # worker subscribes to does not fail, it sits in `STEPS` forever (see
+        # `resolve_scope`).
+        self.scopes = (settings.worker.scopes.split(',') if scopes is None
+                       else list(scopes))
         self.client: BiClient = None
         self.messages: dict[str, BiMessage] = {}
         # request_id -> Event, set when that request's reply lands. Replaces the old
@@ -2744,6 +3013,11 @@ def bi_on_hold(request: ServerRequest, data):
     # same way -- one poisoned job stalls a worker in a 5-minute loop indefinitely.
     jobs, args, note = [], [], None
 
+    # Before anything can fail: `hold` is the only message carrying a worker's scope
+    # list, and #75 checks reroute destinations against it. Recording it here rather
+    # than in `get_steps_v2` keeps it on the request path even when dispatch throws.
+    note_worker_scopes(data.get('scopes') if isinstance(data, dict) else None)
+
     try:
         with lock:
             jobs = get_steps_v2(**data)
@@ -2844,7 +3118,20 @@ def bi_on_release(request: ServerRequest, data):
                 continue
 
             db[step.id] = result
-            handle_step(step, status)
+            # #75's scope routing. It arrives on the job rather than in `results`
+            # because `results` is whatever user code returned -- the worker keeps only
+            # `Result.data` -- and because the release payload is a fixed 4-tuple that
+            # an older hub unpacks positionally, so a fifth element would break a
+            # rolling deploy in the direction that matters (new worker, old hub). An
+            # extra key in a job's `__dict__` is simply ignored by a hub that does not
+            # know it, exactly like `attempts` and `not_before` before it.
+            #
+            # `getattr`, not attribute access: a job released by a pre-#75 worker has
+            # neither, and the class defaults cover it -- `from_json` replaces the whole
+            # `__dict__`, so an absent key falls through to `Step.next_scope` / None.
+            handle_step(step, status,
+                        next_scope=getattr(step, 'next_scope', None),
+                        self_scope=getattr(step, 'self_scope', None))
 
         client_holds = holds_v2.get(request.client_id)
         if client_holds is not None:
@@ -3494,6 +3781,30 @@ class BiWorkerJob:
 
         self.start = None
 
+        # #75: whatever routing the job asked for last time it ran must not ride along
+        # into this attempt. The hub clears these in `handle_step` as it consumes them,
+        # so a dispatched job should already have neither -- but this object is built
+        # from a `Job` that was serialized by one process and deserialized by another,
+        # and a routing request that survives silently is a job that relocates itself
+        # again for a reason nobody asked for.
+        self.step.next_scope = None
+        self.step.self_scope = None
+
+    def _record_routing(self, r: buelon.core.step.Result) -> None:
+        """Carry a `Result`'s #75 scope routing back to the hub on the job itself.
+
+        The release payload keeps only `r.status` and `r.data` -- `results` is user data
+        and `[uid, steps, statuses, results]` is unpacked positionally by every hub,
+        including ones older than this worker. So the routing travels as two more keys
+        in the job's `__dict__`, alongside `attempts` and `not_before`, where a hub that
+        has never heard of #75 simply ignores it.
+
+        Always assigns, including `None`: a `Result` that asked for no routing has to
+        clear the field, not leave whatever was there.
+        """
+        self.step.next_scope = getattr(r, 'next_scope', None)
+        self.step.self_scope = getattr(r, 'self_scope', None)
+
     async def arun(self):
         async def __run():
             try:
@@ -3523,6 +3834,7 @@ class BiWorkerJob:
         try:
             r: buelon.core.step.Result = self.step.run(*self.arg, mut=self.mut)
             self.status, self.result = r.status, r.data
+            self._record_routing(r)
         except Exception as e:
             print(e)
             traceback.print_exc()
@@ -3572,6 +3884,7 @@ class BiWorkerJob:
             else:
                 r: buelon.core.step.Result = await coro
             self.status, self.result = r.status, r.data
+            self._record_routing(r)
         except _JobTimedOut as e:
             # Must precede the generic handler.
             declared = (getattr(self.step, 'timeout', 0.0) or 0.0) > 0
@@ -3942,7 +4255,7 @@ async def bi_test_worker(jobs_at_a_time: int = 25, single_step: str | None = Non
             print(f'worker task {task.get_name()!r} died; stopping this worker')
             stop_now = True
 
-    async with BiWorkerClient(settings.worker.host, settings.worker.port, ['test'] + settings.worker.scopes.split(',')) as client:
+    async with BiWorkerClient(settings.worker.host, settings.worker.port, settings.worker.scopes.split(',')) as client:
         t1 = asyncio.create_task(see_if_more(), name='see_if_more')
         t2 = asyncio.create_task(handle_finished_jobs(), name='handle_finished_jobs')
         # Neither task is awaited until the run ends, so a crash in either was
@@ -4067,7 +4380,7 @@ async def v1_bi_test_worker(jobs_at_a_time: int = 25, single_step: str | None = 
             if not finished_jobs:
                 await asyncio.sleep(0.1)
 
-    async with BiWorkerClient(settings.worker.host, settings.worker.port, ['test'] + settings.worker.scopes.split(',')) as client:
+    async with BiWorkerClient(settings.worker.host, settings.worker.port, settings.worker.scopes.split(',')) as client:
         t1 = asyncio.create_task(see_if_more())
         t2 = asyncio.create_task(handle_finished_jobs())
 
@@ -4133,7 +4446,7 @@ async def v1_bi_test_worker(jobs_at_a_time: int = 25, single_step: str | None = 
     #
     #         await client.release(uid, steps, statuses, results)
     #
-    # async with BiWorkerClient(settings.worker.host, settings.worker.port, ['test'] + settings.worker.scopes.split(',')) as client:
+    # async with BiWorkerClient(settings.worker.host, settings.worker.port, settings.worker.scopes.split(',')) as client:
     #     i = 0
     #     while ((i := i + 1) < (iterations + 1)) or job_queue.qsize():
     #         if i < iterations or max_time_to_handle_more < job_queue.max_runtime():
@@ -4174,7 +4487,7 @@ async def _bi_test_upload(code: str, return_jobs: bool = False) -> None | list[b
     upload_id = uuid.uuid4().hex
     sent = False
 
-    async with BiWorkerClient(settings.worker.host, settings.worker.port, ['test'] + settings.worker.scopes.split(',')) as client:
+    async with BiWorkerClient(settings.worker.host, settings.worker.port, settings.worker.scopes.split(',')) as client:
         for step in buelon.core.pipe_interpreter.generate_steps_from_code(code):
             chunk.append(step)
             if len(chunk) >= 500:

@@ -31,9 +31,12 @@ class Result:
         priority (int): Priority of the result.
         velocity (float): Velocity associated with the result.
         data (Any): Any data produced by the step execution.
+        next_scope (str): Scope to dispatch this job's children into.
+        self_scope (str): Scope to dispatch this job into when it is requeued.
     """
 
-    def __init__(self, status=None, env=None, priority=None, velocity=None, data=None):
+    def __init__(self, status=None, env=None, priority=None, velocity=None, data=None,
+                 next_scope=None, self_scope=None):
         """Initialize a Result object.
 
         Args:
@@ -42,12 +45,29 @@ class Result:
             priority (int, optional): Priority of the result.
             velocity (float, optional): Velocity associated with the result.
             data (Any, optional): Any data produced by the step execution.
+            next_scope (str, optional): Scope this job's children are dispatched into
+                when it succeeds -- BUGS.md #75. `None` (the default) leaves every child
+                on the scope its `.boo` file parsed.
+            self_scope (str, optional): Scope this job itself is dispatched into when it
+                returns `pending`. Honoured on `pending` only; a job returning `success`
+                is finished, and relocating it means nothing.
+
+                A reroute RESTARTS the job from the top on the new machine -- the hub
+                requeues the job, it does not migrate a running one, so anything the
+                current attempt has already done is discarded. Return `pending` with a
+                `self_scope` as the FIRST act of a job that discovers it is on the wrong
+                machine, not after the expensive part.
         """
         self.status = status
         self.env = env or {}
         self.priority = priority
         self.velocity = velocity
         self.data = data
+        # Two fields rather than one routing field with a meaning that depends on
+        # `status`: "where my children go" and "where I go" are different questions, and
+        # a single `scope=` would read identically at a call site that meant either one.
+        self.next_scope = next_scope
+        self.self_scope = self_scope
 
     @classmethod
     def from_result(cls, result):
@@ -79,7 +99,9 @@ class Result:
             'env': self.env,
             'priority': self.priority,
             'velocity': self.velocity,
-            'data': self.data
+            'data': self.data,
+            'next_scope': self.next_scope,
+            'self_scope': self.self_scope
         }
 
     def from_dict(self, d):
@@ -93,6 +115,11 @@ class Result:
         self.priority = d['priority']
         self.velocity = d['velocity']
         self.data = d['data']
+        # `.get`, not `d[...]`: a rolling deploy has mixed versions in flight, and a
+        # result dict written by a worker from before #75 carries neither key. Both
+        # default to None, which is "route nothing" -- the pre-#75 behaviour.
+        self.next_scope = d.get('next_scope')
+        self.self_scope = d.get('self_scope')
         return self
 
 
@@ -308,6 +335,8 @@ class Step(pipe_util.PipeObject):
         attempts (int): Number of attempts made for the step.
         handbacks (int): Number of times the step handed itself back as `pending`.
         max_handbacks (int): Ceiling on `handbacks`; 0 means unlimited.
+        reroutes (int): Number of times the step has been moved to another scope.
+        max_reroutes (int): Ceiling on `reroutes`; 0 means "use the hub's default".
         timeout (float): Timeout for the step execution.
         parents (list[str]): List of parent step IDs.
         children (List[str]): List of child step IDs.
@@ -362,6 +391,34 @@ class Step(pipe_util.PipeObject):
     # whole point -- a `reset` can put a year-old DAG back on the dispatch queue, and
     # #56's log line can only say so if the job remembers when it was made.
     created: float = 0.0
+    # How many times this job has relocated itself to another scope -- BUGS.md #75.
+    # Counted hub-side in `handle_step`'s `pending` branch, and deliberately NOT
+    # `handbacks`: that is the poll budget `!max_handbacks` spends, and a long-polling
+    # job must not run out of polls because it also moved machines once. A reroute is
+    # also not an error, so it is not `attempts` either. Like those two it rides along
+    # in `__dict__` and so survives the requeue -> dispatch -> release round trip.
+    reroutes: int = 0
+    # Ceiling on `reroutes`. Unlike `max_handbacks`, 0 does NOT mean unlimited: it means
+    # "use the hub's `BUELON_MAX_REROUTES`". Unbounded re-queueing is the documented
+    # point of `pending`, but unbounded *relocation* is only ever a bug -- a job that
+    # moves X -> Y on a worker that moves it back to X ping-pongs forever, burning a
+    # dispatch slot on each hop and never running. So this one is capped by default.
+    # A negative value means unlimited, for the caller who really does want that.
+    # Set `!max_reroutes N` in a `.boo` file to override per job.
+    max_reroutes: int = 0
+    # Where the worker's `Result` asked its children / itself to go -- BUGS.md #75.
+    #
+    # These are transport, not configuration: the worker writes them onto the job it is
+    # about to release, `bi_on_release` reads them straight back off and hands them to
+    # `handle_step`, which consumes and clears them. They live on the Job rather than in
+    # the release payload because the release wire format is a fixed 4-tuple that an
+    # older hub unpacks positionally -- a fifth element breaks a rolling deploy, whereas
+    # an extra key in a job's `__dict__` is ignored by any version that does not know it.
+    #
+    # Nothing in a `.boo` file sets these, and nothing should: a scope known at parse
+    # time is what `!scope` is for.
+    next_scope: str = None
+    self_scope: str = None
 
     parents: list[str] = None
     children: List[str] = None
