@@ -352,7 +352,7 @@ MAX_JOB_AGE: float = float(os.environ.get('BUELON_MAX_JOB_AGE', 0.0))
 # `!max_reroutes` means unlimited for the caller who is sure.
 MAX_REROUTES: int = int(os.environ.get('BUELON_MAX_REROUTES', 10))
 
-# Every scope any worker has asked for since this hub started -- BUGS.md #75.
+# The scopes the hub will accept as a routing destination -- BUGS.md #75, #76.
 #
 # `upload_step` files a job under `job.scope` whatever that string is (`if job.scope not
 # in STEPS: STEPS[job.scope] = {}`), so a scope no worker subscribes to is not an error:
@@ -362,16 +362,51 @@ MAX_REROUTES: int = int(os.environ.get('BUELON_MAX_REROUTES', 10))
 # string a job computed.
 #
 # So scope assignments coming from a `Result` are checked against the scopes workers
-# actually poll for. Recorded on every `hold`, since that is the one message that
-# carries a worker's subscription list, and kept for the life of the hub process rather
-# than expired: a worker being restarted or briefly unreachable does not make its scope
-# wrong, and treating it as wrong would reroute jobs away from a machine that is coming
-# straight back.
+# actually poll for. `KNOWN_SCOPES` is a *derived view*, never written to directly:
+# it is the union of `CLIENT_SCOPES`, rebuilt in place by `_refresh_known_scopes`
+# whenever a client registers, holds, or goes away.
 #
-# Empty means "no worker has ever asked", which is the state of a hub that has just
-# come up -- not evidence that any particular scope is bad. `scope_is_known` accepts
-# everything until the first `hold` arrives rather than rejecting the whole world.
+# #75 accumulated it instead, and only from `hold` payloads. Two problems, both of which
+# #76 closes:
+#
+#   - A scope was unroutable until a worker subscribing to it had completed a hold.
+#     `scope_is_known` fails open only while the set is *empty*, so the moment the first
+#     worker registered, every scope whose worker had not yet held silently fell back to
+#     the job's parsed scope -- which is exactly the "runs on the wrong machine and
+#     fills its disk" outcome the routing feature exists to prevent, reported as one log
+#     line. Scopes now arrive with the `worker-info` hello (`BiWorkerClient.__aenter__`),
+#     so a worker is routable from the moment it connects.
+#   - A decommissioned worker's scope was never forgotten, so jobs kept being routed at
+#     a machine that had been switched off weeks earlier. Deriving from live
+#     registrations needs no heartbeat: the connection closing is the deregistration
+#     signal, and `bi_release_client` already runs on exactly that edge.
+#
+# Empty still means "no worker has asked", and `scope_is_known` still accepts everything
+# in that state -- a hub that has just come up, or one whose workers are all down, has
+# no information, and "no information" must not read as "every scope is wrong".
 KNOWN_SCOPES: set[str] = set()
+
+# client_id -> the scopes that client declared. The authority `KNOWN_SCOPES` is built
+# from; entries live and die with the connection (`bi_on_open` .. `bi_release_client`).
+CLIENT_SCOPES: dict[str, set[str]] = {}
+
+# The `CLIENT_SCOPES` key for a declaration that arrived with no connection behind it.
+# Not a uuid4, so it can never collide with a real `BiClient.client_id`.
+UNATTRIBUTED_CLIENT = '<unattributed>'
+
+# Scopes restored from the snapshot at startup -- BUGS.md #76.
+#
+# After a restart `CLIENT_SCOPES` is empty until workers reconnect, and the hub
+# dispatches during that window. Rather than lean on fail-open (which stops the moment
+# the *first* worker registers, leaving every other scope wrong), the hub seeds itself
+# from the scopes its own snapshot was routing to.
+#
+# Deliberately dropped for good the first time a real client registers: a live
+# registration is better evidence than a saved guess, and keeping the seed around would
+# resurrect a decommissioned worker's scope on every restart -- the exact gap deriving
+# from live clients is meant to close. Once it is gone, the last worker disconnecting
+# returns the hub to the empty, allow-all state.
+SEEDED_SCOPES: set[str] = set()
 
 # endregion
 
@@ -737,34 +772,125 @@ def retry_backoff_delay(attempts: int) -> float:
     return min(RETRY_BACKOFF_BASE * (2 ** exponent), RETRY_BACKOFF_MAX)
 
 
-def note_worker_scopes(scopes) -> None:
-    """Record what a worker just said it subscribes to -- BUGS.md #75.
-
-    Called from `bi_on_hold` on every hold, because `hold` is the only message that
-    carries a worker's scope list. Cheap enough to do unconditionally: a `set.update`
-    of a handful of strings against a set that stops growing once every worker has been
-    heard from once.
+def _clean_scopes(scopes) -> set[str] | None:
+    """The usable scope names in `scopes`, or None if it is not a scope list at all.
 
     Tolerant of junk for the same reason `job_int_field` is -- the hub takes messages
-    from clients it does not control, and a malformed `scopes` must not take the hold
-    down. Anything that is not a non-empty string is skipped.
+    from clients it does not control, and a malformed `scopes` must not take the
+    connection down. Anything that is not a non-empty string is skipped.
+
+    None and a set are different answers on purpose: a payload that is not a list at all
+    means "this client told us nothing usable", which must leave whatever it declared
+    earlier alone; an empty list means "I subscribe to nothing" and is recorded as such.
     """
     if not isinstance(scopes, (list, tuple, set)):
+        return None
+
+    return {scope for scope in scopes if isinstance(scope, str) and scope}
+
+
+def _refresh_known_scopes() -> None:
+    """Rebuild `KNOWN_SCOPES` from the live registrations -- BUGS.md #76.
+
+    Callers hold `lock`. Rebuilt in place rather than rebound so that everything
+    already holding a reference to the set -- `scope_is_known`, `resolve_scope`'s log
+    line, tests -- keeps seeing the same object.
+    """
+    KNOWN_SCOPES.clear()
+
+    for scopes in CLIENT_SCOPES.values():
+        KNOWN_SCOPES.update(scopes)
+
+    # Only while nothing has registered. See `SEEDED_SCOPES` for why the seed is not a
+    # permanent floor.
+    if not CLIENT_SCOPES:
+        KNOWN_SCOPES.update(SEEDED_SCOPES)
+
+
+def note_worker_scopes(scopes, client_id: str | None = None) -> None:
+    """Record what a client just said it subscribes to -- BUGS.md #75, #76.
+
+    Called from two places, and it must be both:
+
+      - `worker-info`, the hello every `BiWorkerClient.__aenter__` sends, so a worker is
+        a routing destination from the moment it connects rather than from its first
+        completed hold (#76).
+      - `bi_on_hold`, which is where #75 recorded it and where a worker running older
+        code -- mid rolling deploy -- still tells the hub its scopes for the first time.
+
+    Each call *replaces* that client's declaration rather than merging into it, so a
+    worker restarted with a shorter scope list is believed. `client_id` of None is an
+    unattributed declaration (tests, and any future caller with no connection behind
+    it): it is filed under a pseudo-client so it behaves like any other registration.
+    """
+    cleaned = _clean_scopes(scopes)
+
+    if cleaned is None:
         return
 
     with lock:
-        for scope in scopes:
-            if isinstance(scope, str) and scope:
-                KNOWN_SCOPES.add(scope)
+        # A real registration outranks a saved guess, and the guess is not wanted back
+        # afterwards -- see `SEEDED_SCOPES`.
+        SEEDED_SCOPES.clear()
+        CLIENT_SCOPES[client_id if client_id is not None else UNATTRIBUTED_CLIENT] = cleaned
+        _refresh_known_scopes()
+
+
+def forget_worker_scopes(client_id: str) -> None:
+    """Drop `client_id`'s scopes; its connection is gone -- BUGS.md #76.
+
+    The deregistration half of deriving `KNOWN_SCOPES` from live clients. No heartbeat
+    is needed because the hub already learns about a departure on the only edge that
+    matters: `bi_release_client`, which is what requeues the jobs that client held.
+
+    Idempotent, like its caller.
+    """
+    with lock:
+        if CLIENT_SCOPES.pop(client_id, None) is not None:
+            _refresh_known_scopes()
+
+
+def seed_known_scopes(scopes) -> None:
+    """Seed the scopes the hub will route to before any worker has reconnected -- #76.
+
+    Called from `_restore_snapshot`. Has no effect once a client has registered, and is
+    discarded the moment one does.
+    """
+    cleaned = _clean_scopes(scopes)
+
+    if not cleaned:
+        return
+
+    with lock:
+        if CLIENT_SCOPES:
+            return
+
+        SEEDED_SCOPES.update(cleaned)
+        _refresh_known_scopes()
+
+
+def reset_known_scopes() -> None:
+    """Forget every scope, seeded or registered, and return the hub to allow-all.
+
+    For tests and for `reset`-style operator paths -- clearing `KNOWN_SCOPES` on its own
+    no longer means anything, since the next registration rebuilds it from
+    `CLIENT_SCOPES`.
+    """
+    with lock:
+        CLIENT_SCOPES.clear()
+        SEEDED_SCOPES.clear()
+        _refresh_known_scopes()
 
 
 def scope_is_known(scope: str) -> bool:
     """Would any worker this hub has heard from ever be offered a job in `scope`?
 
-    `True` while `KNOWN_SCOPES` is empty. A hub that has just started, or one whose
-    workers are all down, knows nothing about which scopes are real -- and "I have no
-    information" must not read as "every scope is wrong", which would reroute-reject
-    every job on the cluster for as long as the first worker took to connect.
+    `True` while `KNOWN_SCOPES` is empty. A hub that has just started with no snapshot,
+    or one whose workers are all down, knows nothing about which scopes are real -- and
+    "I have no information" must not read as "every scope is wrong", which would
+    reroute-reject every job on the cluster for as long as the first worker took to
+    connect. Since #76 the set is a live view of connected workers, so this arm is also
+    what an emptied cluster falls back to, not only a cold start.
     """
     with lock:
         return not KNOWN_SCOPES or scope in KNOWN_SCOPES
@@ -2010,6 +2136,10 @@ def auto_save(force: bool = False):
                 for job in _snapshot_orphans()
             ],
             'db': dict(db),
+            # So routing is correct from the first dispatch after a restart rather than
+            # relying on `scope_is_known`'s fail-open arm -- BUGS.md #76. A hub reading
+            # a pre-#76 snapshot just gets no seed, which is the old behaviour.
+            'known_scopes': sorted(KNOWN_SCOPES),
         }
 
     _atomic_write(snapshot_path(), _dumps_snapshot(payload))
@@ -2083,6 +2213,9 @@ def _restore_snapshot(payload: dict) -> int:
                 upload_step(jobs[job_id])
 
         db.update(payload.get('db', {}))
+
+        # Only a seed: the first worker to register replaces it outright -- BUGS.md #76.
+        seed_known_scopes(payload.get('known_scopes'))
 
     return backfilled
 
@@ -2858,7 +2991,17 @@ class BiWorkerClient:
         self._read_ack_in_background(request_id)
 
     async def update_worker_info(self):
-        await self.client.asend_obj('worker-info', settings.worker.info)
+        """The registration hello, sent from `__aenter__` on every (re)connect.
+
+        `scopes` rides along so the hub can route to this worker immediately, instead of
+        waiting for its first completed `hold` -- BUGS.md #76. It is sent last so a
+        `settings.yaml` `info` block that happens to define `scopes` cannot shadow what
+        this worker actually polls for; `info` is free-form operator text for the
+        dashboard, and the hub's routing must not be steerable from it.
+        """
+        info = dict(settings.worker.info)
+        info['scopes'] = list(self.scopes)
+        await self.client.asend_obj('worker-info', info)
 
     async def get_web_info(self, workers_info: bool = False):
         request_id = await self.client.asend_obj('web-info', workers_info)
@@ -3013,10 +3156,13 @@ def bi_on_hold(request: ServerRequest, data):
     # same way -- one poisoned job stalls a worker in a 5-minute loop indefinitely.
     jobs, args, note = [], [], None
 
-    # Before anything can fail: `hold` is the only message carrying a worker's scope
-    # list, and #75 checks reroute destinations against it. Recording it here rather
-    # than in `get_steps_v2` keeps it on the request path even when dispatch throws.
-    note_worker_scopes(data.get('scopes') if isinstance(data, dict) else None)
+    # Before anything can fail: #75 checks reroute destinations against the scopes
+    # workers poll for, and recording it here rather than in `get_steps_v2` keeps it on
+    # the request path even when dispatch throws. Since #76 the `worker-info` hello
+    # carries the same list, so this is no longer the *first* time the hub hears it --
+    # it is the refresh, and the one path a worker running pre-#76 code still uses.
+    note_worker_scopes(data.get('scopes') if isinstance(data, dict) else None,
+                       request.client_id)
 
     try:
         with lock:
@@ -3554,6 +3700,10 @@ def _bi_handle_messages(request: ServerRequest):
         if isinstance(data, dict):
             with lock:
                 worker_info.update(data)
+            # The registration hello. A worker becomes a routing destination here,
+            # before it has held anything -- BUGS.md #76. Outside the `worker_info`
+            # update only because `note_worker_scopes` takes the lock itself.
+            note_worker_scopes(data.get('scopes'), client_id)
     elif method == 'web-info':
         info = bi_get_web_info(request, bool(data))
         request.send_data(json.dumps(info).encode())
@@ -3638,6 +3788,11 @@ def bi_release_client(client_id: str) -> int:
     # An upload staged but never committed dies with the connection that sent it
     # (BUGS.md #32). Done before the holds work so it also runs if that raises.
     _drop_staged_uploads(client_id)
+
+    # The connection closing is the deregistration signal for scope routing -- BUGS.md
+    # #76. A worker that has been switched off stops being a destination here, which is
+    # what stops jobs being routed at a decommissioned machine forever.
+    forget_worker_scopes(client_id)
 
     with lock:
         held = holds_v2.pop(client_id, None)
